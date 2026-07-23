@@ -60,7 +60,8 @@ Each configuration carries:
 | Display name | e.g. `Client A — Opus`; what the picker shows and filters on. |
 | OpenRouter API key | The per-client secret. Stored in the OS-level config store, never in the project. |
 | Model id | The OpenRouter model slug. |
-| Reasoning / thinking controls | Reasoning effort / thinking budget, **plus correct round-trip handling of reasoning blocks** across turns — including preserving redacted / Fable reasoning as OpenRouter now requires. |
+| Reasoning **effort** | First-class setting per config — e.g. `low` / `medium` / `high` or a model's adaptive level — passed through to OpenRouter. Different clients/models want different effort↔cost trade-offs. |
+| Thinking round-trip | **Correct verbatim round-trip of reasoning blocks** across turns (D-14) — including preserving redacted / Fable reasoning as OpenRouter requires. (Distinct from the effort *setting* above.) |
 | Sampling params | temperature, top_p, max_tokens. |
 | Default mode + approval policy | The mode (Ask/Plan/Code) and approval policy this config starts in. |
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
@@ -244,6 +245,12 @@ full node tree is preserved on disk — like a fresh conversation carrying a sum
   Constraints & Preferences / Progress / Key Decisions / Next Steps / Critical Context /
   Relevant Files), capped (~4K tokens). On later compactions **update** the prior summary
   (preserve still-true, drop stale, merge new) rather than re-summarizing from scratch.
+- **Bookends quoted as text (Fable-safe preservation):** the summarizer is instructed to
+  **quote the original request and the latest turn (near-)verbatim inside the summary prose**.
+  This preserves the crucial first/last content almost word-for-word, but it is *legally just
+  summary text* — no signature, no tool cycle — so there's nothing for the provider to validate
+  or flag. It lets even the **full-summarize safe-harbor** retain its bookends without entering
+  the risky partial-replay regime.
 - Tool outputs are **truncated** (~2K chars) when serialized into the *summary input*.
 
 ### Fable-safety rules (the whole point)
