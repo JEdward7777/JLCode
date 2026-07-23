@@ -11,6 +11,7 @@ import { runConfig } from "./config/commands.js";
 import { loadConfig } from "./config/store.js";
 import { resolveForCwd } from "./config/operations.js";
 import { runChat } from "./session/chat-command.js";
+import { runServe } from "./server/serve-command.js";
 
 const HELP = `jlcode ${getVersion()} — a from-scratch coding agent
 
@@ -21,6 +22,7 @@ Commands:
   info, paths     Resolve and create the config/data dirs, then print them
   config …        Manage model configurations (list/which/use/clone/add/remove)
   chat            Start a terminal conversation with the selected config
+  serve           Start the dev HTTP endpoint (curl /chat, retains threads)
   version         Print the version
   help            Show this help
 
@@ -72,6 +74,8 @@ async function main(argv: string[]): Promise<number> {
       return runConfig(argv.slice(1));
     case "chat":
       return runChat(argv.slice(1));
+    case "serve":
+      return runServe(argv.slice(1));
     default: {
       process.stderr.write(`Unknown command: ${command}\n\n${HELP}`);
       return 2;
