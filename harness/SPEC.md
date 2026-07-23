@@ -251,7 +251,23 @@ full node tree is preserved on disk — like a fresh conversation carrying a sum
   summary text* — no signature, no tool cycle — so there's nothing for the provider to validate
   or flag. It lets even the **full-summarize safe-harbor** retain its bookends without entering
   the risky partial-replay regime.
-- Tool outputs are **truncated** (~2K chars) when serialized into the *summary input*.
+- Tool outputs are **truncated** (~2K chars) when serialized into the *summary input*
+  (this flattening applies to the **cross-model** path below, not the cache-reuse path).
+
+### Two request paths for producing the summary
+
+- **Cache-reuse (same-model) fast path — preferred when the compaction model == the working
+  model.** Send the **exact live conversation** (system + tools + all turns, byte-identical to
+  what the chat already sent) and **append the compaction instruction as the final message**.
+  The provider serves the whole prefix from its **prompt cache (D-26)**; we pay full rate only
+  for the short appended instruction + the summary output. Keep the request byte-identical to
+  what's cached (same tools, `tool_choice: none`); the compaction instruction is **ephemeral**
+  (never written into the transcript tree); append only at a **clean turn boundary**. No
+  transcript flattening needed, and it's **Fable-safe by construction** — the prefix is the
+  exact, already-validated conversation, unmodified. Summary effort can be set low to save cost.
+- **Cross-model path — when a different/cheaper compactor is configured.** Build a separate
+  summarizer request from a flattened, tool-output-truncated transcript (KiloCode-style). No
+  shared cache, and it pays full input rate — a cost trade-off for the cheaper model.
 
 ### Fable-safety rules (the whole point)
 
