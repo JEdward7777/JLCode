@@ -1,8 +1,9 @@
 # JLCode — Roadmap
 
 Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-38, no open
-items). Phases **0–3 done** (Milestones M1 "talk to a client" + M2 "does real work" complete).
-**Next: Phase 4 — persistence + resume + fork/rewind (M3).**
+items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
+resume / fork-rewind / debug-journal done). **Next: Phase 5 — the HTTP browser frontend, which
+completes Milestone M3 "real product".**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
@@ -28,8 +29,9 @@ Built, tested (69 Tier-0/1 tests green), and committed through `b70532f`:
   (read-your-writes). **Live-validated cross-process restart-resume** (two server processes,
   shared data dir, isolated from real history). **Fork/rewind:** `setActiveLeaf` (rewind/switch),
   `editFork` (pencil-edit = sibling branch), persisted `active-leaf` so resume restores the viewed
-  branch; server `/session/:id/rewind` + `/edit`; entries expose id/parent. **Still to do in P4:**
-  the separate debug journal.
+  branch; server `/session/:id/rewind` + `/edit`; entries expose id/parent. **Debug journal**
+  (D-15): per-conversation verbose per-turn record (llm request summary/result/timing/usage +
+  tool I/O + errors) via `DebugJournal`, `GET /conversation/:id/journal`. **Phase 4 done.**
 - **Dev harness (beyond the phase list):** `jlcode serve` HTTP endpoint (`/chat`, `/session/:id`,
   `/approve`, `/answer`, `/config`, `/health`, `POST /shutdown`); `serve --config <name>` pins a
   config; server re-resolves config live; sandbox fenced to the launch dir. Fake echo driver via
@@ -101,7 +103,7 @@ with the P5 frontend.)*
   approval, with inline command editing; a truncated write never deletes a tail; long tasks are
   trackable/killable. Tier-0/1 tested.
 
-## Phase 4 — Persistence, resume, fork/rewind
+## Phase 4 — Persistence, resume, fork/rewind ✅ done (2026-07-23)
 **Goal:** conversations survive and branch.
 - Conversation store: flat JSON per conversation + `index.json`; **debug journal** (D-13, D-15).
 - Persist + resume; history filtered by working dir with show-all (D-09).

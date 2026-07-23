@@ -249,6 +249,8 @@ export class Session {
   private async oneAssistantTurn(): Promise<AssistantResult | undefined> {
     const req = this.buildRequest();
     const events: StreamEvent[] = [];
+    const startedAt = Date.now();
+    const toolNames = (req.tools ?? []).map((t) => t.function.name);
     this.emit({ type: "assistant-start" });
     try {
       for await (const ev of this.driver.streamChat(req)) {
@@ -259,6 +261,17 @@ export class Session {
     } catch (err) {
       this.consecutiveFailures++;
       this.emit({ type: "error", message: (err as Error).message });
+      this.emit({
+        type: "debug",
+        record: {
+          kind: "llm",
+          ms: Date.now() - startedAt,
+          model: req.model,
+          messages: req.messages.length,
+          tools: toolNames,
+          error: (err as Error).message,
+        },
+      });
       if (this.consecutiveFailures >= this.maxFailures) {
         this.status = "halted";
         this.emit({ type: "halted", reason: `${this.consecutiveFailures} consecutive failures` });
@@ -269,6 +282,21 @@ export class Session {
     }
 
     const result = accumulate(events);
+    this.emit({
+      type: "debug",
+      record: {
+        kind: "llm",
+        ms: Date.now() - startedAt,
+        model: req.model,
+        messages: req.messages.length,
+        tools: toolNames,
+        finishReason: result.finishReason,
+        truncated: result.finishReason === "length",
+        usage: result.usage,
+        textPreview: result.text.slice(0, 200),
+        reasoningPreview: result.reasoningText?.slice(0, 200),
+      },
+    });
     const entry = this.pushEntry({
       type: "assistant",
       text: result.text,
@@ -378,8 +406,20 @@ export class Session {
     edited: boolean,
   ): Promise<void> {
     this.emit({ type: "tool-start", name: tool.name });
+    const startedAt = Date.now();
     const res = await tool.execute(args, { sandbox: this.sandbox! });
     const note = edited ? "[note: the user edited the arguments before running]\n" : "";
     this.appendToolResult(call, note + res.content, res.isError ?? false);
+    this.emit({
+      type: "debug",
+      record: {
+        kind: "tool",
+        ms: Date.now() - startedAt,
+        name: tool.name,
+        argsPreview: JSON.stringify(args).slice(0, 300),
+        contentPreview: res.content.slice(0, 200),
+        isError: res.isError ?? false,
+      },
+    });
   }
 }

@@ -17,6 +17,7 @@ import { askUserTool } from "../tools/ask-user.js";
 import { Sandbox } from "../tools/sandbox.js";
 import { ModeApprovalGate } from "../tools/mode-gate.js";
 import { ConversationStore } from "../persist/conversation-store.js";
+import { DebugJournal } from "../persist/debug-journal.js";
 import type { Conversation } from "../conversation/types.js";
 import { parseArgs, flagString } from "../util/args.js";
 import { createServer } from "./server.js";
@@ -71,6 +72,7 @@ export async function runServe(args: string[]): Promise<number> {
   };
 
   const store = new ConversationStore(paths.conversationsDir);
+  const debugJournal = new DebugJournal(paths.logsDir);
 
   const config = resolveConfig();
   if (!config) {
@@ -89,13 +91,15 @@ export async function runServe(args: string[]): Promise<number> {
     resolveConfig,
     newSession,
     store,
+    debugJournal,
     workingDir: cwd,
     version: getVersion(),
     onShutdown: () => setTimeout(() => closeServer(), 100),
   });
   const server = await startNodeServer((req) => app.fetch(req), { host: HOST, port });
   // Flush pending persistence writes before exiting.
-  closeServer = () => void store.flush().finally(() => server.close(() => process.exit(0)));
+  closeServer = () =>
+    void Promise.all([store.flush(), debugJournal.flush()]).finally(() => server.close(() => process.exit(0)));
 
   const base = `http://${HOST}:${port}`;
   process.stderr.write(

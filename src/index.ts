@@ -43,6 +43,7 @@ export type { Tool, ToolResult, ToolContext, ToolGate, GateDecision, ToolKind } 
 export { AppendLog } from "./persist/append-log.js";
 export { ConversationStore } from "./persist/conversation-store.js";
 export type { ConversationMeta, IndexRow } from "./persist/conversation-store.js";
+export { DebugJournal } from "./persist/debug-journal.js";
 
 // Sessions
 export { Session } from "./session/session.js";

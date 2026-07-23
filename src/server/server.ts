@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import type { ModelConfig } from "../config/types.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
+import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
 import type { Session } from "../session/session.js";
 
@@ -20,6 +21,8 @@ export interface ServerDeps {
   newSession: (config: ModelConfig, conversation?: Conversation) => Session;
   /** Persistence for conversations (resume + history). */
   store: ConversationStore;
+  /** Optional verbose per-turn debug journal (D-15). */
+  debugJournal?: DebugJournal;
   /** The server's working directory (sandbox root + history filter default). */
   workingDir: string;
   version: string;
@@ -78,6 +81,9 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     session.onEvent((e) => {
       if (e.type === "entry") void deps.store.entry(session.conversation.id, e.entry);
       else if (e.type === "active-leaf") void deps.store.activeLeaf(session.conversation.id, e.leaf);
+      else if (e.type === "debug" && deps.debugJournal) {
+        void deps.debugJournal.record(session.conversation.id, e.record);
+      }
     });
     return manager.add(session);
   }
@@ -217,6 +223,12 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const conv = deps.store.load(c.req.param("id"));
     if (!conv) return c.json({ error: "no such conversation" }, 404);
     return c.json({ id: conv.id, activeLeaf: conv.activeLeaf, entries: conv.entries.map(entryView) });
+  });
+
+  // The verbose debug journal for a conversation — the "Halp!" record (D-15).
+  app.get("/conversation/:id/journal", (c) => {
+    if (!deps.debugJournal) return c.json({ error: "no debug journal" }, 404);
+    return c.json({ records: deps.debugJournal.read(c.req.param("id")) });
   });
 
   // Resolve a pending approval: {approve: bool, editedArgs?, reason?} (D-16).

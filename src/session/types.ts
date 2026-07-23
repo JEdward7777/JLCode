@@ -1,6 +1,24 @@
 /** Events a session emits on its stream (the persisted/UI/bus source, §11). */
 import type { ToolKind } from "../tools/types.js";
 import type { Entry } from "../conversation/types.js";
+import type { Usage } from "../llm/types.js";
+
+/** A verbose per-turn record for the debug journal (D-15) — never replayed. */
+export type DebugRecord =
+  | {
+      kind: "llm";
+      ms: number;
+      model: string;
+      messages: number;
+      tools: string[];
+      finishReason?: string;
+      truncated?: boolean;
+      usage?: Usage;
+      textPreview?: string;
+      reasoningPreview?: string;
+      error?: string;
+    }
+  | { kind: "tool"; ms: number; name: string; argsPreview: string; contentPreview: string; isError: boolean };
 
 export type SessionStatus = "idle" | "running" | "awaiting-approval" | "awaiting-input" | "halted";
 
@@ -36,6 +54,7 @@ export interface ApprovalDecision {
 export type SessionEvent =
   | { type: "entry"; entry: Entry } // full tree node, for the persistence projection (D-37)
   | { type: "active-leaf"; leaf: string } // rewind / branch switch — persisted so resume restores it
+  | { type: "debug"; record: DebugRecord } // verbose per-turn record for the debug journal (D-15)
   | { type: "user"; entryId: string; text: string }
   | { type: "assistant-start" }
   | { type: "text"; delta: string }
