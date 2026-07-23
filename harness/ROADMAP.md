@@ -18,7 +18,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - Tier-0 test setup.
 - **Done when:** `npx jlcode` runs, prints version, resolves its dirs; CI runs Tier 0.
 
-## Phase 1 — Config & model selection
+## Phase 1 — Config & model selection ✅ done (2026-07-23)
 **Goal:** pick a client/model to work under.
 - `config.json` schema: model configs (name, key, model id, **reasoning effort**, sampling,
   system-prompt addendum, default mode+approval, compaction settings) (D-05, D-27).

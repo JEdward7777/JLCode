@@ -1,0 +1,79 @@
+/**
+ * Pure operations over a Config: create/clone/find/filter/remove model configs
+ * and manage per-directory bindings (D-05, D-06). All return new values; nothing
+ * here does IO (the store handles that).
+ */
+import { newId } from "../util/id.js";
+import type { Config, ModelConfig } from "./types.js";
+
+/** Fields a caller supplies when creating a config (id/timestamps are generated). */
+export type NewModelConfig = Omit<ModelConfig, "id" | "createdAt" | "updatedAt">;
+
+function withModelConfigs(config: Config, modelConfigs: ModelConfig[]): Config {
+  return { ...config, modelConfigs };
+}
+
+/** Find a config by exact id, then by exact name, then case-insensitive name. */
+export function findModelConfig(config: Config, ref: string): ModelConfig | undefined {
+  const byId = config.modelConfigs.find((c) => c.id === ref);
+  if (byId) return byId;
+  const byName = config.modelConfigs.find((c) => c.name === ref);
+  if (byName) return byName;
+  const lower = ref.toLowerCase();
+  return config.modelConfigs.find((c) => c.name.toLowerCase() === lower);
+}
+
+/** KiloCode-style filter: case-insensitive substring on name or model slug. */
+export function filterModelConfigs(config: Config, query: string): ModelConfig[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return [...config.modelConfigs];
+  return config.modelConfigs.filter(
+    (c) => c.name.toLowerCase().includes(q) || c.model.toLowerCase().includes(q),
+  );
+}
+
+export function addModelConfig(
+  config: Config,
+  input: NewModelConfig,
+): { config: Config; added: ModelConfig } {
+  const now = new Date().toISOString();
+  const added: ModelConfig = { ...input, id: newId("cfg"), createdAt: now, updatedAt: now };
+  return { config: withModelConfigs(config, [...config.modelConfigs, added]), added };
+}
+
+/** Clone an existing config into a new one with a new name (SPEC §4). */
+export function cloneModelConfig(
+  config: Config,
+  sourceRef: string,
+  newName: string,
+): { config: Config; added: ModelConfig } {
+  const source = findModelConfig(config, sourceRef);
+  if (!source) throw new Error(`No model config matching "${sourceRef}"`);
+  const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = source;
+  return addModelConfig(config, { ...rest, name: newName });
+}
+
+export function removeModelConfig(config: Config, ref: string): Config {
+  const target = findModelConfig(config, ref);
+  if (!target) throw new Error(`No model config matching "${ref}"`);
+  const modelConfigs = config.modelConfigs.filter((c) => c.id !== target.id);
+  const folderBindings = Object.fromEntries(
+    Object.entries(config.folderBindings).filter(([, id]) => id !== target.id),
+  );
+  return { ...withModelConfigs(config, modelConfigs), folderBindings };
+}
+
+/** Bind a working directory to a config (D-06). */
+export function setBinding(config: Config, dir: string, configId: string): Config {
+  return { ...config, folderBindings: { ...config.folderBindings, [dir]: configId } };
+}
+
+export function getBinding(config: Config, dir: string): string | undefined {
+  return config.folderBindings[dir];
+}
+
+/** The config auto-selected for a directory, if its binding still resolves. */
+export function resolveForCwd(config: Config, dir: string): ModelConfig | undefined {
+  const id = config.folderBindings[dir];
+  return id === undefined ? undefined : config.modelConfigs.find((c) => c.id === id);
+}

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * JLCode CLI entry point (D-22, npx-compatible). Phase 0 is a scaffold: it
- * resolves its OS-level dirs, wires the diagnostic logger, and reports status.
- * Real commands (config selection, the agent loop, the HTTP server) arrive in
- * later phases.
+ * JLCode CLI entry point (D-22, npx-compatible). Phase 0 wired the dirs +
+ * logger; Phase 1 adds the config store and folder-aware model selection.
+ * The agent loop and HTTP server arrive in later phases.
  */
 import { ensurePaths, resolvePaths } from "./paths.js";
 import { createLogger } from "./logger.js";
 import { getVersion } from "./version.js";
+import { runConfig } from "./config/commands.js";
+import { loadConfig } from "./config/store.js";
+import { resolveForCwd } from "./config/operations.js";
 
 const HELP = `jlcode ${getVersion()} — a from-scratch coding agent
 
@@ -16,6 +18,7 @@ Usage:
 
 Commands:
   info, paths     Resolve and create the config/data dirs, then print them
+  config …        Manage model configurations (list/which/use/clone/add/remove)
   version         Print the version
   help            Show this help
 
@@ -29,6 +32,7 @@ function printInfo(): void {
   const paths = ensurePaths();
   const logger = createLogger({ dir: paths.logsDir });
   logger.debug("cli.info invoked", { version: getVersion() });
+  const selected = resolveForCwd(loadConfig(paths), process.cwd());
   const rows: Array<[string, string]> = [
     ["version", getVersion()],
     ["config dir", paths.configDir],
@@ -36,6 +40,7 @@ function printInfo(): void {
     ["data dir", paths.dataDir],
     ["conversations", paths.conversationsDir],
     ["logs", paths.logsDir],
+    ["cwd config", selected ? `${selected.name} (${selected.model})` : "(none — jlcode config use <name>)"],
   ];
   const width = Math.max(...rows.map(([k]) => k.length));
   for (const [key, value] of rows) {
@@ -43,7 +48,7 @@ function printInfo(): void {
   }
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const command = argv[0];
   switch (command) {
     case undefined:
@@ -61,6 +66,8 @@ function main(argv: string[]): number {
     case "paths":
       printInfo();
       return 0;
+    case "config":
+      return runConfig(argv.slice(1));
     default: {
       process.stderr.write(`Unknown command: ${command}\n\n${HELP}`);
       return 2;
@@ -68,16 +75,14 @@ function main(argv: string[]): number {
   }
 }
 
-try {
-  process.exit(main(process.argv.slice(2)));
-} catch (err) {
-  // Last-resort: record to the diagnostic log if we can, then surface.
-  try {
-    const paths = resolvePaths();
-    createLogger({ dir: paths.logsDir }).error("cli crashed", { err });
-  } catch {
-    // ignore secondary failure
-  }
-  process.stderr.write(`jlcode: fatal: ${(err as Error).message}\n`);
-  process.exit(1);
-}
+main(process.argv.slice(2))
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    try {
+      createLogger({ dir: resolvePaths().logsDir }).error("cli crashed", { err });
+    } catch {
+      // ignore secondary failure
+    }
+    process.stderr.write(`jlcode: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
