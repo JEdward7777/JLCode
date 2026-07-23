@@ -13,9 +13,9 @@ import { newId } from "../util/id.js";
 import type { ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
-import { newConversation, appendEntry } from "../conversation/tree.js";
+import { newConversation, appendEntry, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages } from "../conversation/wire.js";
-import type { Conversation } from "../conversation/types.js";
+import type { Conversation, Entry } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolGate } from "../tools/types.js";
@@ -42,6 +42,8 @@ export interface SessionOptions {
   maxToolIterations?: number;
   /** Called when the user chooses "remember this root" (D-19) — to persist it. */
   onAddRoot?: (dir: string) => void;
+  /** Resume from an existing (loaded) conversation instead of a fresh one. */
+  conversation?: Conversation;
 }
 
 const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
@@ -84,7 +86,15 @@ export class Session {
     const addendum = options.config.systemPromptAddendum?.trim();
     const base = options.systemPrompt ?? BASE_SYSTEM;
     this.systemPrompt = addendum ? `${base}\n\n${addendum}` : base;
-    this.conversation = newConversation();
+    this.conversation = options.conversation ?? newConversation();
+  }
+
+  /** Append an entry to the tree and emit it for the persistence projection. */
+  private pushEntry(input: EntryInput, parent?: string | null): Entry {
+    const { conv, entry } = appendEntry(this.conversation, input, parent);
+    this.conversation = conv;
+    this.emit({ type: "entry", entry });
+    return entry;
   }
 
   onEvent(listener: SessionListener): () => void {
@@ -137,8 +147,7 @@ export class Session {
     if (this.status === "awaiting-approval" || this.status === "awaiting-input") {
       throw new Error("Session is waiting for input; resolve it before sending.");
     }
-    const { conv, entry } = appendEntry(this.conversation, { type: "user", text });
-    this.conversation = conv;
+    const entry = this.pushEntry({ type: "user", text });
     this.emit({ type: "user", entryId: entry.id, text });
     this.pendingToolCalls = [];
     await this.advance();
@@ -239,7 +248,7 @@ export class Session {
     }
 
     const result = accumulate(events);
-    const { conv, entry } = appendEntry(this.conversation, {
+    const entry = this.pushEntry({
       type: "assistant",
       text: result.text,
       toolCalls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
@@ -249,7 +258,6 @@ export class Session {
       truncated: result.finishReason === "length",
       usage: result.usage,
     });
-    this.conversation = conv;
     this.consecutiveFailures = 0;
     this.emit({
       type: "assistant-end",
@@ -261,14 +269,13 @@ export class Session {
   }
 
   private appendToolResult(call: ToolCall, content: string, isError: boolean): void {
-    const { conv } = appendEntry(this.conversation, {
+    this.pushEntry({
       type: "tool",
       toolCallId: call.id,
       name: call.function.name,
       content,
       isError,
     });
-    this.conversation = conv;
     this.emit({ type: "tool-end", name: call.function.name, isError });
   }
 

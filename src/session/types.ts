@@ -1,5 +1,6 @@
 /** Events a session emits on its stream (the persisted/UI/bus source, §11). */
 import type { ToolKind } from "../tools/types.js";
+import type { Entry } from "../conversation/types.js";
 
 export type SessionStatus = "idle" | "running" | "awaiting-approval" | "awaiting-input" | "halted";
 
@@ -33,6 +34,7 @@ export interface ApprovalDecision {
 }
 
 export type SessionEvent =
+  | { type: "entry"; entry: Entry } // full tree node, for the persistence projection (D-37)
   | { type: "user"; entryId: string; text: string }
   | { type: "assistant-start" }
   | { type: "text"; delta: string }

@@ -38,6 +38,11 @@ export { ModeApprovalGate } from "./tools/mode-gate.js";
 export { askUserTool, ASK_USER } from "./tools/ask-user.js";
 export type { Tool, ToolResult, ToolContext, ToolGate, GateDecision, ToolKind } from "./tools/types.js";
 
+// Persistence
+export { AppendLog } from "./persist/append-log.js";
+export { ConversationStore } from "./persist/conversation-store.js";
+export type { ConversationMeta, IndexRow } from "./persist/conversation-store.js";
+
 // Sessions
 export { Session } from "./session/session.js";
 export { SessionManager } from "./session/manager.js";

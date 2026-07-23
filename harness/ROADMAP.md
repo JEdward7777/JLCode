@@ -20,6 +20,11 @@ Built, tested (69 Tier-0/1 tests green), and committed through `b70532f`:
 - **P3a** sandbox + native tools (read/write/delete/list/glob/grep + run_command) + tool loop.
 - **P3b** mode∩approval gate + pause→approve/deny/**edit** + `ask_user`; **soft fence** (D-19):
   out-of-fence access prompts allow-once / remember-root (persisted `folderRoots`) / deny.
+- **P4 (in progress):** `AppendLog` (D-37 — single serialized async queue per file, no locks) +
+  `ConversationStore` (append-only JSONL per conversation, injectable dir) + Session emits `entry`
+  events + resume from a loaded conversation + history `list(workingDir)`. Done at the library
+  level (persist→load→resume round-trip tested). **Still to do in P4:** wire into the server
+  (resume by id, history endpoints), fork/rewind navigation, the separate debug journal.
 - **Dev harness (beyond the phase list):** `jlcode serve` HTTP endpoint (`/chat`, `/session/:id`,
   `/approve`, `/answer`, `/config`, `/health`, `POST /shutdown`); `serve --config <name>` pins a
   config; server re-resolves config live; sandbox fenced to the launch dir. Fake echo driver via
