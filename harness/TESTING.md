@@ -27,6 +27,15 @@ could mismatch a changed request. "Pay once, free until we change something."
   deterministic tests). Where output legitimately varies, assert **weak properties**
   (a tool call happened, no error, `reasoning_details` present) rather than exact text.
 
+**Substrate (D-24):** the cache is **content-addressed, git-blob-style sharded files** —
+`cache/ab/abcdef…json`, filename = the signature hash. O(1) point lookup, no index, no
+startup scan, zero deps, no native binary. Test fixtures are committed to the repo.
+
+> **Not the same as provider prompt caching (D-26).** This local cache stores *our whole
+> responses* to avoid repeat calls. Provider prompt caching is a server-side input-token
+> discount the OpenRouter client requests via `cache_control` breakpoints. Different caches,
+> different jobs — don't conflate them.
+
 ## Tiers
 
 | Tier | What | Model cost | When |

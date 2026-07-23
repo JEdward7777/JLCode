@@ -320,7 +320,16 @@ as a **runtime feature** to cut cost on repeated identical calls. **Not committe
 evaluated against provider rules first: a cached replay must still honor reasoning-replay
 (D-14, never drop/reconstruct required reasoning) and provider terms of service. Anthropic's
 **own prompt caching** is the sanctioned mechanism for cheap input reuse (the safe lane);
-reusing whole responses is the lane needing care — especially for Fable.
+reusing whole responses is the lane needing care — especially for Fable. Distinct from §22.
+
+## 22. Provider-side prompt caching (cost)
+
+The OpenRouter client **supports provider-side prompt caching** (agreed, D-26) — placing
+`cache_control` cache breakpoints so repeated input prefixes (system prompt + tools + prior
+turns) are billed at the provider's cheaper cached rate. A major cost lever on long
+conversations. The **append-only transcript** keeps the prefix byte-stable so caches hit;
+compaction/fork are the natural invalidation points. This is the **provider input-token
+cache** — distinct from the **local response cache** (§21, D-24) and the test cache (TESTING.md).
 
 ---
 

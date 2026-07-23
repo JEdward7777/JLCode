@@ -16,7 +16,12 @@ realized. Changes from here should update [`DECISIONS.md`](DECISIONS.md) deliber
   are Node/TS), strong ecosystem + MCP SDK, and type-safe tool schemas.
 - **OpenRouter** via the OpenAI-compatible API using a **thin custom fetch client (D-21)** —
   we own the exact request/response JSON so the opaque `reasoning_details` round-trips verbatim
-  (D-14). Tool calling uses the OpenAI function-calling protocol.
+  (D-14). Tool calling uses the OpenAI function-calling protocol. The client also supports
+  **provider-side prompt caching (D-26)**: it places `cache_control` breakpoints (after the
+  stable system+tools block and at a rolling history point) and surfaces reported cache usage.
+  The append-only transcript keeps the cached prefix byte-stable, so caches hit; compaction/fork
+  are the natural invalidation points. *(This is the provider input-token cache — distinct from
+  the local content-addressed response cache, D-24.)*
 - HTTP layer kept **thin** over the core, on **Hono (D-20)** — TS-first, clean SSE, and portable
   to the Cloudflare edge for the future proxy (§18).
 - **Packaging (D-22):** published as `jlcode` with a `bin` entry so `npx jlcode` runs without a

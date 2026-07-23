@@ -18,6 +18,9 @@ deliberately and record it in `DECISIONS.md` — don't let them silently drift.
 ## Conventions
 
 - **Runtime:** Node.js + TypeScript.
+- **Minimize dependencies; no native binaries** (D-25). Prefer pure-JS/bundled packages so
+  `npx jlcode` stays friction-free. Avoid native-binary deps (e.g. `better-sqlite3`); if a
+  query store is ever needed, use `node:sqlite` (built-in) or `sql.js` (WASM).
 - **Use `python3`, never `python`** when invoking Python (e.g. the `file_utils` MCP server).
 - **Secrets never get committed.** OpenRouter keys live in the OS-level config
   store (see SPEC), not in the repo. `.gitignore` guards against stray `.env`s.
