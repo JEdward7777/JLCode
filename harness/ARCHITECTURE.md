@@ -88,50 +88,71 @@ Tool schemas are defined once in TypeScript and rendered to the OpenAI function 
   wideable). Resolves symlinks; blocks `..` escapes. One enforcement point for native
   tools and (later) MCP forwarding.
 
-## 7. Persistence & stores
+## 7. Persistence & stores — **AGREED (D-13, D-15, D-17)**
 
 Two OS-level locations, both overridable by env, both outside the project:
 
 - **Config store** — `${JLCODE_CONFIG_DIR:-$XDG_CONFIG_HOME/jlcode (\~/.config/jlcode)}`.
-  Holds `config.json`: model configurations (incl. keys, chmod 600-style perms),
+  A single hand-editable `config.json`: model configurations (incl. keys, restrictive perms),
   per-directory last-used bindings, the Auto-safe allowlist, global prefs.
-- **Data store** — `${JLCODE_DATA_DIR:-$XDG_DATA_HOME/jlcode (\~/.local/share/jlcode)}`.
-  Holds conversations (one record per conversation; indexed by working directory for the
-  history filter) and the **diagnostic log** (rotating, stack traces).
+- **Data store** — `${JLCODE_DATA_DIR:-$XDG_DATA_HOME/jlcode (\~/.local/share/jlcode)}`:
+  - `conversations/` — one **flat JSON file per conversation** + `index.json` (working-dir → convo ids for the history filter).
+  - `logs/` — the rotating **diagnostic log** and the append-only **debug journal** (§9).
 
 Windows/macOS: use the platform config/data dirs; `JLCODE_CONFIG_DIR` / `JLCODE_DATA_DIR`
-override everywhere (Docker sets these explicitly).
+override everywhere (Docker sets these explicitly). SQLite is the noted upgrade path if
+multi-instance concurrency or search ever demand it.
 
-### Conversation record (sketch)
+### Conversation record — append-only parent-pointer tree (D-15, D-17)
+
+One file per conversation. `entries` is **append-only**; each entry has a stable generated
+`id` and a `parent` id. A *branch* is the chain you get tracing `parent` from a leaf upward;
+`activeLeaf` restores the viewed branch on resume. Fork = append a sibling off a parent
+(the pencil-edit of a user message does exactly this); rewind = move `activeLeaf` up.
 
 ```jsonc
 {
-  "id": "…",
-  "workingDir": "/work/clientA",     // drives the history filter
+  "id": "cv_…",
+  "workingDir": "/work/clientA",       // drives the history filter
   "configName": "Client A — Opus",
-  "mode": "code",
-  "approvalPolicy": "auto-safe",
-  "messages": [ /* full transcript, incl. reasoning blocks + tool calls/results */ ],
-  "summary": "…",                     // running compaction summary (§8)
-  "createdAt": "…", "updatedAt": "…"
+  "activeLeaf": "e_57",                 // tip of the branch currently in view
+  "createdAt": "…", "updatedAt": "…",
+  "entries": [                          // append-only; never rewritten in place
+    { "id": "e_00", "parent": null,  "role": "user", "content": "Do X" },
+    { "id": "e_01", "parent": "e_00","role": "assistant", "content": "…",
+      "toolCalls": [ … ], "reasoning": { /* opaque reasoning_details, verbatim (D-14) */ },
+      "mode": "code", "tokens": 1234 },
+    { "id": "e_02", "parent": "e_01","role": "tool", "toolCallId": "…",
+      "content": "…", "edited": { "ran": "python3 foo.py", "was": "python foo.py" } }, // D-16
+    { "id": "e_57", "parent": "e_50","kind": "compaction",
+      "replayCut": true, "summary": "…covers e_00..e_50…" }                            // D-15
+  ]
 }
 ```
 
-## 8. Compaction
+Wire assembly: start at `activeLeaf`, climb `parent` links; on a `replayCut` compaction
+entry inject its `summary` and stop; map the collected path → OpenAI messages, replaying
+each assistant entry's `reasoning` verbatim. The **debug journal** is written in parallel and
+never read back into a request.
+
+## 8. Compaction — **AGREED (D-15)**
 
 - Token accounting per config (budget = fraction of the model's context window).
-- On threshold: fold older turns into `summary`, keep recent turns verbatim, keep
-  tool-call/result pairs intact, honor provider reasoning rules (don't strip redacted
-  reasoning where forbidden).
-- The **persisted transcript keeps the pre-compaction messages** even when the live
-  request uses the summary — history is lossless; only the sent context is compacted.
-- Compaction events are emitted to the frontend and recorded.
+- On threshold: append a **checkpoint (`replayCut`) entry** whose `summary` covers everything
+  up to it. Sent context = `summary + entries after the checkpoint`; the full tree is retained.
+- **Reasoning × compaction (O-02, open):** proposed safe default — keep recent assistant
+  entries verbatim with reasoning (never compact across an in-progress tool cycle); only older
+  completed entries fall above the cut and are summarized. To be verified against Fable empirically.
+- Agent-directed minimize/expand (X-08) reuses the same non-destructive overlay, later.
+- Compaction/minimize events are emitted to the frontend and recorded.
 
-## 9. Diagnostics
+## 9. Diagnostics — **AGREED (D-11, D-15)**
 
-- Central logger writes structured errors + **full stack traces** to the rotating
-  diagnostic log in the data store, independent of conversation transcripts. Log level
-  configurable.
+- **Diagnostic log:** central logger writes structured errors + **full stack traces** to a
+  rotating log in `logs/`, independent of conversation transcripts. Log level configurable.
+- **Debug journal:** append-only, per-turn raw record (OpenRouter request/response, reasoning
+  text, tool I/O, tokens, timings, mode/approval changes, command edits). Verbose by design and
+  never replayed to a model — the "Halp!! something broke" artifact.
 
 ## 10. Config selection flow
 
@@ -145,4 +166,4 @@ override everywhere (Docker sets these explicitly).
 
 ## Naming
 
-- Working name **JLCode**; CLI/package name tentatively `jlcode`. (DECISIONS D-10.)
+- Working name **JLCode**; CLI/package name tentatively `jlcode`. (DECISIONS O-09, open.)

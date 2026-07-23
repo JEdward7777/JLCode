@@ -99,6 +99,14 @@ confirmation before it runs*.
 | **Full-auto** | Everything the mode allows runs without prompting. Still logged. |
 | **Read-only** | Hard safety override: no writes or commands execute at all, regardless of mode. |
 
+**Editable before approval (agreed, D-16).** When a command (or file write) is waiting on a
+Manual/allowlist approval, the user can **edit it before approving** — e.g. fix a forgotten
+`python` → `python3`. Fable-safe representation: the **assistant turn stays verbatim** (never
+rewritten, per D-14); the **edited command is what executes**; and the **tool result** records
+that the user edited it and what actually ran, so the agent learns of the correction through the
+result channel. The **debug journal** (§14) keeps both the original and edited command. This
+is a KiloCode gap Joshua specifically wants closed.
+
 Deferred (ROADMAP): an **LLM-judged auto** policy that calls a model (possibly a
 cheaper/different one) to decide whether a command is safe.
 
@@ -123,10 +131,14 @@ Nothing project-specific is written into the project folder.
 - The history list is **filtered to the current working directory** by default (so
   projects don't pollute each other), with a **"show all"** escape hatch (useful when
   a project moves or something goes weird).
-- **Fork / rewind:** the user can go back to an earlier point in a conversation and
-  continue from there. Preferred: **fork** into a new branch (the original is preserved).
-  Acceptable fallback if forking proves too complex: **reset/rewind** to a previous point
-  (discarding what came after). Mechanism is an open architecture question.
+- **Fork / rewind (agreed, D-15):** a conversation is a **ChatGPT-style node tree** with an
+  **active-path pointer**. Going back to an earlier node and continuing creates a **sibling
+  branch**; **rewind** just moves the active pointer up. Old branches are **retained and
+  navigable** (e.g. `‹ 2/3 ›` arrows at a branch point). Use case: a side conversation you
+  then rewind past to keep it out of context, while the branch stays available above.
+- **UI affordance:** a **pencil** on a message you wrote. Editing it *is* a fork — the edited
+  message appends as a sibling branch off the same parent, the original stays as the other
+  sibling. "Edit my message" and "fork" are the same operation.
 
 ## 9. File access
 
@@ -173,13 +185,24 @@ the remote system viewing the page (needed for the web/remote case; redundant in
 ## 13. Ask-the-user
 
 - The model can **pause and ask the user a question** via a dedicated tool, then
-  continue once answered. (Details in ARCHITECTURE.)
+  continue once answered. This pause is the canonical **"awaiting input"** state (reused
+  by approvals §6, notifications §19, and the future fleet view §18).
+- **Question UX (to design with the frontend/transport, O-01):** at minimum a free-text
+  input the agent waits on. Desirable richer forms: **suggested-answer buttons**, and
+  **multiple questions at once**, each with suggested options and/or text fields (the same
+  shape as this project's own structured-question tool). The agent chooses the shape; the
+  frontend renders it; a plain-text frontend can always fall back to text.
 
 ## 14. Diagnostics & logging
 
 - A **rotating diagnostic log** captures errors and **full stack traces**, written to
   the OS-level log dir — kept **separate** from conversation history so failures are
   cheap to investigate after the fact.
+- **Debug journal (agreed, D-15):** a separate append-only record capturing *everything* per
+  turn — raw OpenRouter request/response, reasoning text, tool I/O, token counts, timings,
+  mode/approval changes. It is deliberately verbose and is **not** replayed to any model, so
+  it can capture detail the API-safe transcript (§8) must not. This is the "Halp!! something
+  broke" record to investigate after the fact.
 
 ## 15. Context compaction
 
@@ -187,16 +210,21 @@ As conversations grow, context must be compacted to stay within the model's wind
 without losing the thread. Requirements and constraints:
 
 - **Trigger** on approaching a configurable token budget (per model config).
-- **Strategy** (v1): summarize older turns into a compact running summary while keeping
-  recent turns verbatim; preserve tool-call/tool-result pairing so the transcript stays valid.
-- **Reasoning blocks:** compaction must respect provider rules for reasoning/thinking —
-  e.g. do **not** strip redacted reasoning where the provider forbids it (Fable). This
-  interacts with §4 reasoning round-tripping and is a known sharp edge.
-- **Transparency:** a compaction event is visible in the UI and recorded, and the
-  pre-compaction transcript remains in the persisted history (§8) even if the live
-  context is summarized — so nothing is truly lost.
-- Open design points (token accounting, summary prompt, what's pinned) are tracked in
-  [`DECISIONS.md`](DECISIONS.md).
+- **Model (agreed, D-15): lossless checkpoint overlay.** A **checkpoint node** holds a
+  summary of everything up to it; the context sent to the model becomes
+  `summary + items after the checkpoint`. The full node tree is preserved on disk — it's
+  like starting a fresh conversation that carries a summary of the "previous conversation."
+- **Reasoning × compaction (the sharp edge, O-02).** Proposed safe default, to be verified
+  empirically: keep **recent** assistant turns **verbatim with reasoning intact** (never
+  compact across an in-progress tool cycle); summarize only **older, completed** turns, whose
+  reasoning simply isn't replayed once past the active cycle. Preserve tool-call/result pairing.
+- **Agent-directed minimize/expand (planned, X-08):** tools letting the agent collapse
+  specific chunks it no longer needs (e.g. a file read) after noting what matters, and expand
+  them later. Non-destructive, same overlay principle. Targets non-reasoning items first.
+- **Transparency:** a compaction/minimize event is visible in the UI and recorded; the
+  pre-compaction tree remains in persisted history (§8) — nothing is truly lost.
+- Remaining open design points (token accounting, summary prompt, the exact keep-recent
+  cutoff, Fable's boundary) are tracked as O-02 in [`DECISIONS.md`](DECISIONS.md).
 
 ## 16. Images / multimodal
 

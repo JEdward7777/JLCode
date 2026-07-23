@@ -22,6 +22,11 @@ Spec references point at [`SPEC.md`](SPEC.md).
 | D-10 | **Fork preferred, rewind fallback** for going back to an earlier point | Fork keeps the original; rewind is the simpler fallback if branching is hard | SPEC §8 |
 | D-11 | **Rotating diagnostic log** (stack traces), separate from conversation history | Cheap post-mortem when things go sideways | SPEC §14 |
 | D-12 | **Compaction is required**; honor provider reasoning rules (don't strip redacted/Fable reasoning) | Stay in-window without losing the thread or breaking Fable | SPEC §15 |
+| D-13 | **Two stores** — config (`~/.config/jlcode`, `JLCODE_CONFIG_DIR`) vs data (`~/.local/share/jlcode`, `JLCODE_DATA_DIR`), XDG defaults, env-overridable. **Config** = single hand-editable `config.json` (model configs w/ keys, folder bindings, allowlist). **Data** = `conversations/` + `logs/`. **Conversations = flat JSON files, one per conversation, + `index.json` (working-dir → convo ids)**. *(Fork/rewind mechanism superseded by D-15: the file holds a node tree, not a linear array.)* | Config is small/secret/precious (tight perms, easy backup); data is bulky/churny; flat JSON is simple, inspectable, dependency-free. SQLite noted as the upgrade path if multi-instance concurrency or search demand it | was O-04 |
+| D-14 | **Reasoning/thinking = verbatim & opaque.** Attach the provider's raw `reasoning_details` to the assistant turn as opaque data, never interpreted, always replayed unchanged. UI surfaces the human-readable reasoning text separately | Provider rules keep changing (Fable requires replaying redacted/encrypted blocks); never parsing it means rule churn never touches our code. This is the failure mode motivating the rebuild | was O-03; SPEC §4, §15 |
+| D-15 | **Conversation model:** (a) **two structures** — a *canonical wire-format-superset transcript* (API-safe, verbatim reasoning, drives replay + UI + fork) and a *separate append-only debug journal* (raw request/response, reasoning text, tool I/O, tokens, timings, errors — the "Halp!" record); (b) the transcript is a **ChatGPT-style node tree with an active-path pointer** — fork = sibling branch, rewind = move pointer up, old branches retained/navigable; (c) **compaction = lossless overlay** — a checkpoint node holds a summary of everything up to it; sent context = `summary + items after checkpoint`; full tree preserved | Keeps the replayed thing API-safe while still capturing everything needed to debug; matches Joshua's fork/side-conversation UX; honors SPEC §15's lossless promise | was O-06; SPEC §8, §14, §15 |
+| D-16 | **Editable-before-approval.** A pending command/write can be edited before the user approves it. The **assistant turn stays verbatim** (D-14); the **edited** version executes; the **tool result** records the edit + what actually ran; the debug journal keeps both | Closes a KiloCode gap (fix `python`→`python3` inline) without mutating the assistant message, so reasoning replay stays Fable-safe; agent still learns the correction via the result | SPEC §6 |
+| D-17 | **Conversation-tree schema = append-only parent-pointer log.** Entries only append at the bottom; each has a stable **generated id** and a **`parent` id** (may skip intervening entries → that's a branch). A branch = trace `parent` from a leaf upward. A persisted **`activeLeaf`** restores the viewed branch on resume; appends set it. Sibling arrows = entries sharing a `parent`. A **compaction entry** has `replayCut` + summary: wire-assembly climbs from `activeLeaf`, injects the summary and stops when it hits one. **Pencil-edit of a user message = a fork** (appends a sibling off the same parent) | Append-only is crash-safe and trivial to write; fork/rewind/compaction collapse into one mechanic; generated ids survive future pruning/migration | Joshua's design; SPEC §8, §15 |
 
 ## Deferred (non-goals for v1; keep possible)
 
@@ -34,6 +39,7 @@ Spec references point at [`SPEC.md`](SPEC.md).
 | X-05 | Remote control / fleet view proxy | Needs stable instance identity + "awaiting input" status | SPEC §18 |
 | X-06 | Browser-driven app testing | Playwright/Puppeteer (not jsdom); maybe just CLI | SPEC §17 |
 | X-07 | File viewer + upload/download chrome | Redundant inside VS Code; wraps the standalone chat view | SPEC §11 |
+| X-08 | Agent-directed minimize/expand (collapsible context items) | Non-destructive, same overlay principle as compaction; ship after the core loop is proven | SPEC §15 |
 
 ## Proposed (Claude's recommendation, pending Joshua)
 
@@ -49,12 +55,11 @@ load-bearing open decisions:
 
 | # | Question |
 |---|----------|
-| O-01 | Streaming transport browser↔server: SSE vs WebSocket |
-| O-02 | Compaction strategy specifics (summary prompt, what's pinned, token accounting) |
-| O-03 | Reasoning-block capture/replay mechanism across turns (the Fable/redacted problem) |
-| O-04 | Store layout: one store or two (config vs data), on-disk format, env override names |
+| O-01 | Streaming transport browser↔server: SSE vs WebSocket — **and** the ask-user question UX (buttons / multi-question / text-field forms, SPEC §13) that rides it |
+| O-02 | Compaction specifics: summary prompt, keep-recent-verbatim cutoff, token accounting, **and the Fable×compaction boundary experiment** (proposed safe default in D-15/§15: keep recent turns' reasoning verbatim, summarize only older completed turns) |
 | O-05 | Sandbox model: default fence to launch dir, symlink handling, how to widen |
-| O-06 | Conversation record schema (what a persisted conversation contains; supports fork/rewind) |
 | O-07 | HTTP framework choice (cosmetic) |
 | O-08 | OpenRouter access: OpenAI SDK vs raw fetch (cosmetic) |
 | O-09 | CLI / package name (`jlcode`?) (cosmetic) |
+
+*Resolved: O-04 → D-13; O-03 → D-14; O-06 → D-15.*
