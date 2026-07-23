@@ -112,7 +112,7 @@ export async function runConfig(args: string[]): Promise<number> {
       const name = flagString(flags, "name");
       const model = flagString(flags, "model");
       if (!name || !model) throw new Error("Usage: jlcode config add --name <> --model <>");
-      const openRouterKey = await readSecret("OpenRouter API key (input hidden): ");
+      const openRouterKey = process.env.JLCODE_ADD_KEY ?? (await readSecret("OpenRouter API key (input hidden): "));
       if (!openRouterKey) throw new Error("No key provided.");
       const config = loadConfig(paths);
       const { config: next, added } = addModelConfig(config, {
