@@ -147,6 +147,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       approve?: unknown;
       editedArgs?: unknown;
       reason?: unknown;
+      addRoot?: unknown;
     };
     await session.approve({
       approve: body.approve !== false,
@@ -155,6 +156,8 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
           ? (body.editedArgs as Record<string, unknown>)
           : undefined,
       reason: typeof body.reason === "string" ? body.reason : undefined,
+      addRoot:
+        typeof body.addRoot === "string" || typeof body.addRoot === "boolean" ? body.addRoot : undefined,
     });
     return c.json(stateOf(session));
   });

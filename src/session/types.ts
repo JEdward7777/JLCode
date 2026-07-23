@@ -10,6 +10,8 @@ export interface ApprovalRequest {
   kind: ToolKind;
   args: Record<string, unknown>;
   reason: string;
+  /** Present when the call touches paths outside the fence (D-19). */
+  outOfFence?: { paths: string[]; suggestedRoot: string };
 }
 
 /** The model's ask_user pause (D-18). */
@@ -25,6 +27,9 @@ export interface ApprovalDecision {
   editedArgs?: Record<string, unknown>;
   /** Reason, when denying. */
   reason?: string;
+  /** For out-of-fence access (D-19): true → remember the containing root(s);
+   *  a string → remember that specific root; omitted → allow just this once. */
+  addRoot?: boolean | string;
 }
 
 export type SessionEvent =

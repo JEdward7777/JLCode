@@ -50,10 +50,16 @@ function normalize(raw: unknown): Config {
   for (const [dir, id] of Object.entries(bindings)) {
     if (typeof id === "string") folderBindings[dir] = id;
   }
+  const rootsRaw = asRecord(r.folderRoots);
+  const folderRoots: Record<string, string[]> = {};
+  for (const [dir, list] of Object.entries(rootsRaw)) {
+    if (Array.isArray(list)) folderRoots[dir] = list.filter((x): x is string => typeof x === "string");
+  }
   return {
     version: typeof r.version === "number" ? r.version : CONFIG_VERSION,
     modelConfigs,
     folderBindings,
+    folderRoots,
     autoSafeAllowlist: Array.isArray(r.autoSafeAllowlist)
       ? r.autoSafeAllowlist.filter((c): c is string => typeof c === "string")
       : [],

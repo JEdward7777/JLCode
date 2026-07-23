@@ -23,6 +23,8 @@ export interface Tool {
   kind: ToolKind;
   /** Does this change state (→ subject to approval policies)? */
   mutates: boolean;
+  /** Names of args that are file paths, fence-checked before execution (D-19). */
+  pathArgs?: string[];
   /** The function schema advertised to the model. */
   def: ToolDef;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;

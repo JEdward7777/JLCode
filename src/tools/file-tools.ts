@@ -28,6 +28,7 @@ const readFile: Tool = {
   name: "read_file",
   kind: "read",
   mutates: false,
+  pathArgs: ["path"],
   def: {
     type: "function",
     function: {
@@ -60,6 +61,7 @@ const writeFile: Tool = {
   name: "write_file",
   kind: "write",
   mutates: true,
+  pathArgs: ["path"],
   def: {
     type: "function",
     function: {
@@ -97,6 +99,7 @@ const deleteFile: Tool = {
   name: "delete_file",
   kind: "write",
   mutates: true,
+  pathArgs: ["path"],
   def: {
     type: "function",
     function: {
@@ -123,6 +126,7 @@ const listDir: Tool = {
   name: "list_dir",
   kind: "read",
   mutates: false,
+  pathArgs: ["path"],
   def: {
     type: "function",
     function: {
@@ -175,6 +179,7 @@ const grep: Tool = {
   name: "grep",
   kind: "read",
   mutates: false,
+  pathArgs: ["path"],
   def: {
     type: "function",
     function: {

@@ -71,6 +71,8 @@ export interface Config {
   modelConfigs: ModelConfig[];
   /** Absolute working directory → model-config id (D-06). */
   folderBindings: Record<string, string>;
+  /** Absolute working directory → extra allowed sandbox roots (D-19 "remember"). */
+  folderRoots?: Record<string, string[]>;
   /** Commands auto-approved under the Auto-safe policy (D-08). */
   autoSafeAllowlist: string[];
   prefs?: Record<string, unknown>;

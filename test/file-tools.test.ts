@@ -50,10 +50,10 @@ describe("file tools", () => {
     expect(grep.content).toContain("foo = 1");
   });
 
-  it("refuses paths outside the fence", async () => {
+  it("refuses paths outside the fence (until widened)", async () => {
     const res = await run("read_file", { path: "../../etc/passwd" });
     expect(res.isError).toBe(true);
-    expect(res.content).toContain("escapes the workspace");
+    expect(res.content).toContain("outside the workspace");
   });
 
   it("write is atomic: no temp file left behind", async () => {

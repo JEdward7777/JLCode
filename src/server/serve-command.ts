@@ -5,7 +5,7 @@
  */
 import { resolvePaths } from "../paths.js";
 import { getVersion } from "../version.js";
-import { loadConfig } from "../config/store.js";
+import { loadConfig, saveConfig } from "../config/store.js";
 import { resolveForCwd, findModelConfig } from "../config/operations.js";
 import { OpenRouterClient } from "../llm/client.js";
 import type { LlmDriver } from "../llm/types.js";
@@ -45,16 +45,27 @@ export async function runServe(args: string[]): Promise<number> {
           title: "JLCode",
         });
 
-  // A fully-wired session: driver + native tools + sandbox (fenced to cwd) +
-  // the mode∩approval gate from the config (D-07/D-08/D-19).
-  const newSession = (config: ModelConfig): Session =>
-    new Session({
+  // A fully-wired session: driver + native tools + sandbox (fenced to cwd plus
+  // any remembered roots) + the mode∩approval gate from the config
+  // (D-07/D-08/D-19). "Remember this root" persists to folderRoots[cwd].
+  const newSession = (config: ModelConfig): Session => {
+    const cfg = loadConfig(paths);
+    const roots = [cwd, ...(cfg.folderRoots?.[cwd] ?? [])];
+    return new Session({
       config,
       driver: makeDriver(config),
       tools: new ToolRegistry([...defaultTools(), askUserTool()]),
-      sandbox: new Sandbox([cwd]),
-      gate: new ModeApprovalGate(config.defaultMode, config.defaultApproval, loadConfig(paths).autoSafeAllowlist),
+      sandbox: new Sandbox(roots),
+      gate: new ModeApprovalGate(config.defaultMode, config.defaultApproval, cfg.autoSafeAllowlist),
+      onAddRoot: (dir) => {
+        const current = loadConfig(paths);
+        const existing = current.folderRoots?.[cwd] ?? [];
+        if (!existing.includes(dir)) {
+          saveConfig({ ...current, folderRoots: { ...(current.folderRoots ?? {}), [cwd]: [...existing, dir] } }, paths);
+        }
+      },
     });
+  };
 
   const config = resolveConfig();
   if (!config) {

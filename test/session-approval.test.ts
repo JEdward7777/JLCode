@@ -103,6 +103,64 @@ describe("ask_user flow (D-18)", () => {
   });
 });
 
+describe("out-of-fence access — soft fence (D-19)", () => {
+  let outside: string;
+  beforeEach(() => {
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-outside-"));
+  });
+  afterEach(() => {
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  function fenceSession(driver: LlmDriver, onAddRoot?: (dir: string) => void) {
+    return new Session({
+      config,
+      driver,
+      tools: new ToolRegistry([...fileTools(), askUserTool()]),
+      sandbox: new Sandbox([root]),
+      // full-auto: only the fence (not the policy) can force the pause.
+      gate: new ModeApprovalGate("code", "full-auto"),
+      onAddRoot,
+    });
+  }
+
+  it("pauses for approval even under full-auto, and runs on allow-once", async () => {
+    const target = path.join(outside, "ext.txt");
+    let remembered: string[] = [];
+    const s = fenceSession(callThenAnswer("write_file", { path: target, content: "external" }), (d) =>
+      remembered.push(d),
+    );
+    await s.send("write outside");
+    expect(s.status).toBe("awaiting-approval");
+    expect(s.awaitingApproval?.outOfFence?.paths[0]).toBe(target);
+    expect(fs.existsSync(target)).toBe(false);
+
+    await s.approve({ approve: true }); // allow once (no addRoot)
+    expect(fs.readFileSync(target, "utf8")).toBe("external");
+    expect(remembered).toEqual([]); // one-shot, not persisted
+  });
+
+  it("remembers the root when addRoot is set (persist callback + widen)", async () => {
+    const target = path.join(outside, "keep.txt");
+    const remembered: string[] = [];
+    const s = fenceSession(callThenAnswer("write_file", { path: target, content: "x" }), (d) => remembered.push(d));
+    await s.send("write outside");
+    await s.approve({ approve: true, addRoot: true });
+    expect(fs.existsSync(target)).toBe(true);
+    expect(remembered).toEqual([fs.realpathSync(outside)]);
+  });
+
+  it("denies out-of-fence access on deny", async () => {
+    const target = path.join(outside, "no.txt");
+    const s = fenceSession(callThenAnswer("write_file", { path: target, content: "x" }));
+    await s.send("write outside");
+    await s.approve({ approve: false });
+    expect(fs.existsSync(target)).toBe(false);
+    const toolEntry = s.conversation.entries.find((e) => e.type === "tool");
+    expect(toolEntry && toolEntry.type === "tool" && toolEntry.content).toContain("denied by user");
+  });
+});
+
 describe("mode denial", () => {
   it("denies a write in Ask mode (no pause, tool error)", async () => {
     const s = new Session({

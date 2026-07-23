@@ -8,6 +8,7 @@
  * awaiting-input); `approve()` and `answer()` continue it. Truncation (D-30) and
  * the consecutive-failure circuit breaker (D-32) still apply.
  */
+import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall } from "../llm/types.js";
@@ -39,6 +40,8 @@ export interface SessionOptions {
   sandbox?: Sandbox;
   gate?: ToolGate;
   maxToolIterations?: number;
+  /** Called when the user chooses "remember this root" (D-19) — to persist it. */
+  onAddRoot?: (dir: string) => void;
 }
 
 const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
@@ -58,6 +61,7 @@ export class Session {
   private readonly sandbox: Sandbox | undefined;
   private readonly gate: ToolGate;
   private readonly maxToolIterations: number;
+  private readonly onAddRoot: ((dir: string) => void) | undefined;
   private consecutiveFailures = 0;
   private readonly listeners = new Set<SessionListener>();
 
@@ -76,6 +80,7 @@ export class Session {
     this.sandbox = options.sandbox;
     this.gate = options.gate ?? new AllowAllGate();
     this.maxToolIterations = options.maxToolIterations ?? 12;
+    this.onAddRoot = options.onAddRoot;
     const addendum = options.config.systemPromptAddendum?.trim();
     const base = options.systemPrompt ?? BASE_SYSTEM;
     this.systemPrompt = addendum ? `${base}\n\n${addendum}` : base;
@@ -145,8 +150,23 @@ export class Session {
     if (!pending) throw new Error("No pending approval");
     this.pendingApproval = undefined;
     if (decision.approve) {
+      const runArgs = decision.editedArgs ?? pending.request.args;
       const edited = decision.editedArgs !== undefined;
-      await this.doExecute(pending.call, pending.tool, decision.editedArgs ?? pending.request.args, edited);
+      // Widen the fence for any out-of-fence paths the user consented to (D-19).
+      const escapes = this.fenceEscapes(pending.tool, runArgs);
+      if (escapes.length > 0 && this.sandbox) {
+        for (const e of escapes) {
+          if (decision.addRoot) {
+            const dir = typeof decision.addRoot === "string" ? decision.addRoot : path.dirname(e.escapedPath);
+            this.sandbox.addRoot(dir);
+            this.onAddRoot?.(dir);
+          } else {
+            this.sandbox.allowOnce(e.escapedPath); // one-shot
+          }
+        }
+      }
+      await this.doExecute(pending.call, pending.tool, runArgs, edited);
+      this.sandbox?.clearOnce();
     } else {
       this.appendToolResult(pending.call, `denied by user${decision.reason ? `: ${decision.reason}` : ""}`, true);
     }
@@ -285,13 +305,20 @@ export class Session {
       this.appendToolResult(call, `denied: ${decision.reason}`, true);
       return "done";
     }
-    if (decision.kind === "prompt") {
+
+    // Soft fence (D-19): out-of-fence paths need explicit consent, so they force
+    // a prompt even if the mode/approval gate would otherwise allow.
+    const escapes = this.fenceEscapes(tool, args);
+    if (decision.kind === "prompt" || escapes.length > 0) {
       const request: ApprovalRequest = {
         id: newId("appr"),
         tool: tool.name,
         kind: tool.kind,
         args,
-        reason: "approval required by policy",
+        reason: escapes.length > 0 ? "access outside the workspace" : "approval required by policy",
+        ...(escapes.length > 0
+          ? { outOfFence: { paths: escapes.map((e) => e.escapedPath), suggestedRoot: path.dirname(escapes[0]!.escapedPath) } }
+          : {}),
       };
       this.pendingApproval = { request, call, tool };
       this.emit({ type: "awaiting-approval", request });
@@ -300,6 +327,20 @@ export class Session {
 
     await this.doExecute(call, tool, args, false);
     return "done";
+  }
+
+  /** Path args of a tool call that fall outside the fence (D-19). */
+  private fenceEscapes(tool: Tool, args: Record<string, unknown>): { arg: string; escapedPath: string }[] {
+    if (!this.sandbox) return [];
+    const escapes: { arg: string; escapedPath: string }[] = [];
+    for (const argName of tool.pathArgs ?? []) {
+      const value = args[argName];
+      if (typeof value === "string") {
+        const r = this.sandbox.resolve(value);
+        if (!r.ok && r.kind === "escape") escapes.push({ arg: argName, escapedPath: r.escapedPath });
+      }
+    }
+    return escapes;
   }
 
   private async doExecute(
