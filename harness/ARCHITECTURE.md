@@ -129,12 +129,20 @@ multi-instance concurrency or search ever demand it.
 
 Each session has **one ordered event stream** (the same events the bus §11 carries). The
 **canonical transcript** and the **debug journal** are two **projections** of it, both written
-through a shared **`AppendLog`** primitive: append-only **JSONL**, a single serialized writer per
-file, `fsync` on *finalized* units (a completed turn / tool result — not per token), torn-tail
-tolerant on read (a crash-truncated last line fails to parse and is dropped). The transcript log
-is **folded** into the tree below on load. **One writing session per conversation file** (a fork
-spawns its own conversation), so concurrent sessions write different files — no contention
-(the D-36 anti-entropy invariant, realized). The app-global diagnostic log is one shared AppendLog.
+through a shared **`AppendLog`** primitive: append-only **JSONL**, `fsync` on *finalized* units
+(a completed turn / tool result — not per token), torn-tail tolerant on read (a crash-truncated
+last line fails to parse and is dropped). The transcript log is **folded** into the tree below on
+load.
+
+**Coherence = one in-process serialization point per file, not OS file locks (D-37, D-36).**
+`AppendLog` is a **singleton per file path** (via a small registry) with a **single serialized
+async append queue**: every `append(record)` awaits the previous write (then the fsync policy),
+so records can never interleave — even when **multiple agent loops append to the same file**.
+Because Node is single-threaded, this is the only synchronization needed; there are no advisory
+locks. `append()` resolves when *that* record is durably written, so callers can await coherent
+persistence. Per-conversation files usually have one appender, but nothing *requires* it — a
+shared file (the app-global **diagnostic log** today; an orchestration parent's file later, §27)
+stays coherent purely through its shared `AppendLog`. This is the anti-entropy invariant realized.
 
 ### Conversation record — append-only parent-pointer tree (D-15, D-17)
 
