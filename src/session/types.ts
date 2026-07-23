@@ -7,6 +7,8 @@ export type SessionEvent =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
   | { type: "assistant-end"; entryId: string; finishReason: string; truncated: boolean }
+  | { type: "tool-start"; name: string }
+  | { type: "tool-end"; name: string; isError: boolean }
   | { type: "truncation"; message: string }
   | { type: "error"; message: string }
   | { type: "halted"; reason: string };

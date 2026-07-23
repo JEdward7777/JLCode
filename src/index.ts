@@ -28,6 +28,14 @@ export { streamSSE, chunkToEvents, accumulate } from "./llm/stream.js";
 export { LlmCache, hashRequest, requestSignature, stableStringify } from "./llm/cache.js";
 export type { ChatRequest, ChatMessage, StreamEvent, AssistantResult, LlmDriver } from "./llm/types.js";
 
+// Tools + sandbox
+export { Sandbox } from "./tools/sandbox.js";
+export { ToolRegistry, defaultTools } from "./tools/registry.js";
+export { fileTools } from "./tools/file-tools.js";
+export { runCommandTool } from "./tools/shell-tool.js";
+export { AllowAllGate } from "./tools/gate.js";
+export type { Tool, ToolResult, ToolContext, ToolGate, GateDecision, ToolKind } from "./tools/types.js";
+
 // Sessions
 export { Session } from "./session/session.js";
 export { SessionManager } from "./session/manager.js";
