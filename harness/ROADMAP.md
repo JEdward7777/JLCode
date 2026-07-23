@@ -26,7 +26,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - **Done when:** launch → auto-selects last config for this dir (or filter/clone to pick);
   selection persists per directory. Tier-0 tested.
 
-## Phase 2 — OpenRouter client + walking skeleton
+## Phase 2 — OpenRouter client + walking skeleton ✅ done (2026-07-23)
 **Goal:** actually talk to a model end-to-end (headless).
 - Thin fetch client (D-21): tool-calling protocol, streaming, **verbatim `reasoning_details`
   round-trip** (D-14), **prompt-cache breakpoints** (D-26).

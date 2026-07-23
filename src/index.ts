@@ -16,3 +16,20 @@ export type {
   CompactionTrigger,
   SamplingParams,
 } from "./config/types.js";
+
+// Conversation tree + wire assembly
+export { newConversation, appendEntry, pathToLeaf, setActiveLeaf, childrenOf } from "./conversation/tree.js";
+export { buildWireMessages } from "./conversation/wire.js";
+export type { Conversation, Entry } from "./conversation/types.js";
+
+// LLM client, streaming, cache
+export { OpenRouterClient } from "./llm/client.js";
+export { streamSSE, chunkToEvents, accumulate } from "./llm/stream.js";
+export { LlmCache, hashRequest, requestSignature, stableStringify } from "./llm/cache.js";
+export type { ChatRequest, ChatMessage, StreamEvent, AssistantResult, LlmDriver } from "./llm/types.js";
+
+// Sessions
+export { Session } from "./session/session.js";
+export { SessionManager } from "./session/manager.js";
+export { scriptedDriver, throwingDriver, echoDriver } from "./session/fake.js";
+export type { SessionEvent, SessionStatus } from "./session/types.js";
