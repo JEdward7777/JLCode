@@ -162,6 +162,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
 
     try {
       await session.send(body.text);
+      await deps.store.flush(); // read-your-writes: entries durable before we respond
     } catch (err) {
       return c.json({ error: (err as Error).message }, 409);
     }
@@ -203,6 +204,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       addRoot:
         typeof body.addRoot === "string" || typeof body.addRoot === "boolean" ? body.addRoot : undefined,
     });
+    await deps.store.flush();
     return c.json(stateOf(session));
   });
 
@@ -214,6 +216,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
     if (typeof body.text !== "string") return c.json({ error: "body must include 'text'" }, 400);
     await session.answer(body.text);
+    await deps.store.flush();
     return c.json(stateOf(session));
   });
 

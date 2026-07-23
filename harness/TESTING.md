@@ -28,8 +28,17 @@ could mismatch a changed request. "Pay once, free until we change something."
   (a tool call happened, no error, `reasoning_details` present) rather than exact text.
 
 **Substrate (D-24):** the cache is **content-addressed, git-blob-style sharded files** —
-`cache/ab/abcdef…json`, filename = the signature hash. O(1) point lookup, no index, no
-startup scan, zero deps, no native binary. Test fixtures are committed to the repo.
+`ab/abcdef…json`, filename = the signature hash. O(1) point lookup, no index, no startup
+scan, zero deps, no native binary.
+
+**Location — committed, repo-relative, NOT a temp dir.** The Tier-1 cache lives at a fixed
+path in the repo — **`test/fixtures/llm-cache/`** — and is **committed to git** (and *not*
+`.gitignore`d). This is the whole point of the cache: if it landed in a temp/scratch dir that
+gets garbage-collected, every run would re-record (re-spend) and it would never pay for itself.
+Contrast with the *conversation-store* test dirs, which are deliberately ephemeral temp dirs
+(injected `JLCODE_DATA_DIR`) — those we throw away; the LLM cache we keep. Refresh a fixture
+deliberately (delete its file / `--refresh`); otherwise it persists across runs and CI so
+replays stay free.
 
 > **Not the same as provider prompt caching (D-26).** This local cache stores *our whole
 > responses* to avoid repeat calls. Provider prompt caching is a server-side input-token
