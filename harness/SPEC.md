@@ -64,6 +64,7 @@ Each configuration carries:
 | Sampling params | temperature, top_p, max_tokens. |
 | Default mode + approval policy | The mode (Ask/Plan/Code) and approval policy this config starts in. |
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
+| Compaction settings (§15) | **Compaction model** (default = the working model; overridable to a cheaper one, with the compactor-fit guard); **auto** on/off; **headroom buffer** (default ~20K tokens); **keep-recent tokens** (default ~8K verbatim); **trigger modes**. Budget is derived from the model's `context_length` (from OpenRouter metadata). |
 
 Configuration UX:
 
@@ -210,25 +211,65 @@ the remote system viewing the page (needed for the web/remote case; redundant in
 
 ## 15. Context compaction
 
-As conversations grow, context must be compacted to stay within the model's window
-without losing the thread. Requirements and constraints:
+As conversations grow, context must be compacted to stay within the window without losing
+the thread — and **without offending Fable** (the failure KiloCode's older/v5 path hit).
+Grounded partly on a study of the latest KiloCode's `session/compaction.ts` (D-27, D-28).
 
-- **Trigger** on approaching a configurable token budget (per model config).
-- **Model (agreed, D-15): lossless checkpoint overlay.** A **checkpoint node** holds a
-  summary of everything up to it; the context sent to the model becomes
-  `summary + items after the checkpoint`. The full node tree is preserved on disk — it's
-  like starting a fresh conversation that carries a summary of the "previous conversation."
-- **Reasoning × compaction (the sharp edge, O-02).** Proposed safe default, to be verified
-  empirically: keep **recent** assistant turns **verbatim with reasoning intact** (never
-  compact across an in-progress tool cycle); summarize only **older, completed** turns, whose
-  reasoning simply isn't replayed once past the active cycle. Preserve tool-call/result pairing.
-- **Agent-directed minimize/expand (planned, X-08):** tools letting the agent collapse
-  specific chunks it no longer needs (e.g. a file read) after noting what matters, and expand
-  them later. Non-destructive, same overlay principle. Targets non-reasoning items first.
-- **Transparency:** a compaction/minimize event is visible in the UI and recorded; the
-  pre-compaction tree remains in persisted history (§8) — nothing is truly lost.
-- Remaining open design points (token accounting, summary prompt, the exact keep-recent
-  cutoff, Fable's boundary) are tracked as O-02 in [`DECISIONS.md`](DECISIONS.md).
+### Overlay model (agreed, D-15)
+
+Lossless **checkpoint overlay**: a checkpoint node holds a summary of everything up to it;
+the context sent to the model becomes `system + summary + items after the checkpoint`. The
+full node tree is preserved on disk — like a fresh conversation carrying a summary of the
+"previous conversation."
+
+### Trigger
+
+- Budget derived from the model's `context_length` (OpenRouter metadata). Compact when the
+  estimated request (system + messages + tools) exceeds `window − max(reservedOutput, buffer)`,
+  **buffer default ≈ 20K tokens** (KiloCode's value; configurable).
+- **Compactor-fit guard:** the budget must also fit the **compaction model's** window (minus
+  summary output). If the summarizer is smaller than the working model, trigger earlier so the
+  history still fits the summarizer. Bail/degrade gracefully if it can't fit.
+- **Trigger modes (agreed):** **auto** at budget · **manual** on-demand · **suggest when near**
+  · **auto-but-cancelable** (fires as an approval you can deny to keep going — the default when
+  automatic compaction is off) · **hard limit / forced** (at a ceiling you cannot proceed
+  without compacting or taking another action).
+
+### What is kept vs summarized
+
+- Keep the **system prompt** (always sent, never summarized) and the **most recent
+  ~8K tokens** of conversation **verbatim** (`keep-recent`, configurable). Summarize the
+  older middle. Never cut across an in-progress tool cycle.
+- **Anchored, evolving structured summary (D-28):** a fixed Markdown template (Goal /
+  Constraints & Preferences / Progress / Key Decisions / Next Steps / Critical Context /
+  Relevant Files), capped (~4K tokens). On later compactions **update** the prior summary
+  (preserve still-true, drop stale, merge new) rather than re-summarizing from scratch.
+- Tool outputs are **truncated** (~2K chars) when serialized into the *summary input*.
+
+### Fable-safety rules (the whole point)
+
+- **Kept-verbatim recent turns are replayed from their original stored entries** — the opaque
+  `reasoning_details` (incl. the **signature / encrypted / redacted** payload) intact and
+  unmodified (D-14). Never reconstruct a replayed assistant turn from serialized text; the
+  provider validates the signature and any edit invalidates it.
+- The flattened text used as **summary input** may render reasoning as plain text — that copy
+  is *input to the summarizer only* and is **never replayed**.
+- Summarized older turns are **dropped from replay** (replaced by the summary), so their
+  reasoning is never sent — no signature to offend.
+- The summary node lands on a **clean turn boundary**, so it never splits a thinking→tool_use
+  pairing among the kept turns. Preserve tool-call/result pairing.
+- Verified by a targeted test that reasoning survives a compaction (TESTING.md, Tier 1 cached +
+  Tier 3 live Fable).
+
+### Related
+
+- **Agent-directed minimize/expand (planned, X-08):** tools to collapse specific chunks the
+  agent no longer needs (e.g. a file read) after noting what matters, expandable later. Same
+  non-destructive overlay; targets non-reasoning items first.
+- **Transparency:** compaction/minimize events are shown in the UI and recorded; the
+  pre-compaction tree stays in persisted history (§8) — nothing is truly lost.
+- **Remaining open (O-02):** only the *empirical* verification of Fable's exact boundary; the
+  strategy above is otherwise decided.
 
 ## 16. Images / multimodal
 
