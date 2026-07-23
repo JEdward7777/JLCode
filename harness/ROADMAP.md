@@ -43,8 +43,11 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - **Done when:** you can hold a real conversation from the terminal; reasoning round-trips;
   a truncated turn is detected and recoverable; repeated failures halt cleanly; Tier-1 tests cover it.
 
-## Phase 3 — Tools, sandbox, modes & approval
+## Phase 3 — Tools, sandbox, modes & approval ✅ done (2026-07-23)
 **Goal:** the agent can do gated work.
+*(3a sandbox + tools + tool loop; 3b mode∩approval gate + pause/approve/deny/edit
++ ask_user, wired into the server. Background-task kill affordance (D-34) rides
+with the P5 frontend.)*
 - Sandbox path fence + out-of-fence approve/allow-remember/deny (D-19).
 - Native file tools (read/write/create/delete/list/glob/grep) (D-03); shell tool (D-04).
 - Structured **`ask_user`** tool (D-18).

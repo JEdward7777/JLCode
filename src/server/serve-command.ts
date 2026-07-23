@@ -11,6 +11,11 @@ import { OpenRouterClient } from "../llm/client.js";
 import type { LlmDriver } from "../llm/types.js";
 import type { ModelConfig } from "../config/types.js";
 import { echoDriver } from "../session/fake.js";
+import { Session } from "../session/session.js";
+import { ToolRegistry, defaultTools } from "../tools/registry.js";
+import { askUserTool } from "../tools/ask-user.js";
+import { Sandbox } from "../tools/sandbox.js";
+import { ModeApprovalGate } from "../tools/mode-gate.js";
 import { parseArgs, flagString } from "../util/args.js";
 import { createServer } from "./server.js";
 import { startNodeServer } from "./node-adapter.js";
@@ -40,6 +45,17 @@ export async function runServe(args: string[]): Promise<number> {
           title: "JLCode",
         });
 
+  // A fully-wired session: driver + native tools + sandbox (fenced to cwd) +
+  // the mode∩approval gate from the config (D-07/D-08/D-19).
+  const newSession = (config: ModelConfig): Session =>
+    new Session({
+      config,
+      driver: makeDriver(config),
+      tools: new ToolRegistry([...defaultTools(), askUserTool()]),
+      sandbox: new Sandbox([cwd]),
+      gate: new ModeApprovalGate(config.defaultMode, config.defaultApproval, loadConfig(paths).autoSafeAllowlist),
+    });
+
   const config = resolveConfig();
   if (!config) {
     process.stderr.write(`No model config selected for ${cwd}.\nUse: jlcode config use <name>\n`);
@@ -51,7 +67,7 @@ export async function runServe(args: string[]): Promise<number> {
   }
 
   const port = Number(flagString(flags, "port") ?? process.env.JLCODE_PORT ?? DEFAULT_PORT);
-  const { app } = createServer({ resolveConfig, makeDriver, version: getVersion() });
+  const { app } = createServer({ resolveConfig, newSession, version: getVersion() });
   const server = await startNodeServer((req) => app.fetch(req), { host: HOST, port });
 
   const base = `http://${HOST}:${port}`;

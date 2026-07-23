@@ -34,10 +34,18 @@ export { ToolRegistry, defaultTools } from "./tools/registry.js";
 export { fileTools } from "./tools/file-tools.js";
 export { runCommandTool } from "./tools/shell-tool.js";
 export { AllowAllGate } from "./tools/gate.js";
+export { ModeApprovalGate } from "./tools/mode-gate.js";
+export { askUserTool, ASK_USER } from "./tools/ask-user.js";
 export type { Tool, ToolResult, ToolContext, ToolGate, GateDecision, ToolKind } from "./tools/types.js";
 
 // Sessions
 export { Session } from "./session/session.js";
 export { SessionManager } from "./session/manager.js";
 export { scriptedDriver, throwingDriver, echoDriver } from "./session/fake.js";
-export type { SessionEvent, SessionStatus } from "./session/types.js";
+export type {
+  SessionEvent,
+  SessionStatus,
+  ApprovalRequest,
+  AskUserRequest,
+  ApprovalDecision,
+} from "./session/types.js";

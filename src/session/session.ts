@@ -2,11 +2,11 @@
  * A Session (D-36): one live agent loop bound to a conversation and a model
  * config. It fully owns its state — the anti-entropy invariant.
  *
- * Phase 2 gave the text-only loop. Phase 3a adds the **tool-execution loop**:
- * when the model calls tools, they run through a gate + the sandbox, results are
- * fed back, and the loop continues until the model yields a final answer.
- * Truncation detection (D-30) and the consecutive-failure circuit breaker (D-32)
- * still apply. The mode/approval gate and editable approvals land in 3b.
+ * The loop is a resumable state machine so it can **pause** for approvals
+ * (D-08/D-16) and for ask_user (D-18), then **resume**: `send()` runs until the
+ * session settles (idle/halted) or needs the user (awaiting-approval /
+ * awaiting-input); `approve()` and `answer()` continue it. Truncation (D-30) and
+ * the consecutive-failure circuit breaker (D-32) still apply.
  */
 import { newId } from "../util/id.js";
 import type { ModelConfig } from "../config/types.js";
@@ -17,9 +17,17 @@ import { buildWireMessages } from "../conversation/wire.js";
 import type { Conversation } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { ToolGate } from "../tools/types.js";
+import type { Tool, ToolGate } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
-import type { SessionEvent, SessionListener, SessionStatus } from "./types.js";
+import { ASK_USER } from "../tools/ask-user.js";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  AskUserRequest,
+  SessionEvent,
+  SessionListener,
+  SessionStatus,
+} from "./types.js";
 
 export interface SessionOptions {
   id?: string;
@@ -27,15 +35,15 @@ export interface SessionOptions {
   driver: LlmDriver;
   systemPrompt?: string;
   maxConsecutiveFailures?: number;
-  /** Tool support (Phase 3). A registry requires a sandbox. */
   tools?: ToolRegistry;
   sandbox?: Sandbox;
   gate?: ToolGate;
-  /** Cap on model↔tool round-trips per user message (runaway guard). */
   maxToolIterations?: number;
 }
 
 const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
+
+type StepOutcome = "done" | "paused-approval" | "paused-input";
 
 export class Session {
   readonly id: string;
@@ -52,6 +60,11 @@ export class Session {
   private readonly maxToolIterations: number;
   private consecutiveFailures = 0;
   private readonly listeners = new Set<SessionListener>();
+
+  // Resumable-loop state.
+  private pendingToolCalls: ToolCall[] = [];
+  private pendingApproval: { request: ApprovalRequest; call: ToolCall; tool: Tool } | undefined;
+  private pendingQuestion: { request: AskUserRequest; call: ToolCall } | undefined;
 
   constructor(options: SessionOptions) {
     if (options.tools && !options.sandbox) throw new Error("A tool registry requires a sandbox");
@@ -72,6 +85,13 @@ export class Session {
   onEvent(listener: SessionListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  get awaitingApproval(): ApprovalRequest | undefined {
+    return this.pendingApproval?.request;
+  }
+  get awaitingInput(): AskUserRequest | undefined {
+    return this.pendingQuestion?.request;
   }
 
   private emit(event: SessionEvent): void {
@@ -106,23 +126,64 @@ export class Session {
     return req;
   }
 
+  /** Send a user message and run until the session settles or needs the user. */
   async send(text: string): Promise<void> {
     if (this.status === "halted") throw new Error("Session is halted (too many consecutive failures).");
+    if (this.status === "awaiting-approval" || this.status === "awaiting-input") {
+      throw new Error("Session is waiting for input; resolve it before sending.");
+    }
     const { conv, entry } = appendEntry(this.conversation, { type: "user", text });
     this.conversation = conv;
     this.emit({ type: "user", entryId: entry.id, text });
-    await this.runLoop();
+    this.pendingToolCalls = [];
+    await this.advance();
   }
 
-  /** Drive model↔tool round-trips until the model yields a final answer. */
-  private async runLoop(): Promise<void> {
+  /** Resolve a pending approval (approve / deny / edit-then-approve) and continue. */
+  async approve(decision: ApprovalDecision): Promise<void> {
+    const pending = this.pendingApproval;
+    if (!pending) throw new Error("No pending approval");
+    this.pendingApproval = undefined;
+    if (decision.approve) {
+      const edited = decision.editedArgs !== undefined;
+      await this.doExecute(pending.call, pending.tool, decision.editedArgs ?? pending.request.args, edited);
+    } else {
+      this.appendToolResult(pending.call, `denied by user${decision.reason ? `: ${decision.reason}` : ""}`, true);
+    }
+    this.pendingToolCalls.shift();
+    await this.advance();
+  }
+
+  /** Provide the answer to a pending ask_user and continue. */
+  async answer(text: string): Promise<void> {
+    const pending = this.pendingQuestion;
+    if (!pending) throw new Error("No pending question");
+    this.pendingQuestion = undefined;
+    this.appendToolResult(pending.call, text, false);
+    this.pendingToolCalls.shift();
+    await this.advance();
+  }
+
+  private async advance(): Promise<void> {
     this.status = "running";
-    for (let i = 0; i < this.maxToolIterations; i++) {
+    for (let iter = 0; iter < this.maxToolIterations; iter++) {
+      while (this.pendingToolCalls.length > 0) {
+        const outcome = await this.tryExecute(this.pendingToolCalls[0]!);
+        if (outcome === "paused-approval") {
+          this.status = "awaiting-approval";
+          return;
+        }
+        if (outcome === "paused-input") {
+          this.status = "awaiting-input";
+          return;
+        }
+        this.pendingToolCalls.shift(); // "done" → dequeue
+      }
+
       const result = await this.oneAssistantTurn();
-      if (!result) return; // error/halt already handled and emitted
+      if (!result) return; // error/halt already handled
 
       if (result.finishReason === "length") {
-        // Truncated: any tool-call args are incomplete — do not execute (D-30).
         this.emit({
           type: "truncation",
           message: 'Output hit the max_tokens limit and was cut off. Send "continue" or raise max_tokens.',
@@ -130,16 +191,11 @@ export class Session {
         break;
       }
       if (!this.tools || result.toolCalls.length === 0) break; // final answer
-
-      for (const call of result.toolCalls) await this.executeToolCall(call);
-      // loop: the model now sees the tool results
+      this.pendingToolCalls = [...result.toolCalls];
     }
-    // Reaching here means no error/halt path returned early → back to idle.
     this.status = "idle";
   }
 
-  /** Stream one assistant turn, append it, handle errors. Returns the result or
-   *  undefined when an error/halt was handled. */
   private async oneAssistantTurn(): Promise<AssistantResult | undefined> {
     const req = this.buildRequest();
     const events: StreamEvent[] = [];
@@ -174,7 +230,7 @@ export class Session {
       usage: result.usage,
     });
     this.conversation = conv;
-    this.consecutiveFailures = 0; // a completed turn resets
+    this.consecutiveFailures = 0;
     this.emit({
       type: "assistant-end",
       entryId: entry.id,
@@ -196,35 +252,65 @@ export class Session {
     this.emit({ type: "tool-end", name: call.function.name, isError });
   }
 
-  private async executeToolCall(call: ToolCall): Promise<void> {
-    const tool = this.tools?.get(call.function.name);
-    if (!tool || !this.sandbox) {
-      this.appendToolResult(call, `unknown tool: ${call.function.name}`, true);
-      return;
-    }
-
+  /** Attempt to process the front tool call; may pause for approval/input. */
+  private async tryExecute(call: ToolCall): Promise<StepOutcome> {
     let args: Record<string, unknown>;
     try {
       args = call.function.arguments ? (JSON.parse(call.function.arguments) as Record<string, unknown>) : {};
     } catch {
-      // Truncated/invalid tool-call JSON — never execute (D-30/D-31).
       this.appendToolResult(call, "invalid or truncated tool arguments; not executed", true);
-      return;
+      return "done";
+    }
+
+    // ask_user is intercepted — it pauses for the user's answer (D-18).
+    if (call.function.name === ASK_USER) {
+      const question = typeof args.question === "string" ? args.question : "(no question provided)";
+      const options = Array.isArray(args.options)
+        ? args.options.filter((o): o is string => typeof o === "string")
+        : undefined;
+      const request: AskUserRequest = { id: newId("ask"), question, ...(options ? { options } : {}) };
+      this.pendingQuestion = { request, call };
+      this.emit({ type: "awaiting-input", question: request });
+      return "paused-input";
+    }
+
+    const tool = this.tools?.get(call.function.name);
+    if (!tool || !this.sandbox) {
+      this.appendToolResult(call, `unknown tool: ${call.function.name}`, true);
+      return "done";
     }
 
     const decision = this.gate.check(tool, args);
     if (decision.kind === "deny") {
       this.appendToolResult(call, `denied: ${decision.reason}`, true);
-      return;
+      return "done";
     }
     if (decision.kind === "prompt") {
-      // Interactive approval lands in Phase 3b; treat as not-yet-available here.
-      this.appendToolResult(call, "approval required but the approval flow is not wired (Phase 3b)", true);
-      return;
+      const request: ApprovalRequest = {
+        id: newId("appr"),
+        tool: tool.name,
+        kind: tool.kind,
+        args,
+        reason: "approval required by policy",
+      };
+      this.pendingApproval = { request, call, tool };
+      this.emit({ type: "awaiting-approval", request });
+      return "paused-approval";
     }
 
+    await this.doExecute(call, tool, args, false);
+    return "done";
+  }
+
+  private async doExecute(
+    call: ToolCall,
+    tool: Tool,
+    args: Record<string, unknown>,
+    edited: boolean,
+  ): Promise<void> {
     this.emit({ type: "tool-start", name: tool.name });
-    const res = await tool.execute(args, { sandbox: this.sandbox });
-    this.appendToolResult(call, res.content, res.isError ?? false);
+    const res = await tool.execute(args, { sandbox: this.sandbox! });
+    const note = edited ? "[note: the user edited the arguments before running]\n" : "";
+    this.appendToolResult(call, note + res.content, res.isError ?? false);
   }
 }

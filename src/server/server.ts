@@ -1,15 +1,12 @@
 /**
- * A minimal synchronous HTTP endpoint for driving conversations (Phase 5
- * groundwork). Unlike the terminal REPL, each request is one-shot and the
- * server retains the thread by session id — so an external caller (curl, tests,
- * an agent) can hold a multi-turn conversation without interactive stdin.
- *
- * This is the dev/test slice: request→full-reply JSON. Streaming (SSE), the
- * browser UI, approvals, and auth arrive with the full Phase 5 frontend (D-18).
+ * The dev HTTP endpoint for driving conversations (Phase 5 groundwork). Each
+ * request is one-shot; the server retains threads by session id. With tools
+ * wired in (Phase 3b), a turn can pause for **approval** (D-16) or **ask_user**
+ * (D-18) — the response reports the awaiting state, and /approve or /answer
+ * resumes. Streaming (SSE), the browser UI, and auth arrive with full Phase 5.
  */
 import { Hono } from "hono";
 import type { ModelConfig } from "../config/types.js";
-import type { LlmDriver } from "../llm/types.js";
 import type { Entry } from "../conversation/types.js";
 import { SessionManager } from "../session/manager.js";
 import type { Session } from "../session/session.js";
@@ -17,8 +14,8 @@ import type { Session } from "../session/session.js";
 export interface ServerDeps {
   /** Re-read the selected config on demand, so CLI edits are picked up live. */
   resolveConfig: () => ModelConfig | undefined;
-  /** Build a driver for a config (OpenRouter, or a fake for offline tests). */
-  makeDriver: (config: ModelConfig) => LlmDriver;
+  /** Build a fully-wired session (driver + tools + sandbox + gate) for a config. */
+  newSession: (config: ModelConfig) => Session;
   version: string;
 }
 
@@ -30,31 +27,30 @@ function entryView(entry: Entry): Record<string, unknown> {
       return {
         type: "assistant",
         text: entry.text,
+        toolCalls: entry.toolCalls?.map((t) => ({ name: t.function.name, arguments: t.function.arguments })),
         reasoningText: entry.reasoningText,
         truncated: entry.truncated ?? false,
         finishReason: entry.finishReason,
       };
     case "tool":
-      return { type: "tool", name: entry.name, content: entry.content };
+      return { type: "tool", name: entry.name, content: entry.content, isError: entry.isError ?? false };
     case "compaction":
       return { type: "compaction", summary: entry.summary };
   }
 }
 
-/** Send a message and collect the resulting assistant turn + any notices. */
-async function sendAndCollect(session: Session, text: string) {
-  const errors: string[] = [];
-  let truncation: string | undefined;
-  const off = session.onEvent((ev) => {
-    if (ev.type === "error") errors.push(ev.message);
-    if (ev.type === "truncation") truncation = ev.message;
-  });
-  await session.send(text);
-  off();
+/** Build the response describing the session's current settled state. */
+function stateOf(session: Session): Record<string, unknown> {
   const entries = session.conversation.entries;
-  const last = entries[entries.length - 1];
-  const assistant = last && last.type === "assistant" ? last : undefined;
-  return { assistant, errors, truncation };
+  const lastAssistant = [...entries].reverse().find((e) => e.type === "assistant");
+  const base: Record<string, unknown> = {
+    sessionId: session.id,
+    status: session.status,
+    reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
+  };
+  if (session.status === "awaiting-approval") base.approval = session.awaitingApproval;
+  if (session.status === "awaiting-input") base.question = session.awaitingInput;
+  return base;
 }
 
 export function createServer(deps: ServerDeps): { app: Hono; manager: SessionManager } {
@@ -63,21 +59,17 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
 
   app.get("/health", (c) => {
     const config = deps.resolveConfig();
-    return c.json({
-      ok: true,
-      version: deps.version,
-      config: config?.name ?? null,
-      model: config?.model ?? null,
-    });
+    return c.json({ ok: true, version: deps.version, config: config?.name ?? null, model: config?.model ?? null });
   });
 
-  // What a *new* thread would use right now (reflects live CLI config changes).
   app.get("/config", (c) => {
     const config = deps.resolveConfig();
     if (!config) return c.json({ error: "no config selected" }, 404);
     return c.json({
       name: config.name,
       model: config.model,
+      mode: config.defaultMode,
+      approval: config.defaultApproval,
       reasoningEffort: config.reasoningEffort ?? null,
       maxTokens: config.sampling?.maxTokens ?? null,
       hasKey: Boolean(config.openRouterKey),
@@ -106,35 +98,61 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     });
   });
 
-  // Send a message. Omit sessionId to start a new thread; pass it to continue.
   app.post("/chat", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; sessionId?: unknown };
     if (typeof body.text !== "string" || body.text.trim() === "") {
       return c.json({ error: "body must include a non-empty 'text'" }, 400);
     }
 
-    let session: Session | undefined;
+    let session: Session;
     if (typeof body.sessionId === "string") {
-      session = manager.get(body.sessionId);
-      if (!session) return c.json({ error: "no such session" }, 404);
+      const found = manager.get(body.sessionId);
+      if (!found) return c.json({ error: "no such session" }, 404);
+      session = found;
     } else {
-      // A new thread resolves the *current* config, so CLI switches take effect.
       const config = deps.resolveConfig();
       if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
-      session = manager.create({ config, driver: deps.makeDriver(config) });
+      session = manager.add(deps.newSession(config));
     }
 
-    const { assistant, errors, truncation } = await sendAndCollect(session, body.text);
-    return c.json({
-      sessionId: session.id,
-      reply: assistant?.text ?? "",
-      reasoningText: assistant?.reasoningText,
-      truncated: assistant?.truncated ?? false,
-      finishReason: assistant?.finishReason,
-      status: session.status,
-      ...(errors.length > 0 ? { errors } : {}),
-      ...(truncation ? { truncation } : {}),
+    try {
+      await session.send(body.text);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 409);
+    }
+    return c.json(stateOf(session));
+  });
+
+  // Resolve a pending approval: {approve: bool, editedArgs?, reason?} (D-16).
+  app.post("/session/:id/approve", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (session.status !== "awaiting-approval") return c.json({ error: "not awaiting approval" }, 409);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      approve?: unknown;
+      editedArgs?: unknown;
+      reason?: unknown;
+    };
+    await session.approve({
+      approve: body.approve !== false,
+      editedArgs:
+        body.editedArgs && typeof body.editedArgs === "object"
+          ? (body.editedArgs as Record<string, unknown>)
+          : undefined,
+      reason: typeof body.reason === "string" ? body.reason : undefined,
     });
+    return c.json(stateOf(session));
+  });
+
+  // Answer a pending ask_user: {text} (D-18).
+  app.post("/session/:id/answer", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (session.status !== "awaiting-input") return c.json({ error: "not awaiting input" }, 409);
+    const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
+    if (typeof body.text !== "string") return c.json({ error: "body must include 'text'" }, 400);
+    await session.answer(body.text);
+    return c.json(stateOf(session));
   });
 
   return { app, manager };

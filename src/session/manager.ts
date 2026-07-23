@@ -9,7 +9,11 @@ export class SessionManager {
   private readonly sessions = new Map<string, Session>();
 
   create(options: SessionOptions): Session {
-    const session = new Session(options);
+    return this.add(new Session(options));
+  }
+
+  /** Register an already-constructed session (used with a session factory). */
+  add(session: Session): Session {
     this.sessions.set(session.id, session);
     return session;
   }

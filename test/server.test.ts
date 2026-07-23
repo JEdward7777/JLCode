@@ -1,6 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 import { createServer } from "../src/server/server";
 import { echoDriver } from "../src/session/fake";
+import { Session } from "../src/session/session";
+import { Sandbox } from "../src/tools/sandbox";
+import { ToolRegistry } from "../src/tools/registry";
+import { fileTools } from "../src/tools/file-tools";
+import { ModeApprovalGate } from "../src/tools/mode-gate";
+import type { LlmDriver, StreamEvent } from "../src/llm/types";
 import type { ModelConfig } from "../src/config/types";
 
 const config: ModelConfig = {
@@ -15,7 +24,11 @@ const config: ModelConfig = {
 };
 
 function makeApp() {
-  return createServer({ resolveConfig: () => config, makeDriver: () => echoDriver(), version: "0.0.0" }).app;
+  return createServer({
+    resolveConfig: () => config,
+    newSession: (c) => new Session({ config: c, driver: echoDriver() }),
+    version: "0.0.0",
+  }).app;
 }
 
 async function post(app: ReturnType<typeof makeApp>, path: string, body: unknown) {
@@ -54,5 +67,66 @@ describe("dev server", () => {
     const app = makeApp();
     expect((await post(app, "/chat", { text: "" })).status).toBe(400);
     expect((await post(app, "/chat", { text: "hi", sessionId: "nope" })).status).toBe(404);
+  });
+});
+
+describe("dev server — approval flow", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-srv-appr-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function toolDriver(): LlmDriver {
+    let n = 0;
+    return {
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        n++;
+        if (n === 1) {
+          yield {
+            type: "tool_call",
+            index: 0,
+            id: "c1",
+            name: "write_file",
+            argsDelta: JSON.stringify({ path: "out.txt", content: "from the agent" }),
+          };
+          yield { type: "finish", reason: "tool_calls" };
+        } else {
+          yield { type: "text", delta: "Wrote it." };
+          yield { type: "finish", reason: "stop" };
+        }
+      },
+    };
+  }
+
+  function toolApp() {
+    return createServer({
+      resolveConfig: () => config,
+      newSession: (c) =>
+        new Session({
+          config: c,
+          driver: toolDriver(),
+          tools: new ToolRegistry(fileTools()),
+          sandbox: new Sandbox([root]),
+          gate: new ModeApprovalGate("code", "manual"),
+        }),
+      version: "0.0.0",
+    }).app;
+  }
+
+  it("/chat pauses for approval, /approve resumes and runs the tool", async () => {
+    const app = toolApp();
+    const first = await post(app, "/chat", { text: "write out.txt" });
+    expect(first.json.status).toBe("awaiting-approval");
+    expect(first.json.approval.tool).toBe("write_file");
+    expect(fs.existsSync(path.join(root, "out.txt"))).toBe(false);
+
+    const id = first.json.sessionId as string;
+    const res = await post(app, `/session/${id}/approve`, { approve: true });
+    expect(res.json.status).toBe("idle");
+    expect(res.json.reply).toBe("Wrote it.");
+    expect(fs.readFileSync(path.join(root, "out.txt"), "utf8")).toBe("from the agent");
   });
 });
