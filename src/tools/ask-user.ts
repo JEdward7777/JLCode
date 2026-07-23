@@ -18,14 +18,30 @@ export function askUserTool(): Tool {
       function: {
         name: ASK_USER,
         description:
-          "Pause and ask the user a question, then continue with their answer. Use when you need a decision or missing information.",
+          "Pause and ask the user one or more questions, then continue with their answers. Use when you need a " +
+          "decision or missing information. For a single quick question pass `question` (+ optional `options`); " +
+          "to ask several at once pass `questions`, each rendered as its own form field.",
         parameters: {
           type: "object",
           properties: {
-            question: { type: "string" },
-            options: { type: "array", items: { type: "string" }, description: "Optional suggested answers" },
+            question: { type: "string", description: "A single question (convenience for the one-question case)" },
+            options: { type: "array", items: { type: "string" }, description: "Suggested answers for `question`" },
+            questions: {
+              type: "array",
+              description: "A structured multi-question form; each entry becomes one field",
+              items: {
+                type: "object",
+                properties: {
+                  header: { type: "string", description: "Short label/chip for the field" },
+                  question: { type: "string" },
+                  options: { type: "array", items: { type: "string" }, description: "Suggested answers" },
+                  multiSelect: { type: "boolean", description: "Allow selecting several options" },
+                  allowFreeText: { type: "boolean", description: "Allow a typed answer too" },
+                },
+                required: ["question"],
+              },
+            },
           },
-          required: ["question"],
         },
       },
     },

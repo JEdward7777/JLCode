@@ -9,6 +9,7 @@ import { Session } from "../src/session/session";
 import { Sandbox } from "../src/tools/sandbox";
 import { ToolRegistry } from "../src/tools/registry";
 import { fileTools } from "../src/tools/file-tools";
+import { askUserTool } from "../src/tools/ask-user";
 import { ModeApprovalGate } from "../src/tools/mode-gate";
 import type { LlmDriver, StreamEvent } from "../src/llm/types";
 import type { ModelConfig } from "../src/config/types";
@@ -186,7 +187,7 @@ describe("dev server — approval flow", () => {
     const app = toolApp();
     const first = await post(app, "/chat", { text: "write out.txt" });
     expect(first.json.status).toBe("awaiting-approval");
-    expect(first.json.approval.tool).toBe("write_file");
+    expect(first.json.approvalRequest.tool).toBe("write_file");
     expect(fs.existsSync(path.join(root, "out.txt"))).toBe(false);
 
     const id = first.json.sessionId as string;
@@ -194,5 +195,118 @@ describe("dev server — approval flow", () => {
     expect(res.json.status).toBe("idle");
     expect(res.json.reply).toBe("Wrote it.");
     expect(fs.readFileSync(path.join(root, "out.txt"), "utf8")).toBe("from the agent");
+  });
+});
+
+describe("dev server — mode/approval controls (D-07/D-08)", () => {
+  function modeApp(persist?: (name: string, patch: { mode?: string; approval?: string }) => void) {
+    return createServer({
+      resolveConfig: () => config,
+      store,
+      workingDir: "/work/test",
+      newSession: (c, conversation) =>
+        new Session({
+          config: c,
+          driver: echoDriver(),
+          tools: new ToolRegistry(fileTools()),
+          sandbox: new Sandbox([storeDir]),
+          mode: c.defaultMode,
+          approval: c.defaultApproval,
+          buildGate: (mode, approval) => new ModeApprovalGate(mode, approval),
+          conversation,
+        }),
+      persistDefaults: persist as never,
+      version: "0.0.0",
+    }).app;
+  }
+
+  it("reports mode/approval and switches them, persisting the config default", async () => {
+    const persisted: Array<{ name: string; patch: unknown }> = [];
+    const app = modeApp((name, patch) => persisted.push({ name, patch }));
+    const created = (await (await app.request("/session", { method: "POST" })).json()) as { sessionId: string };
+    const id = created.sessionId;
+
+    const before = (await (await app.request(`/session/${id}`)).json()) as { mode: string; approval: string };
+    expect(before.mode).toBe("code");
+    expect(before.approval).toBe("manual");
+
+    const res = await post(app, `/session/${id}/mode`, { mode: "plan", approval: "auto-safe" });
+    expect(res.status).toBe(200);
+    expect(res.json.mode).toBe("plan");
+    expect(res.json.approval).toBe("auto-safe");
+    expect(persisted).toEqual([{ name: "Test", patch: { mode: "plan", approval: "auto-safe" } }]);
+  });
+
+  it("rejects an invalid mode and an empty change", async () => {
+    const app = modeApp();
+    const id = ((await (await app.request("/session", { method: "POST" })).json()) as { sessionId: string }).sessionId;
+    expect((await post(app, `/session/${id}/mode`, { mode: "wizard" })).status).toBe(400);
+    expect((await post(app, `/session/${id}/mode`, {})).status).toBe(400);
+  });
+});
+
+describe("dev server — ask_user answers (D-18)", () => {
+  function askDriver(): LlmDriver {
+    let n = 0;
+    return {
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        n++;
+        if (n === 1) {
+          yield {
+            type: "tool_call",
+            index: 0,
+            id: "c1",
+            name: "ask_user",
+            argsDelta: JSON.stringify({
+              questions: [
+                { header: "Store", question: "Which store?", options: ["sqlite", "postgres"] },
+                { header: "Env", question: "Which envs?", multiSelect: true },
+              ],
+            }),
+          };
+          yield { type: "finish", reason: "tool_calls" };
+        } else {
+          yield { type: "text", delta: "Configured." };
+          yield { type: "finish", reason: "stop" };
+        }
+      },
+    };
+  }
+
+  function askApp() {
+    return createServer({
+      resolveConfig: () => config,
+      store,
+      workingDir: "/work/test",
+      newSession: (c, conversation) =>
+        new Session({
+          config: c,
+          driver: askDriver(),
+          tools: new ToolRegistry([...fileTools(), askUserTool()]),
+          sandbox: new Sandbox([storeDir]),
+          conversation,
+        }),
+      version: "0.0.0",
+    }).app;
+  }
+
+  it("/chat pauses on a multi-question form; /answer with answers[] resumes", async () => {
+    const app = askApp();
+    const first = await post(app, "/chat", { text: "configure" });
+    expect(first.json.status).toBe("awaiting-input");
+    expect(first.json.question.questions).toHaveLength(2);
+
+    const id = first.json.sessionId as string;
+    const res = await post(app, `/session/${id}/answer`, {
+      answers: [
+        { header: "Store", question: "Which store?", answer: "postgres" },
+        { header: "Env", question: "Which envs?", answer: "dev, prod" },
+      ],
+    });
+    expect(res.json.status).toBe("idle");
+    expect(res.json.reply).toBe("Configured.");
+    const conv = (await (await app.request(`/session/${id}`)).json()) as { entries: Array<Record<string, any>> };
+    const tool = conv.entries.find((e) => e.type === "tool")!;
+    expect(tool.content).toContain("Store — Which store?: postgres");
   });
 });

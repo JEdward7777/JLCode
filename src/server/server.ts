@@ -9,7 +9,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { ModelConfig } from "../config/types.js";
+import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
+import { APPROVAL_POLICIES, MODES } from "../config/types.js";
+import type { AskUserAnswer } from "../session/types.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
@@ -31,6 +33,9 @@ export interface ServerDeps {
   version: string;
   /** Optional: called by POST /shutdown so a caller can stop the dev server. */
   onShutdown?: () => void;
+  /** Optional: persist a mode/approval change as the config's new default, so a
+   *  live switch (D-07/D-08) sticks for the next session in this folder. */
+  persistDefaults?: (configName: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
   /** Optional: directory of the built browser client (dist/web). When set, a
    *  catch-all serves it (SPA fallback to index.html). Omitted in tests. */
   staticDir?: string;
@@ -91,9 +96,13 @@ function stateOf(session: Session): Record<string, unknown> {
     sessionId: session.id,
     conversationId: session.conversation.id,
     status: session.status,
+    mode: session.mode,
+    approval: session.approval,
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };
-  if (session.status === "awaiting-approval") base.approval = session.awaitingApproval;
+  // `approval` is the policy (above); the pending request rides separately so the
+  // two don't collide.
+  if (session.status === "awaiting-approval") base.approvalRequest = session.awaitingApproval;
   if (session.status === "awaiting-input") base.question = session.awaitingInput;
   return base;
 }
@@ -213,9 +222,30 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       id: session.id,
       status: session.status,
       model: session.config.model,
+      mode: session.mode,
+      approval: session.approval,
       activeLeaf: session.conversation.activeLeaf,
       entries: session.conversation.entries.map(entryView),
     });
+  });
+
+  // Switch capability mode / approval policy for a live session (D-07/D-08). The
+  // session re-gates immediately; the change is also persisted as the config's
+  // new default (per Joshua's call) so it sticks for the next session here.
+  app.post("/session/:id/mode", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { mode?: unknown; approval?: unknown };
+    const mode = body.mode === undefined ? undefined : (body.mode as Mode);
+    const approval = body.approval === undefined ? undefined : (body.approval as ApprovalPolicy);
+    if (mode !== undefined && !MODES.includes(mode)) return c.json({ error: `invalid mode: ${String(body.mode)}` }, 400);
+    if (approval !== undefined && !APPROVAL_POLICIES.includes(approval)) {
+      return c.json({ error: `invalid approval policy: ${String(body.approval)}` }, 400);
+    }
+    if (mode === undefined && approval === undefined) return c.json({ error: "nothing to change" }, 400);
+    session.setModeApproval(mode, approval);
+    deps.persistDefaults?.(session.config.name, { mode, approval });
+    return c.json(stateOf(session));
   });
 
   // Rewind / switch branch: point the active leaf at an existing entry (D-10).
@@ -331,14 +361,30 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json(stateOf(session));
   });
 
-  // Answer a pending ask_user: {text} (D-18).
+  // Answer a pending ask_user (D-18): either {text} for a single-question form,
+  // or {answers:[{question, answer, header?}]} for a multi-question form.
   app.post("/session/:id/answer", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     if (session.status !== "awaiting-input") return c.json({ error: "not awaiting input" }, 409);
-    const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
-    if (typeof body.text !== "string") return c.json({ error: "body must include 'text'" }, 400);
-    await session.answer(body.text);
+    const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; answers?: unknown };
+    let payload: string | AskUserAnswer[];
+    if (typeof body.text === "string") {
+      payload = body.text;
+    } else if (Array.isArray(body.answers)) {
+      const answers = body.answers
+        .filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === "object")
+        .map((a) => ({
+          question: typeof a.question === "string" ? a.question : "",
+          answer: typeof a.answer === "string" ? a.answer : "",
+          ...(typeof a.header === "string" ? { header: a.header } : {}),
+        }));
+      if (answers.length === 0) return c.json({ error: "'answers' must be a non-empty array" }, 400);
+      payload = answers;
+    } else {
+      return c.json({ error: "body must include 'text' or 'answers'" }, 400);
+    }
+    await session.answer(payload);
     await deps.store.flush();
     return c.json(stateOf(session));
   });

@@ -171,3 +171,231 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+
+/* Header mode / approval controls (D-07/D-08) */
+.controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.seg button {
+  padding: 4px 11px;
+  border: none;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.seg button + button {
+  border-left: 1px solid var(--border);
+}
+.seg button.on {
+  background: var(--accent);
+  color: #08111f;
+  font-weight: 600;
+}
+.policy {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Interactive cards: approval + ask_user (D-16/D-18/D-19) */
+.card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.card.approval {
+  border-color: #3b4560;
+}
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.card-head .tool {
+  font-weight: 650;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.card-head .kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.card-head .kind.write,
+.card-head .kind.command {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.card-head .reason {
+  color: var(--muted);
+  font-size: 13px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field span {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.field input,
+.raw,
+.ask .free {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  width: 100%;
+}
+.field input,
+.raw {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.field input:focus,
+.raw:focus,
+.ask .free:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.card details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+.raw {
+  resize: vertical;
+  margin-top: 8px;
+}
+.json-err {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.fence {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.fence-note {
+  color: var(--danger);
+  font-size: 13px;
+}
+.fence ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+.fence code,
+.actions code {
+  font-size: 12px;
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.actions button {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.actions button.primary {
+  background: var(--accent);
+  color: #08111f;
+  border-color: transparent;
+}
+.actions button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ask_user form */
+.ask .q {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ask .q + .q {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.q-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.q-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--accent);
+  font-weight: 700;
+}
+.q-text {
+  font-weight: 550;
+}
+.q-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+.opts {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.opt {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.opt.on {
+  background: var(--accent);
+  color: #08111f;
+  border-color: transparent;
+  font-weight: 600;
+}

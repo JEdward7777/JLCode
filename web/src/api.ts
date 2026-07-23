@@ -1,8 +1,8 @@
 /**
  * Thin browser client for the JLCode server: POST up (create session, send
- * message), SSE down (live session events). The event stream is the same one
- * the session emits (session/types.ts) and persistence projects (D-37) — the UI
- * is just another subscriber (§11).
+ * message, approve/deny, answer, switch mode), SSE down (live session events).
+ * The event stream is the same one the session emits (session/types.ts) and
+ * persistence projects (D-37) — the UI is just another subscriber (§11).
  */
 
 export interface UiMessage {
@@ -11,6 +11,42 @@ export interface UiMessage {
   reasoning?: string;
   streaming?: boolean;
   truncated?: boolean;
+}
+
+export type Mode = "ask" | "plan" | "code";
+export type ApprovalPolicy = "manual" | "auto-safe" | "full-auto" | "read-only";
+
+/** A tool call paused for approval (D-16). Args are editable before running. */
+export interface ApprovalRequest {
+  id: string;
+  tool: string;
+  kind: "read" | "write" | "command" | "meta";
+  args: Record<string, unknown>;
+  reason: string;
+  outOfFence?: { paths: string[]; suggestedRoot: string };
+}
+
+/** One field of an ask_user form (D-18). */
+export interface AskQuestion {
+  header?: string;
+  question: string;
+  options?: string[];
+  multiSelect?: boolean;
+  allowFreeText?: boolean;
+}
+export interface AskUserRequest {
+  id: string;
+  questions: AskQuestion[];
+}
+
+/** The settled-state snapshot carried on the SSE `ready` frame and returned by
+ *  the action POSTs (see server stateOf). */
+export interface SessionState {
+  status?: string;
+  mode?: Mode;
+  approval?: ApprovalPolicy; // the approval policy (D-08)
+  approvalRequest?: ApprovalRequest; // the pending approval request, if any (D-16)
+  question?: AskUserRequest; // the pending ask_user form, if any (D-18)
 }
 
 /** A session event as it arrives over SSE (subset the UI acts on; see session/types.ts). */
@@ -39,7 +75,7 @@ export async function loadSession(id: string): Promise<UiMessage[]> {
     else if (e.type === "assistant") {
       out.push({ role: "assistant", text: e.text ?? "", reasoning: e.reasoningText, truncated: e.truncated });
     }
-    // tool/compaction entries aren't rendered in the P5a bare view.
+    // tool/compaction entries aren't rendered in the bare chat view.
   }
   return out;
 }
@@ -58,15 +94,42 @@ export function openEvents(id: string, onEvent: (e: WireEvent) => void): EventSo
   return es;
 }
 
-/** Send a user message. Deltas arrive over SSE; this resolves at turn end. */
-export async function sendChat(id: string, text: string): Promise<void> {
-  const res = await fetch("/chat", {
+async function postJson(url: string, body: unknown): Promise<any> {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId: id, text }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `chat failed (${res.status})`);
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `request failed (${res.status})`);
   }
+  return res.json().catch(() => ({}));
+}
+
+/** Send a user message. Deltas arrive over SSE; this resolves at turn end. */
+export async function sendChat(id: string, text: string): Promise<void> {
+  await postJson("/chat", { sessionId: id, text });
+}
+
+/** Resolve a pending approval (D-16): approve/deny, optionally with edited args
+ *  and an out-of-fence root decision (D-19). */
+export async function approve(
+  id: string,
+  decision: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string; reason?: string },
+): Promise<void> {
+  await postJson(`/session/${id}/approve`, decision);
+}
+
+/** Answer a pending ask_user (D-18): a single string, or per-question answers. */
+export async function answer(
+  id: string,
+  payload: string | Array<{ question: string; header?: string; answer: string }>,
+): Promise<void> {
+  await postJson(`/session/${id}/answer`, typeof payload === "string" ? { text: payload } : { answers: payload });
+}
+
+/** Switch capability mode and/or approval policy for the session (D-07/D-08). */
+export async function setMode(id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }): Promise<void> {
+  await postJson(`/session/${id}/mode`, patch);
 }

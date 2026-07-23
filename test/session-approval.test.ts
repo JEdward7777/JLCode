@@ -94,12 +94,89 @@ describe("ask_user flow (D-18)", () => {
     const s = session(callThenAnswer("ask_user", { question: "Which color?", options: ["red", "blue"] }));
     await s.send("pick a color");
     expect(s.status).toBe("awaiting-input");
-    expect(s.awaitingInput?.question).toBe("Which color?");
+    expect(s.awaitingInput?.questions[0]?.question).toBe("Which color?");
+    expect(s.awaitingInput?.questions[0]?.options).toEqual(["red", "blue"]);
 
     await s.answer("blue");
     expect(s.status).toBe("idle");
     const toolEntry = s.conversation.entries.find((e) => e.type === "tool");
     expect(toolEntry && toolEntry.type === "tool" && toolEntry.content).toBe("blue");
+  });
+
+  it("parses a multi-question form and formats the answers as a labeled block", async () => {
+    const s = session(
+      callThenAnswer("ask_user", {
+        questions: [
+          { header: "Store", question: "Which store?", options: ["sqlite", "postgres"] },
+          { header: "Env", question: "Which envs?", options: ["dev", "prod"], multiSelect: true, allowFreeText: true },
+        ],
+      }),
+    );
+    await s.send("configure");
+    expect(s.awaitingInput?.questions).toHaveLength(2);
+    expect(s.awaitingInput?.questions[1]?.multiSelect).toBe(true);
+    expect(s.awaitingInput?.questions[1]?.allowFreeText).toBe(true);
+
+    await s.answer([
+      { header: "Store", question: "Which store?", answer: "postgres" },
+      { header: "Env", question: "Which envs?", answer: "dev, prod" },
+    ]);
+    const toolEntry = s.conversation.entries.find((e) => e.type === "tool");
+    const content = toolEntry && toolEntry.type === "tool" ? toolEntry.content : "";
+    expect(content).toContain("Store — Which store?: postgres");
+    expect(content).toContain("Env — Which envs?: dev, prod");
+  });
+});
+
+describe("live mode/approval switch (D-07/D-08)", () => {
+  it("re-gates the session and emits a mode event", async () => {
+    const events: string[] = [];
+    // Re-issues the write on every user turn (so both sends attempt it), then
+    // answers once the tool result comes back.
+    const rewriteEachTurn: LlmDriver = {
+      async *streamChat(req): AsyncGenerator<StreamEvent> {
+        const last = req.messages[req.messages.length - 1];
+        if (last?.role === "user") {
+          yield {
+            type: "tool_call",
+            index: 0,
+            id: `c${req.messages.length}`,
+            name: "write_file",
+            argsDelta: JSON.stringify({ path: "m.txt", content: "x" }),
+          };
+          yield { type: "finish", reason: "tool_calls" };
+        } else {
+          yield { type: "text", delta: "All set." };
+          yield { type: "finish", reason: "stop" };
+        }
+      },
+    };
+    const s = new Session({
+      config,
+      driver: rewriteEachTurn,
+      tools: new ToolRegistry([...fileTools(), askUserTool()]),
+      sandbox: new Sandbox([root]),
+      mode: "ask",
+      approval: "manual",
+      buildGate: (mode, approval) => new ModeApprovalGate(mode, approval),
+    });
+    s.onEvent((e) => {
+      if (e.type === "mode") events.push(`${e.mode}/${e.approval}`);
+    });
+    expect(s.mode).toBe("ask");
+
+    // In Ask mode a write is denied inline (no pause).
+    await s.send("write in ask mode");
+    expect(s.status).toBe("idle");
+    expect(fs.existsSync(path.join(root, "m.txt"))).toBe(false);
+
+    // Switch to Code/manual → the same write now pauses for approval.
+    s.setModeApproval("code", "manual");
+    expect(events).toEqual(["code/manual"]);
+    await s.send("write in code mode");
+    expect(s.status).toBe("awaiting-approval");
+    await s.approve({ approve: true });
+    expect(fs.readFileSync(path.join(root, "m.txt"), "utf8")).toBe("x");
   });
 });
 

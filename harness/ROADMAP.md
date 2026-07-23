@@ -2,16 +2,16 @@
 
 Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-40, no open
 items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
-resume / fork-rewind / debug-journal done). **Next: Phase 5 — the HTTP browser frontend (sliced
-P5a…P5f below), which completes Milestone M3 "real product".** Stack: **React + Vite** (D-39);
-serving/auth is a **CLI serve-mode surface** (D-40).
+resume / fork-rewind / debug-journal done). **In Phase 5 — the HTTP browser frontend (sliced
+P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b done; next is P5c.** Stack:
+**React + Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40).
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (96 Tier-0/1 tests green), and committed through P5a:
+Built, tested (101 Tier-0/1 tests green), and committed through P5b:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -48,11 +48,13 @@ built but not yet wired as the live record/replay layer (Tier-1) or the runtime 
 outside `serve`.
 
 To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
-continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a is done
-(React+Vite client, SSE/POST bus, streaming markdown chat, verified in Chrome — see
-[`VISUAL-LOG.md`](VISUAL-LOG.md)); next up is P5b — approvals / ask_user / mode controls in the
-browser.** Stack decided in D-39; serve-mode/auth surface in D-40. **96 Tier-0/1 tests green.**
-Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a + P5b are
+done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b: browser approvals with
+edit-before-approve, multi-question ask_user, live mode/approval controls, out-of-fence soft-fence
+prompts — all verified end-to-end in Chrome, see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is
+P5c — cost & interruption control (spend/cap, queued message, background-task kill, global stop).**
+Stack decided in D-39; serve-mode/auth surface in D-40. **101 Tier-0/1 tests green.** Rendered
+surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 
@@ -139,12 +141,26 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
 - **Verified:** 8 new Tier-0 tests (SSE streaming, session-create, static serving/SPA/traversal);
   **looked at it in Chrome** — see [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5a). **Done.**
 
-### P5b — Interactive gating in the browser
-- Approval UI with **edit-before-approve** (D-07/D-08/D-16); `ask_user` single + multi-question
-  forms (D-18); mode (Ask/Plan/Code) + approval-policy controls; **soft-fence** out-of-fence
-  prompts — allow-once / remember-root / deny (D-19).
-- **Done when:** the agent does gated tool work (read/write/run under the fence) entirely from
-  the browser, with inline command editing.
+### P5b — Interactive gating in the browser ✅ done (2026-07-23)
+- **Approval card with edit-before-approve** (D-16): a **hybrid editor** — a prominent field for
+  the primary arg (command / path) + a collapsible raw-JSON box (Joshua's call). Capability badge,
+  Approve/Deny; the edited args run, the assistant turn stays verbatim.
+- **`ask_user` single + multi-question forms** (D-18): the tool contract now advertises a
+  `questions[]` form (header / options / **multiSelect** / **allowFreeText**) *and* the
+  single-question convenience; the session normalizes both, and the browser renders option pills +
+  free-text with one Submit. Answers post back as `{text}` or `{answers:[…]}`.
+- **Live mode (Ask/Plan/Code) + approval-policy controls** (D-07/D-08): header segmented control +
+  dropdown → `POST /session/:id/mode`; the session **re-gates live** (new `buildGate` seam) and the
+  change is **persisted as the config default** (Joshua's call), via a `persistDefaults` dep.
+- **Soft-fence out-of-fence prompts** (D-19): allow-once / remember-root / deny, with the suggested
+  root shown; edits to the path are re-checked server-side.
+- **Offline driver for the gated flows:** `fakeAgentDriver()` turns message prefixes
+  (`write:`/`run:`/`ask:`/`form:`) into real tool calls, so `JLCODE_FAKE_LLM=1` exercises approvals
+  + ask_user end-to-end with no key/spend (used by the browser peek).
+- **Verified:** 5 new Tier-0 tests (multi-question parse + labeled-answer formatting, live mode
+  switch re-gates + emits, `/session/:id/mode` validation + persist, `/answer` with `answers[]`);
+  **looked at it in Chrome** — approval card, ask form, soft-fence prompt, and a full
+  type→Approve→file-on-disk round trip — see [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5b). **Done.**
 
 ### P5c — Cost & interruption control (D-33, D-34)
 - Live **whole-tree spend** in a screen corner + settable **cap** (hard-stop on breach, offer

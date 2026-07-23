@@ -10,7 +10,7 @@ import { resolveForCwd, findModelConfig } from "../config/operations.js";
 import { OpenRouterClient } from "../llm/client.js";
 import type { LlmDriver } from "../llm/types.js";
 import type { ModelConfig } from "../config/types.js";
-import { echoDriver } from "../session/fake.js";
+import { fakeAgentDriver } from "../session/fake.js";
 import { Session } from "../session/session.js";
 import { ToolRegistry, defaultTools } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
@@ -52,7 +52,7 @@ export async function runServe(args: string[]): Promise<number> {
   };
   const makeDriver = (config: ModelConfig): LlmDriver =>
     fake
-      ? echoDriver()
+      ? fakeAgentDriver()
       : new OpenRouterClient({
           apiKey: config.openRouterKey,
           referer: "https://github.com/JEL-LL/JLCode",
@@ -70,7 +70,11 @@ export async function runServe(args: string[]): Promise<number> {
       driver: makeDriver(config),
       tools: new ToolRegistry([...defaultTools(), askUserTool()]),
       sandbox: new Sandbox(roots),
-      gate: new ModeApprovalGate(config.defaultMode, config.defaultApproval, cfg.autoSafeAllowlist),
+      // Live-switchable gate (D-07/D-08): rebuilt when the user changes
+      // mode/approval from the browser. Starts from the config defaults.
+      mode: config.defaultMode,
+      approval: config.defaultApproval,
+      buildGate: (mode, approval) => new ModeApprovalGate(mode, approval, cfg.autoSafeAllowlist),
       conversation,
       onAddRoot: (dir) => {
         const current = loadConfig(paths);
@@ -115,6 +119,22 @@ export async function runServe(args: string[]): Promise<number> {
     version: getVersion(),
     onShutdown: () => setTimeout(() => closeServer(), 100),
     staticDir: staticDir(),
+    // Persist a live mode/approval switch as the config's new default (Joshua's
+    // call: the header controls both re-gate now and stick for next launch).
+    persistDefaults: (configName, patch) => {
+      const current = loadConfig(paths);
+      const idx = current.modelConfigs.findIndex((m) => m.name === configName);
+      if (idx < 0) return;
+      const mc = current.modelConfigs[idx]!;
+      const configs = current.modelConfigs.slice();
+      configs[idx] = {
+        ...mc,
+        defaultMode: patch.mode ?? mc.defaultMode,
+        defaultApproval: patch.approval ?? mc.defaultApproval,
+        updatedAt: new Date().toISOString(),
+      };
+      saveConfig({ ...current, modelConfigs: configs }, paths);
+    },
   });
   const server = await startNodeServer((req) => app.fetch(req), { host, port });
   // Flush pending persistence writes before exiting.

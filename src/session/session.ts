@@ -10,7 +10,7 @@
  */
 import path from "node:path";
 import { newId } from "../util/id.js";
-import type { ModelConfig } from "../config/types.js";
+import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { newConversation, appendEntry, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
@@ -24,6 +24,8 @@ import { ASK_USER } from "../tools/ask-user.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  AskUserAnswer,
+  AskUserQuestion,
   AskUserRequest,
   SessionEvent,
   SessionListener,
@@ -38,7 +40,14 @@ export interface SessionOptions {
   maxConsecutiveFailures?: number;
   tools?: ToolRegistry;
   sandbox?: Sandbox;
+  /** A static gate (tests). For a live-switchable gate, pass `buildGate`. */
   gate?: ToolGate;
+  /** Build a gate from a mode + approval policy, so the session can re-gate
+   *  itself when the user switches mode/approval at runtime (D-07/D-08). */
+  buildGate?: (mode: Mode, approval: ApprovalPolicy) => ToolGate;
+  /** Initial mode/approval (default from the config). Reported + re-gated live. */
+  mode?: Mode;
+  approval?: ApprovalPolicy;
   maxToolIterations?: number;
   /** Called when the user chooses "remember this root" (D-19) — to persist it. */
   onAddRoot?: (dir: string) => void;
@@ -50,18 +59,64 @@ const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
 
 type StepOutcome = "done" | "paused-approval" | "paused-input";
 
+const strings = (v: unknown): string[] | undefined =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined;
+
+/** Normalize ask_user tool args into a form spec: the structured `questions`
+ *  array when present, else the single-question convenience, else a placeholder. */
+function parseAskQuestions(args: Record<string, unknown>): AskUserQuestion[] {
+  if (Array.isArray(args.questions)) {
+    const out: AskUserQuestion[] = [];
+    for (const raw of args.questions) {
+      if (!raw || typeof raw !== "object") continue;
+      const o = raw as Record<string, unknown>;
+      if (typeof o.question !== "string") continue;
+      const q: AskUserQuestion = { question: o.question };
+      if (typeof o.header === "string") q.header = o.header;
+      const opts = strings(o.options);
+      if (opts) q.options = opts;
+      if (o.multiSelect === true) q.multiSelect = true;
+      if (o.allowFreeText === true) q.allowFreeText = true;
+      out.push(q);
+    }
+    if (out.length > 0) return out;
+  }
+  const single: AskUserQuestion = {
+    question: typeof args.question === "string" ? args.question : "(no question provided)",
+  };
+  const opts = strings(args.options);
+  if (opts) single.options = opts;
+  return [single];
+}
+
+/** Turn an answer payload into the tool-result string the model reads. A bare
+ *  string (single-question) passes through verbatim; an array is rendered as a
+ *  labeled block so multi-question answers stay unambiguous. */
+function formatAnswers(payload: string | AskUserAnswer[]): string {
+  if (typeof payload === "string") return payload;
+  if (payload.length === 1) return payload[0]!.answer;
+  return (
+    "The user answered:\n" +
+    payload.map((a) => `- ${a.header ? `${a.header} — ` : ""}${a.question}: ${a.answer}`).join("\n")
+  );
+}
+
 export class Session {
   readonly id: string;
   readonly config: ModelConfig;
   conversation: Conversation;
   status: SessionStatus = "idle";
+  /** Live capability mode + approval policy (D-07/D-08), switchable at runtime. */
+  mode: Mode;
+  approval: ApprovalPolicy;
 
   private readonly driver: LlmDriver;
   private readonly systemPrompt: string;
   private readonly maxFailures: number;
   private readonly tools: ToolRegistry | undefined;
   private readonly sandbox: Sandbox | undefined;
-  private readonly gate: ToolGate;
+  private gate: ToolGate;
+  private readonly buildGate: ((mode: Mode, approval: ApprovalPolicy) => ToolGate) | undefined;
   private readonly maxToolIterations: number;
   private readonly onAddRoot: ((dir: string) => void) | undefined;
   private consecutiveFailures = 0;
@@ -80,13 +135,28 @@ export class Session {
     this.maxFailures = options.maxConsecutiveFailures ?? 3;
     this.tools = options.tools;
     this.sandbox = options.sandbox;
-    this.gate = options.gate ?? new AllowAllGate();
+    this.mode = options.mode ?? options.config.defaultMode;
+    this.approval = options.approval ?? options.config.defaultApproval;
+    this.buildGate = options.buildGate;
+    this.gate = options.buildGate
+      ? options.buildGate(this.mode, this.approval)
+      : (options.gate ?? new AllowAllGate());
     this.maxToolIterations = options.maxToolIterations ?? 12;
     this.onAddRoot = options.onAddRoot;
     const addendum = options.config.systemPromptAddendum?.trim();
     const base = options.systemPrompt ?? BASE_SYSTEM;
     this.systemPrompt = addendum ? `${base}\n\n${addendum}` : base;
     this.conversation = options.conversation ?? newConversation();
+  }
+
+  /** Switch capability mode and/or approval policy for this live session and
+   *  re-gate future tool calls (D-07/D-08). Persisting the config default is the
+   *  caller's concern; the session just re-gates and announces the change. */
+  setModeApproval(mode?: Mode, approval?: ApprovalPolicy): void {
+    if (mode !== undefined) this.mode = mode;
+    if (approval !== undefined) this.approval = approval;
+    if (this.buildGate) this.gate = this.buildGate(this.mode, this.approval);
+    this.emit({ type: "mode", mode: this.mode, approval: this.approval });
   }
 
   /** Rewind / switch branches: point the active leaf at an existing entry.
@@ -204,12 +274,14 @@ export class Session {
     await this.advance();
   }
 
-  /** Provide the answer to a pending ask_user and continue. */
-  async answer(text: string): Promise<void> {
+  /** Provide the answer(s) to a pending ask_user and continue (D-18). A bare
+   *  string answers a single-question form verbatim (the tool result is exactly
+   *  that text); an array carries per-question answers for a multi-question form. */
+  async answer(payload: string | AskUserAnswer[]): Promise<void> {
     const pending = this.pendingQuestion;
     if (!pending) throw new Error("No pending question");
     this.pendingQuestion = undefined;
-    this.appendToolResult(pending.call, text, false);
+    this.appendToolResult(pending.call, formatAnswers(payload), false);
     this.pendingToolCalls.shift();
     await this.advance();
   }
@@ -340,11 +412,7 @@ export class Session {
 
     // ask_user is intercepted — it pauses for the user's answer (D-18).
     if (call.function.name === ASK_USER) {
-      const question = typeof args.question === "string" ? args.question : "(no question provided)";
-      const options = Array.isArray(args.options)
-        ? args.options.filter((o): o is string => typeof o === "string")
-        : undefined;
-      const request: AskUserRequest = { id: newId("ask"), question, ...(options ? { options } : {}) };
+      const request: AskUserRequest = { id: newId("ask"), questions: parseAskQuestions(args) };
       this.pendingQuestion = { request, call };
       this.emit({ type: "awaiting-input", question: request });
       return "paused-input";

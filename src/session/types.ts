@@ -2,6 +2,7 @@
 import type { ToolKind } from "../tools/types.js";
 import type { Entry } from "../conversation/types.js";
 import type { Usage } from "../llm/types.js";
+import type { ApprovalPolicy, Mode } from "../config/types.js";
 
 /** A verbose per-turn record for the debug journal (D-15) — never replayed. */
 export type DebugRecord =
@@ -33,11 +34,30 @@ export interface ApprovalRequest {
   outOfFence?: { paths: string[]; suggestedRoot: string };
 }
 
-/** The model's ask_user pause (D-18). */
+/** One question in an ask_user form (D-18). */
+export interface AskUserQuestion {
+  /** Short label/chip for the question (optional). */
+  header?: string;
+  question: string;
+  /** Suggested answers, rendered as buttons. */
+  options?: string[];
+  /** Allow selecting several options at once. */
+  multiSelect?: boolean;
+  /** Allow a typed answer alongside / instead of the options. */
+  allowFreeText?: boolean;
+}
+
+/** The model's ask_user pause (D-18) — a structured multi-question form. */
 export interface AskUserRequest {
   id: string;
+  questions: AskUserQuestion[];
+}
+
+/** A resolved answer to one question of an ask_user form. */
+export interface AskUserAnswer {
   question: string;
-  options?: string[];
+  header?: string;
+  answer: string;
 }
 
 export interface ApprovalDecision {
@@ -64,6 +84,7 @@ export type SessionEvent =
   | { type: "tool-end"; name: string; isError: boolean }
   | { type: "awaiting-approval"; request: ApprovalRequest }
   | { type: "awaiting-input"; question: AskUserRequest }
+  | { type: "mode"; mode: Mode; approval: ApprovalPolicy } // live mode/approval change (D-07/D-08)
   | { type: "truncation"; message: string }
   | { type: "error"; message: string }
   | { type: "halted"; reason: string };

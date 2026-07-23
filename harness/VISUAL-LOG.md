@@ -39,3 +39,44 @@ with my own eyes:
 Not yet exercised visually (later slices): live token-by-token streaming *as it
 arrives* (only the settled result was captured here), approvals/ask_user (P5b),
 cost/controls (P5c), branch nav / journal / Mermaid / images / TTS (P5d).
+
+---
+
+## P5b — interactive gating in the browser · 2026-07-23 · ✅ looked good
+
+**Screenshots:** [`visual/p5b-approval.png`](visual/p5b-approval.png) ·
+[`visual/p5b-ask.png`](visual/p5b-ask.png) ·
+[`visual/p5b-fence.png`](visual/p5b-fence.png) ·
+[`visual/p5b-e2e-done.png`](visual/p5b-e2e-done.png)
+
+Drove the built server with the new **fake agent driver** (`JLCODE_FAKE_LLM=1`,
+isolated config/data dirs) — it turns prefixes in a message into real tool calls
+(`write:` / `run:` / `ask:` / `form:`), so the gated flows run end-to-end offline
+with no key/spend. Seeded each surface over the HTTP API, then screenshotted via
+CDP. Confirmed with my own eyes:
+
+- **Header mode/approval controls** — the `ask · plan · code` segmented control
+  (Code active) and the approval-policy dropdown (`manual`) render in the top bar
+  on every surface. Flipping them POSTs `/session/:id/mode`; the session re-gates
+  live and the choice is persisted as the config default (Joshua's call).
+- **Approval card, hybrid editor (D-16)** — `write_file` with a red **WRITE**
+  capability badge, the reason, a prominent editable **`path`** primary field, a
+  collapsible **raw args (JSON)** box, and **Approve / Deny**. The composer
+  placeholder switches to "Respond to the agent above…" and Send is disabled
+  while a prompt is open.
+- **Soft-fence out-of-fence prompt (D-19)** — writing to `/tmp/…` (outside the
+  fence) shows the ⚠ "outside the workspace fence" note with the offending path
+  and the three choices: **Allow once**, **Remember `/tmp`** (the suggested root
+  in a code chip), **Deny**.
+- **Multi-question ask_user form (D-18)** — three fields with header chips
+  (STORE / TARGETS / NOTES), option pills, a "choose any" hint on the multiSelect
+  field, free-text inputs where allowed, and a single **Submit**.
+- **End-to-end gated work from the browser** (P5b "done when") — typed
+  `write: from-browser.txt | …` into the composer, pressed Enter, the approval
+  card appeared, clicked **Approve**; the file was **written to disk** (verified)
+  and the assistant's final answer streamed in. A tool-call-only turn no longer
+  renders an empty bubble.
+
+Not yet exercised visually (later slices): live spend/cost + cap, queued message,
+background-task kill, global stop (P5c); branch nav / journal / Mermaid / images /
+TTS (P5d); multi-session UI (P5e); auth (P5f).
