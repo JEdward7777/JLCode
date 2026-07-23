@@ -171,6 +171,7 @@ Nothing project-specific is written into the project folder.
   awaiting-input), POST for browser→server actions (send, approve/deny/edit, answer, switch).
 - **Rich rendering:** the chat view renders **markdown**, including **Mermaid diagrams**
   and inline images (§16). *(Near-term.)*
+- **Text-to-speech button** to read the agent's output aloud. *(Nice-to-have.)*
 - **Chat view vs. workbench chrome (forward constraint):** the **chat view** is a
   self-contained component. Auxiliary tools that wrap around it — a **file viewer** and
   **file upload/download** to/from the machine viewing the page (§future) — are a separate
@@ -312,8 +313,19 @@ Recommended approach (Joshua asked; **pending his final pick**):
 The simpler "log in with no password first, set it later in the UI" option is acceptable **only**
 if the server always stays on localhost; it leaves an exposed window otherwise.
 
+## 21. Response caching as a product feature (candidate — evaluate)
+
+The **request-keyed LLM cache** built for testing (see [`TESTING.md`](TESTING.md)) could double
+as a **runtime feature** to cut cost on repeated identical calls. **Not committed** — must be
+evaluated against provider rules first: a cached replay must still honor reasoning-replay
+(D-14, never drop/reconstruct required reasoning) and provider terms of service. Anthropic's
+**own prompt caching** is the sanctioned mechanism for cheap input reuse (the safe lane);
+reusing whole responses is the lane needing care — especially for Fable.
+
 ---
 
 ## Open questions
 
 Tracked in [`DECISIONS.md`](DECISIONS.md) under "Open". Nothing blocking v1 scaffolding.
+Testing strategy is agreed and documented in [`TESTING.md`](TESTING.md) (only the O-02
+compaction/Fable tuning is deferred to build time).

@@ -32,6 +32,7 @@ Spec references point at [`SPEC.md`](SPEC.md).
 | D-20 | HTTP framework = **Hono** | Tiny, TS-first, clean SSE; runs on Node now and Cloudflare edge — aligns with the future proxy (§18) | was O-07 |
 | D-21 | OpenRouter access = **thin custom fetch client** (not the OpenAI SDK) | We own the exact wire JSON, guaranteeing `reasoning_details` round-trips verbatim (D-14) and letting us adapt when OpenRouter adds fields; no SDK reshaping | was O-08 |
 | D-22 | CLI/package name = **`jlcode`**, **npx-compatible** (published package with a `bin` entry; `npx jlcode` runs without a global install, mirroring `file_utils`' `uvx`) | Short and unambiguous; zero-install run matches Joshua's workflow | was O-09 |
+| D-23 | **Tiered + gated test harness** (see [`TESTING.md`](TESTING.md)): Tier 0 offline unit, Tier 1 cached model tests via a **request-keyed LLM cache** (pay-once, self-invalidates when our request changes), Tier 2 cheap live smoke (minimax 2.5, configurable), Tier 3 expensive model-targeted live (Opus/Fable, per-model, rare). Plus an **LLM-as-judge** helper (cached). Default `npm test` = free tiers; paid tiers gated by flag+creds; **agent asks Joshua which level before running paid tiers, unless already targeting that expensive thing.** Framework: Vitest | Coverage without repeated spend; cache catches our regressions while periodic Tier-3 live catches provider drift (the KiloCode rot); intentional cost | Joshua's design; SPEC §14 |
 
 ## Deferred (non-goals for v1; keep possible)
 

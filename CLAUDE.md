@@ -9,6 +9,7 @@ connection, and explicit Ask / Plan / Code modes.
 - [`harness/SPEC.md`](harness/SPEC.md) — what we're building (functional spec).
 - [`harness/ARCHITECTURE.md`](harness/ARCHITECTURE.md) — how it's built (technical design).
 - [`harness/DECISIONS.md`](harness/DECISIONS.md) — why (decision log, with rationale).
+- [`harness/TESTING.md`](harness/TESTING.md) — the tiered/gated test strategy and cost model.
 - [`harness/ROADMAP.md`](harness/ROADMAP.md) — the phased build plan and current milestone.
 
 The spec is the source of truth. If code and spec disagree, fix one of them
@@ -22,6 +23,9 @@ deliberately and record it in `DECISIONS.md` — don't let them silently drift.
   store (see SPEC), not in the repo. `.gitignore` guards against stray `.env`s.
 - **Sandbox everything file-touching** against the active workspace fence — one
   enforcement point, before any tool (native or MCP) touches disk.
+- **Tests cost money.** Default runs are the free tiers (0+1) only. Before running any
+  paid tier (2/3, live models), **ask Joshua which level to run** — unless the current task
+  is specifically targeting that expensive model/feature. See [`harness/TESTING.md`](harness/TESTING.md).
 - Match the surrounding code's style, naming, and comment density.
 
 ## Git
