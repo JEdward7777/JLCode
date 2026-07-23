@@ -174,6 +174,16 @@ Nothing project-specific is written into the project folder.
 - **Rich rendering:** the chat view renders **markdown**, including **Mermaid diagrams**
   and inline images (§16). *(Near-term.)*
 - **Text-to-speech button** to read the agent's output aloud. *(Nice-to-have.)*
+- **Whimsical "percolating" messages (nice-to-have):** while the agent works, cycle a random
+  playful status line (à la `Reticulating splines…`) to raise a smile. Ship a list of ~20 and
+  let it grow. Starter set:
+  `Reticulating splines…` · `Consulting the rubber duck…` · `Bribing the compiler…` ·
+  `Shaving the yak…` · `Negotiating with the borrow checker…` · `Herding semicolons…` ·
+  `Warming up the flux capacitor…` · `Untangling the dependency graph…` · `Summoning stack frames…` ·
+  `Convincing the linter…` · `Feeding the hamsters…` · `Aligning tabs and spaces (choose wisely)…` ·
+  `Rolling for initiative…` · `Dusting off the parentheses…` · `Rerouting the tubes…` ·
+  `Percolating…` · `Compiling excuses…` · `Asking the elder gophers…` · `Buffering the buffer…` ·
+  `Teaching the model humility…` · `Locating the missing semicolon…`
 - **Chat view vs. workbench chrome (forward constraint):** the **chat view** is a
   self-contained component. Auxiliary tools that wrap around it — a **file viewer** and
   **file upload/download** to/from the machine viewing the page (§future) — are a separate
