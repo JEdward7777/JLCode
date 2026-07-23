@@ -67,16 +67,25 @@ export async function runServe(args: string[]): Promise<number> {
   }
 
   const port = Number(flagString(flags, "port") ?? process.env.JLCODE_PORT ?? DEFAULT_PORT);
-  const { app } = createServer({ resolveConfig, newSession, version: getVersion() });
+  // eslint-disable-next-line prefer-const
+  let closeServer = (): void => {};
+  const { app } = createServer({
+    resolveConfig,
+    newSession,
+    version: getVersion(),
+    onShutdown: () => setTimeout(() => closeServer(), 100),
+  });
   const server = await startNodeServer((req) => app.fetch(req), { host: HOST, port });
+  closeServer = () => server.close(() => process.exit(0));
 
   const base = `http://${HOST}:${port}`;
   process.stderr.write(
     [
       `JLCode dev server — ${config.name} (${config.model})${fake ? " [fake]" : ""}`,
-      `listening on ${base}`,
+      `listening on ${base}  (pid ${process.pid})`,
       ``,
       `  curl -s ${base}/health`,
+      `  curl -sX POST ${base}/shutdown        # stop the server`,
       `  curl -s ${base}/chat -H 'content-type: application/json' -d '{"text":"hello"}'`,
       `  # reuse the returned sessionId to continue the thread:`,
       `  curl -s ${base}/chat -H 'content-type: application/json' -d '{"text":"and again","sessionId":"<id>"}'`,

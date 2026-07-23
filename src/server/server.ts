@@ -17,6 +17,8 @@ export interface ServerDeps {
   /** Build a fully-wired session (driver + tools + sandbox + gate) for a config. */
   newSession: (config: ModelConfig) => Session;
   version: string;
+  /** Optional: called by POST /shutdown so a caller can stop the dev server. */
+  onShutdown?: () => void;
 }
 
 function entryView(entry: Entry): Record<string, unknown> {
@@ -59,7 +61,20 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
 
   app.get("/health", (c) => {
     const config = deps.resolveConfig();
-    return c.json({ ok: true, version: deps.version, config: config?.name ?? null, model: config?.model ?? null });
+    return c.json({
+      ok: true,
+      version: deps.version,
+      pid: process.pid,
+      config: config?.name ?? null,
+      model: config?.model ?? null,
+    });
+  });
+
+  // Dev convenience: stop the server cleanly (localhost only; auth arrives in P5).
+  app.post("/shutdown", (c) => {
+    if (!deps.onShutdown) return c.json({ error: "shutdown not supported" }, 404);
+    deps.onShutdown();
+    return c.json({ stopping: true });
   });
 
   app.get("/config", (c) => {
