@@ -47,6 +47,13 @@ These are automatic — don't wait to be reminded:
 4. **Keep the harness current.** Update `ROADMAP.md`'s "Current status — resume here" block at
    each milestone so a lost session resumes cleanly. Record deliberate design changes in
    `DECISIONS.md`; don't let code and spec drift.
+5. **Watch context length; suggest a fresh thread at boundaries.** Caching discounts the stable
+   prefix but the conversation still grows every turn (cost climbs, focus dulls). When the thread
+   is long **and** you're at a natural boundary (a milestone committed, durable state in the
+   harness), **proactively suggest Joshua start a new thread** — it resumes cleanly from the
+   `ROADMAP.md` status + `DECISIONS.md`. This mirrors what we're building: once something is
+   durably saved, it's safe to drop from the live context because it can be re-read later (see
+   SPEC §15 durability-aware compaction / minimize-expand, X-08).
 
 ## Git
 

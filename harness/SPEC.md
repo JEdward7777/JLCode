@@ -334,6 +334,12 @@ as the **sole** compaction regime; the perfect-or-gone rules above then apply on
 - **Agent-directed minimize/expand (planned, X-08):** tools to collapse specific chunks the
   agent no longer needs (e.g. a file read) after noting what matters, expandable later. Same
   non-destructive overlay; targets non-reasoning items first.
+- **Durability-aware context management (principle):** the agent tracks what it has **durably
+  persisted** — written to files / committed to the harness or git, or otherwise re-readable via
+  its tools — and may then **safely drop or minimize that from the live context**, since it can
+  re-read it later; not-yet-persisted (ephemeral) content is kept. *"I saved it, so I can forget
+  it for now."* This heuristic guides both compaction and X-08 minimize/expand — and it's the same
+  instinct behind starting a fresh thread once state lives durably in the harness.
 - **Transparency:** compaction/minimize events are shown in the UI and recorded; the
   pre-compaction tree stays in persisted history (§8) — nothing is truly lost.
 - **O-02 resolved (D-38):** mooted by design — v1 ships safe-harbor only, #2 partial-keep-lite
