@@ -5,10 +5,18 @@ import fs from "node:fs";
 import { AppendLog } from "../src/persist/append-log";
 
 let dir: string;
+const opened: AppendLog[] = [];
+/** Create a log and track it so afterEach closes its fd (no leaks under load). */
+function mk(file: string): AppendLog {
+  const log = new AppendLog(file);
+  opened.push(log);
+  return log;
+}
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-alog-"));
 });
 afterEach(async () => {
+  await Promise.all(opened.splice(0).map((l) => l.close()));
   await AppendLog.closeAll();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -24,7 +32,7 @@ function read(file: string): unknown[] {
 describe("AppendLog", () => {
   it("appends records as JSONL and resolves when durable", async () => {
     const file = path.join(dir, "a.jsonl");
-    const log = new AppendLog(file);
+    const log = mk(file);
     await log.append({ n: 1 });
     await log.append({ n: 2 });
     await log.flush();
@@ -33,7 +41,7 @@ describe("AppendLog", () => {
 
   it("serializes concurrent appends in enqueue order (no interleave)", async () => {
     const file = path.join(dir, "b.jsonl");
-    const log = new AppendLog(file);
+    const log = mk(file);
     // Fire many appends without awaiting each — the queue must keep order.
     const proms = [];
     for (let i = 0; i < 50; i++) proms.push(log.append({ i }));
@@ -50,7 +58,7 @@ describe("AppendLog", () => {
 
   it("a crash-truncated last line is recoverable by a tolerant parse", async () => {
     const file = path.join(dir, "d.jsonl");
-    const log = new AppendLog(file);
+    const log = mk(file);
     await log.append({ ok: true });
     await log.flush();
     fs.appendFileSync(file, '{"partial": '); // simulate a torn write
