@@ -1,0 +1,35 @@
+{
+  "name": "jlcode",
+  "version": "0.0.0",
+  "description": "A from-scratch coding agent (KiloCode replacement) over OpenRouter, with per-client model configs and explicit Ask/Plan/Code modes.",
+  "type": "module",
+  "private": true,
+  "author": "Joshua Lansford <Joshua@lansfords.com>",
+  "license": "MIT",
+  "bin": {
+    "jlcode": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "npm run build && node dist/cli.js",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
+  }
+}
