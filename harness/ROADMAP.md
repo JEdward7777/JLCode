@@ -1,11 +1,41 @@
 # JLCode — Roadmap
 
-Status: **proposed build sequence, pending Joshua's approval** (2026-07-22). The
-architecture is settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-29; only O-02 deferred). This
-lays out *the order we build in*. It's a proposal — adjust freely before we start coding.
+Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-38, no open
+items). Phases **0–3 done** (Milestones M1 "talk to a client" + M2 "does real work" complete).
+**Next: Phase 4 — persistence + resume + fork/rewind (M3).**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
+
+## Current status — resume here
+
+Built, tested (69 Tier-0/1 tests green), and committed through `b70532f`:
+
+- **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
+- **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
+  keys via stdin or `JLCODE_ADD_KEY`; `config.json` chmod 600).
+- **P2** OpenRouter client (streaming, verbatim reasoning, request-keyed cache *primitive*
+  `src/llm/cache.ts`) + conversation tree/wire + Session/SessionManager + `chat` REPL. Truncation
+  (D-30) + circuit breaker (D-32).
+- **P3a** sandbox + native tools (read/write/delete/list/glob/grep + run_command) + tool loop.
+- **P3b** mode∩approval gate + pause→approve/deny/**edit** + `ask_user`; **soft fence** (D-19):
+  out-of-fence access prompts allow-once / remember-root (persisted `folderRoots`) / deny.
+- **Dev harness (beyond the phase list):** `jlcode serve` HTTP endpoint (`/chat`, `/session/:id`,
+  `/approve`, `/answer`, `/config`, `/health`, `POST /shutdown`); `serve --config <name>` pins a
+  config; server re-resolves config live; sandbox fenced to the launch dir. Fake echo driver via
+  `JLCODE_FAKE_LLM=1`. This is how conversations/tools are driven & tested (incl. by the agent).
+
+**Live-validated** (real gpt-4o-mini, deepseek-r1): multi-turn memory, truncation, reasoning
+capture, gated tool read/write verified on disk, sandbox fence (approve→still-fenced then soft
+allow/remember), `/shutdown`.
+
+**Known carve-outs:** background-task **kill** (D-34) rides with P5; the request-keyed cache is
+built but not yet wired as the live record/replay layer (Tier-1) or the runtime feature (§21);
+`chat` REPL has no tools (tool flow is server-only so far); tools not wired into the live agent
+outside `serve`.
+
+To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
+continue at the next unchecked phase below.
 
 ---
 
