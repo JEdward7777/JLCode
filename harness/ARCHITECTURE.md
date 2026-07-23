@@ -117,19 +117,33 @@ Two OS-level locations, both overridable by env, both outside the project:
   A single hand-editable `config.json`: model configurations (incl. keys, restrictive perms),
   per-directory last-used bindings, the Auto-safe allowlist, global prefs.
 - **Data store** — `${JLCODE_DATA_DIR:-$XDG_DATA_HOME/jlcode (\~/.local/share/jlcode)}`:
-  - `conversations/` — one **flat JSON file per conversation** + `index.json` (working-dir → convo ids for the history filter).
-  - `logs/` — the rotating **diagnostic log** and the append-only **debug journal** (§9).
+  - `conversations/` — one **append-only JSONL log per conversation** (D-37) + `index.json`
+    (working-dir → convo ids for the history filter). Plus a per-conversation **debug journal**.
+  - `logs/` — the rotating app-global **diagnostic log** (§9).
 
 Windows/macOS: use the platform config/data dirs; `JLCODE_CONFIG_DIR` / `JLCODE_DATA_DIR`
 override everywhere (Docker sets these explicitly). SQLite is the noted upgrade path if
 multi-instance concurrency or search ever demand it.
 
+### Persistence: event stream → projections (D-37)
+
+Each session has **one ordered event stream** (the same events the bus §11 carries). The
+**canonical transcript** and the **debug journal** are two **projections** of it, both written
+through a shared **`AppendLog`** primitive: append-only **JSONL**, a single serialized writer per
+file, `fsync` on *finalized* units (a completed turn / tool result — not per token), torn-tail
+tolerant on read (a crash-truncated last line fails to parse and is dropped). The transcript log
+is **folded** into the tree below on load. **One writing session per conversation file** (a fork
+spawns its own conversation), so concurrent sessions write different files — no contention
+(the D-36 anti-entropy invariant, realized). The app-global diagnostic log is one shared AppendLog.
+
 ### Conversation record — append-only parent-pointer tree (D-15, D-17)
 
-One file per conversation. `entries` is **append-only**; each entry has a stable generated
-`id` and a `parent` id. A *branch* is the chain you get tracing `parent` from a leaf upward;
-`activeLeaf` restores the viewed branch on resume. Fork = append a sibling off a parent
-(the pencil-edit of a user message does exactly this); rewind = move `activeLeaf` up.
+Conceptually one record per conversation, materialized as the append-only JSONL log above and
+folded on load. `entries` is **append-only**; each entry has a stable generated `id` and a
+`parent` id. A *branch* is the chain you get tracing `parent` from a leaf upward; `activeLeaf`
+restores the viewed branch on resume. Fork = append a sibling off a parent (the pencil-edit of a
+user message does exactly this); rewind = append an `activeLeaf` change. The JSON below is the
+*folded* view; on disk it is the sequence of appended records.
 
 ```jsonc
 {
