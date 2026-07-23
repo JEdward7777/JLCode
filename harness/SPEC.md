@@ -425,6 +425,13 @@ Handling (agreed, D-30):
   thoughts: … — continue from here."* Fable-safe (no signature to validate), lossless, and the
   model resumes **aware**, so it doesn't loop. (Same **"re-express, don't replay"** principle as
   bookend-quoting and the safe-harbor in §15.)
+- **Recovering the partial (why we can, D-31):** our thin client (D-21) **streams and retains
+  the raw tool-call `arguments`**, so we recover partial content by **streaming value extraction**
+  (build each field as it arrives → truncation leaves a *known, unterminated* `content` string,
+  not opaque broken JSON), with a **repair-and-parse** fallback (close open structures). Pure-JS,
+  no native dep. Trim a mid-escape tail to the last clean boundary; arguments are ordered
+  **content-last** so metadata survives. (A black-box SDK would drop the partial — owning the
+  client is what makes this possible.)
 - **Tool-call cut off — split by op type:**
   - **Additive (create / append / insert):** a partial can't delete anything, so keep the
     recovered content and return a **visible tool-result** telling the model it was cut off and to
@@ -439,6 +446,21 @@ Handling (agreed, D-30):
 
 "Never apply a partial edit" and "keep partial file creation" are consistent — they're the two
 halves of the additive-vs-replacing split.
+
+**Content transport (agreed, D-31):** file content travels as a normal **tool-call JSON
+argument** (streamed + partial-recovered as above), *not* a separate output convention. Ordered
+content-last; large writes use chunked append; prompt caching (§22) offsets re-send cost. An
+output-convention text channel is kept in reserve as a future token-cost optimization for very
+large writes only.
+
+## 24. Safety: repeated-failure circuit breaker
+
+Generalizing the anti-loop guard (§23): track **consecutive failures of any kind** — provider
+errors, unresolved truncations, tool errors, invalid/unparsable tool calls, no-progress repeats.
+**N in a row (default 3, configurable) → hard-stop the agent loop and escalate to the user**
+(awaiting-input, §13), recording the streak in the debug journal (§14). Resets on any success.
+Protects against runaway loops and, importantly, **runaway cost** (D-32). This is the backstop
+behind the per-case handling (truncation §23, approvals §6).
 
 ---
 

@@ -34,9 +34,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - Conversation tree in memory (append-only parent-pointer, `activeLeaf`) + wire assembly
   (D-15, D-17). A minimal CLI loop: send a message, stream a reply.
 - **Truncation handling (D-30):** detect `finish_reason: length`; re-express truncated
-  reasoning as plain-text input so the model continues (no silent loss/loop).
+  reasoning as plain-text input so the model continues (no silent loss/loop). **Streaming
+  partial recovery of tool-call args** (D-31): retain raw `arguments`, streaming value
+  extraction + repair fallback.
+- **Circuit breaker (D-32):** consecutive-failure counter → hard-stop + escalate.
 - **Done when:** you can hold a real conversation from the terminal; reasoning round-trips;
-  a truncated turn is detected and recoverable; Tier-1 cached tests cover the loop.
+  a truncated turn is detected and recoverable; repeated failures halt cleanly; Tier-1 tests cover it.
 
 ## Phase 3 — Tools, sandbox, modes & approval
 **Goal:** the agent can do gated work.
