@@ -1,0 +1,16 @@
+{
+  "//": "Editor/type-check config for the browser client. Vite (esbuild) does the actual transpile; the server build (root tsconfig) excludes this via include:[src].",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src"]
+}

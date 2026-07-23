@@ -45,17 +45,22 @@ export class ConversationStore {
     return log;
   }
 
-  /** Start a new conversation log (header + index row). */
+  /** Start a new conversation log (header + index row). Both appends are issued
+   *  before awaiting, so their queue tails are registered synchronously — a
+   *  `flush()`/`close()` can never slip into a gap between them (which, with a
+   *  fire-and-forget `create()`, would let the index write outlive teardown). */
   async create(meta: ConversationMeta): Promise<void> {
     const createdAt = new Date().toISOString();
-    await this.log(meta.id).append({
-      kind: "header",
-      id: meta.id,
-      workingDir: meta.workingDir,
-      configName: meta.configName,
-      createdAt,
-    });
-    await this.index.append({ id: meta.id, workingDir: meta.workingDir, createdAt });
+    await Promise.all([
+      this.log(meta.id).append({
+        kind: "header",
+        id: meta.id,
+        workingDir: meta.workingDir,
+        configName: meta.configName,
+        createdAt,
+      }),
+      this.index.append({ id: meta.id, workingDir: meta.workingDir, createdAt }),
+    ]);
   }
 
   /** Persist a newly-appended tree entry. */

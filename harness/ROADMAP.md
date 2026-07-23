@@ -11,7 +11,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (69 Tier-0/1 tests green), and committed through `b70532f`:
+Built, tested (96 Tier-0/1 tests green), and committed through P5a:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -48,9 +48,11 @@ built but not yet wired as the live record/replay layer (Tier-1) or the runtime 
 outside `serve`.
 
 To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
-continue at the next unchecked phase below. **Phase 5 is now sliced P5a…P5f (see below); next up
-is P5a — React + Vite toolchain + SSE/POST transport + bare streaming chat.** Stack decided in
-D-39; serve-mode/auth surface in D-40.
+continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a is done
+(React+Vite client, SSE/POST bus, streaming markdown chat, verified in Chrome — see
+[`VISUAL-LOG.md`](VISUAL-LOG.md)); next up is P5b — approvals / ask_user / mode controls in the
+browser.** Stack decided in D-39; serve-mode/auth surface in D-40. **96 Tier-0/1 tests green.**
+Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 
@@ -119,14 +121,23 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
 (D-39): the build toolchain is a devDependency that emits **pre-built static assets**, so the
 `npx jlcode` runtime stays native-free (honors D-25's intent).
 
-### P5a — Client toolchain + transport skeleton
-- React + Vite wired: client bundle **built to static assets**, served by the Hono server;
-  `npm run build` produces them; dev-time HMR is a dev convenience only.
-- **SSE down / POST up** event bus (D-18, §11) replacing the JSON dev endpoints; the per-session
-  event stream (D-37) is the wire. Configurable port; **`--serve` bind arg** selects localhost
-  (default, no auth) vs outward (D-40) — bind surface lands here, password modes in P5f.
-- Bare chat view over the existing Session/SessionManager: send, **stream tokens**, render markdown.
-- **Done when:** you hold a streaming, markdown-rendered conversation in the browser (localhost).
+### P5a — Client toolchain + transport skeleton ✅ done (2026-07-23)
+- React + Vite wired (`web/` → `dist/web`, `tsc && vite build`); React/marked/DOMPurify are
+  **build-time devDeps** bundled into shipped static assets, runtime stays native-free (D-39).
+- **SSE down / POST up** bus: `POST /session` (create), `GET /session/:id/events` (SSE; first
+  `ready` frame = listener attached), `POST /chat` streams deltas then returns settled state. The
+  `node-adapter` now **streams `ReadableStream` bodies** so SSE flushes live. Static handler serves
+  `dist/web` with SPA fallback + traversal guard; API routes win. **`/shutdown` kept as the
+  curl-only kill path** (no UI button).
+- **Bind seam (D-40):** `--host` selects bind scope (localhost default, no auth; non-loopback warns
+  until P5f). Configurable `--port`.
+- Bare React chat view over Session/SessionManager: create/deep-link (`?session=`) → SSE → stream
+  tokens → **sanitized markdown** (marked→DOMPurify) + reasoning disclosure. Whimsical working
+  words (percolating…).
+- Fixed a persistence race: `ConversationStore.create` now issues header+index appends before
+  awaiting, so a fire-and-forget create can't outlive `flush`/`close` (was a teardown flake).
+- **Verified:** 8 new Tier-0 tests (SSE streaming, session-create, static serving/SPA/traversal);
+  **looked at it in Chrome** — see [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5a). **Done.**
 
 ### P5b — Interactive gating in the browser
 - Approval UI with **edit-before-approve** (D-07/D-08/D-16); `ask_user` single + multi-question

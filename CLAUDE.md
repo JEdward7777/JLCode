@@ -11,6 +11,7 @@ connection, and explicit Ask / Plan / Code modes.
 - [`harness/DECISIONS.md`](harness/DECISIONS.md) — why (decision log, with rationale).
 - [`harness/TESTING.md`](harness/TESTING.md) — the tiered/gated test strategy and cost model.
 - [`harness/ROADMAP.md`](harness/ROADMAP.md) — the phased build plan and current milestone.
+- [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md) — real-browser peeks per UI slice (mocks can lie).
 
 The spec is the source of truth. If code and spec disagree, fix one of them
 deliberately and record it in `DECISIONS.md` — don't let them silently drift.
@@ -47,7 +48,12 @@ These are automatic — don't wait to be reminded:
 4. **Keep the harness current.** Update `ROADMAP.md`'s "Current status — resume here" block at
    each milestone so a lost session resumes cleanly. Record deliberate design changes in
    `DECISIONS.md`; don't let code and spec drift.
-5. **Watch context length; suggest a fresh thread at boundaries.** Caching discounts the stable
+5. **Look at rendered surfaces in a real browser — at least once per UI slice.** Tests with more
+   mocks than target code can pass while the real thing is broken or ugly. Chrome is installed;
+   drive the built server with the fake driver and screenshot via CDP (recipe in `VISUAL-LOG.md`).
+   Record each peek — what you confirmed with your own eyes + a screenshot — in
+   [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md). This complements tests, never replaces them.
+6. **Watch context length; suggest a fresh thread at boundaries.** Caching discounts the stable
    prefix but the conversation still grows every turn (cost climbs, focus dulls). When the thread
    is long **and** you're at a natural boundary (a milestone committed, durable state in the
    harness), **proactively suggest Joshua start a new thread** — it resumes cleanly from the

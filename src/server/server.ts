@@ -5,7 +5,10 @@
  * (D-18) — the response reports the awaiting state, and /approve or /answer
  * resumes. Streaming (SSE), the browser UI, and auth arrive with full Phase 5.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import type { ModelConfig } from "../config/types.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
@@ -28,6 +31,34 @@ export interface ServerDeps {
   version: string;
   /** Optional: called by POST /shutdown so a caller can stop the dev server. */
   onShutdown?: () => void;
+  /** Optional: directory of the built browser client (dist/web). When set, a
+   *  catch-all serves it (SPA fallback to index.html). Omitted in tests. */
+  staticDir?: string;
+}
+
+const STATIC_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".png": "image/png",
+  ".map": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
+};
+
+/** Resolve a URL path to a file under `root`, guarding against traversal, with
+ *  SPA fallback to index.html. Returns null only if index.html itself is gone. */
+function resolveStatic(root: string, urlPath: string): string | null {
+  const base = path.resolve(root);
+  const index = path.join(base, "index.html");
+  let rel = decodeURIComponent(urlPath);
+  if (rel === "/" || rel === "") rel = "/index.html";
+  const candidate = path.resolve(base, "." + rel);
+  const inside = candidate === base || candidate.startsWith(base + path.sep);
+  if (inside && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+  return fs.existsSync(index) ? index : null; // SPA fallback (and traversal → index)
 }
 
 function entryView(entry: Entry): Record<string, unknown> {
@@ -130,6 +161,50 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       })),
     }),
   );
+
+  // Create an empty live session up front, so the browser can subscribe to its
+  // event stream (below) before sending the first message (POST up / SSE down).
+  app.post("/session", (c) => {
+    const config = deps.resolveConfig();
+    if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
+    const session = startSession(config);
+    return c.json({ sessionId: session.id, conversationId: session.conversation.id });
+  });
+
+  // SSE down: the session's live event stream (§11) — the same events the
+  // persistence projections consume (D-37); the browser is just one subscriber.
+  // A first `ready` frame confirms the listener is attached (safe to send).
+  app.get("/session/:id/events", (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return streamSSE(c, async (stream) => {
+      const queue: unknown[] = [];
+      let wake: (() => void) | null = null;
+      const bump = () => {
+        const w = wake;
+        wake = null;
+        w?.();
+      };
+      const unsub = session.onEvent((e) => {
+        queue.push(e);
+        bump();
+      });
+      stream.onAbort(() => {
+        unsub();
+        bump();
+      });
+      queue.push({ type: "ready", state: stateOf(session) }); // listener attached
+      try {
+        while (!stream.aborted) {
+          while (queue.length > 0) await stream.writeSSE({ data: JSON.stringify(queue.shift()) });
+          if (stream.aborted) break;
+          await new Promise<void>((resolve) => (wake = resolve));
+        }
+      } finally {
+        unsub();
+      }
+    });
+  });
 
   app.get("/session/:id", (c) => {
     const session = manager.get(c.req.param("id"));
@@ -267,6 +342,18 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     await deps.store.flush();
     return c.json(stateOf(session));
   });
+
+  // Serve the built browser client last, so API routes always win. SPA fallback
+  // routes unknown paths to index.html (client-side deep-links like ?session=).
+  if (deps.staticDir) {
+    const root = deps.staticDir;
+    app.get("*", async (c) => {
+      const file = resolveStatic(root, new URL(c.req.url).pathname);
+      if (!file) return c.text("client not built (run `npm run build`)", 404);
+      const data = await fs.promises.readFile(file);
+      return new Response(data, { headers: { "content-type": STATIC_TYPES[path.extname(file)] ?? "application/octet-stream" } });
+    });
+  }
 
   return { app, manager };
 }

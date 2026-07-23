@@ -1,18 +1,19 @@
 /**
  * A tiny Node http → web-fetch adapter so we can serve a Hono app without an
- * extra dependency (D-25). Good enough for JSON endpoints; Node 24 provides
- * global Request/Response. The full Phase 5 server can adopt a richer adapter
- * (streaming/SSE) later.
+ * extra dependency (D-25). The response body is **streamed** chunk-by-chunk, so
+ * SSE (text/event-stream, the P5 event bus §11) flushes live and long-lived
+ * connections stay open; finite bodies (JSON, static assets) end normally.
+ * Node 20+ provides global Request/Response/ReadableStream.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 type FetchHandler = (request: Request) => Response | Promise<Response>;
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => resolve(data));
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(chunk as Buffer));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -33,9 +34,26 @@ async function handle(fetchHandler: FetchHandler, req: IncomingMessage, res: Ser
     const outHeaders: Record<string, string> = {};
     response.headers.forEach((val, key) => (outHeaders[key] = val));
     res.writeHead(response.status, outHeaders);
-    res.end(await response.text());
+
+    if (!response.body) {
+      res.end();
+      return;
+    }
+    // Stream the web ReadableStream to the Node response so SSE flushes live.
+    const reader = response.body.getReader();
+    let aborted = false;
+    res.on("close", () => {
+      aborted = true;
+      void reader.cancel().catch(() => {});
+    });
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || aborted) break;
+      if (value) res.write(Buffer.from(value));
+    }
+    if (!aborted) res.end();
   } catch (err) {
-    res.writeHead(500, { "content-type": "application/json" });
+    if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }
 }

@@ -19,12 +19,23 @@ import { ModeApprovalGate } from "../tools/mode-gate.js";
 import { ConversationStore } from "../persist/conversation-store.js";
 import { DebugJournal } from "../persist/debug-journal.js";
 import type { Conversation } from "../conversation/types.js";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { parseArgs, flagString } from "../util/args.js";
 import { createServer } from "./server.js";
 import { startNodeServer } from "./node-adapter.js";
 
 const DEFAULT_PORT = 4517;
-const HOST = "127.0.0.1";
+const DEFAULT_HOST = "127.0.0.1";
+
+/** The built browser client (dist/web), relative to this compiled module
+ *  (dist/server/serve-command.js → ../web). Undefined if not built yet. */
+function staticDir(): string | undefined {
+  const dir = fileURLToPath(new URL("../web", import.meta.url));
+  return existsSync(dir) ? dir : undefined;
+}
+
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "::ffff:127.0.0.1"]);
 
 export async function runServe(args: string[]): Promise<number> {
   const { flags } = parseArgs(args);
@@ -85,6 +96,14 @@ export async function runServe(args: string[]): Promise<number> {
   }
 
   const port = Number(flagString(flags, "port") ?? process.env.JLCODE_PORT ?? DEFAULT_PORT);
+  // Bind seam (D-40): localhost by default; --host selects the bind scope.
+  // Auth for outward binds arrives in P5f — warn until then.
+  const host = flagString(flags, "host") ?? DEFAULT_HOST;
+  if (!LOOPBACK.has(host)) {
+    process.stderr.write(
+      `WARNING: binding ${host} (non-loopback) — there is no auth yet (P5f/D-40); anyone who can reach this port can drive the agent.\n`,
+    );
+  }
   // eslint-disable-next-line prefer-const
   let closeServer = (): void => {};
   const { app } = createServer({
@@ -95,20 +114,23 @@ export async function runServe(args: string[]): Promise<number> {
     workingDir: cwd,
     version: getVersion(),
     onShutdown: () => setTimeout(() => closeServer(), 100),
+    staticDir: staticDir(),
   });
-  const server = await startNodeServer((req) => app.fetch(req), { host: HOST, port });
+  const server = await startNodeServer((req) => app.fetch(req), { host, port });
   // Flush pending persistence writes before exiting.
   closeServer = () =>
     void Promise.all([store.flush(), debugJournal.flush()]).finally(() => server.close(() => process.exit(0)));
 
-  const base = `http://${HOST}:${port}`;
+  const base = `http://${host}:${port}`;
+  const client = staticDir() ? `open ${base}/  in your browser` : `browser client not built — run \`npm run build\``;
   process.stderr.write(
     [
       `JLCode dev server — ${config.name} (${config.model})${fake ? " [fake]" : ""}`,
       `listening on ${base}  (pid ${process.pid})`,
+      `  ${client}`,
       ``,
       `  curl -s ${base}/health`,
-      `  curl -sX POST ${base}/shutdown        # stop the server`,
+      `  curl -sX POST ${base}/shutdown        # stop the server (no UI button; curl-only)`,
       `  curl -s ${base}/chat -H 'content-type: application/json' -d '{"text":"hello"}'`,
       `  # reuse the returned sessionId to continue the thread:`,
       `  curl -s ${base}/chat -H 'content-type: application/json' -d '{"text":"and again","sessionId":"<id>"}'`,
