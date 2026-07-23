@@ -147,7 +147,11 @@ stays coherent purely through its shared `AppendLog`. This is the anti-entropy i
 ### Conversation record — append-only parent-pointer tree (D-15, D-17)
 
 Conceptually one record per conversation, materialized as the append-only JSONL log above and
-folded on load. `entries` is **append-only**; each entry has a stable generated `id` and a
+folded on load. **Tree structure comes solely from `parent` pointers, never from file/append
+order** — so concurrently-appended, *interleaved* branches re-read correctly and never merge;
+fold is index-then-link (order-independent). Ids are **generated random (not content-hashed)**,
+so two nodes with identical text stay distinct (the opposite of git's dedupe). `entries` is
+**append-only**; each entry has a stable generated `id` and a
 `parent` id. A *branch* is the chain you get tracing `parent` from a leaf upward; `activeLeaf`
 restores the viewed branch on resume. Fork = append a sibling off a parent (the pencil-edit of a
 user message does exactly this); rewind = append an `activeLeaf` change. The JSON below is the
