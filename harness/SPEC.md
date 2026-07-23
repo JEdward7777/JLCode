@@ -223,6 +223,26 @@ the context sent to the model becomes `system + summary + items after the checkp
 full node tree is preserved on disk — like a fresh conversation carrying a summary of the
 "previous conversation."
 
+### Regimes — v1 uses safe-harbor only (D-38)
+
+Three regimes of increasing fidelity and complexity. They are the toolbox — if a case comes
+up, we have options — but v1 commits to just the first:
+
+1. **Safe-harbor (full summarize) — the v1 regime.** Summarize *everything* prior into the
+   blob (zero thinking replayed) + bookend quoting. Simplest, **provably Fable-safe by
+   construction**, lowest recent-context fidelity.
+2. **Partial-keep-lite — planned fast-follow.** Summarize the old middle but keep recent
+   **messages + tool results verbatim**, with recent **thinking re-expressed as text**
+   (re-express, don't replay). Recovers most fidelity, **still provably Fable-safe** because no
+   signed thinking block is ever carried across a compaction.
+3. **Partial-keep-full — retired.** Keep recent turns verbatim *including signed thinking*
+   across the boundary. This was the only Fable-risky case (the old **O-02**). Since #2 gives
+   most of the benefit safely, #3 is **not pursued**, and O-02 is **resolved by design** (moot),
+   not by experiment.
+
+Everything below describes the general machinery; the keep-recent-verbatim parts belong to
+regimes #2/#3 (fast-follow), while v1 exercises the safe-harbor path.
+
 ### Trigger
 
 - Budget derived from the model's `context_length` (OpenRouter metadata). Compact when the
@@ -238,9 +258,10 @@ full node tree is preserved on disk — like a fresh conversation carrying a sum
 
 ### What is kept vs summarized
 
-- Keep the **system prompt** (always sent, never summarized) and the **most recent
-  ~8K tokens** of conversation **verbatim** (`keep-recent`, configurable). Summarize the
-  older middle. Never cut across an in-progress tool cycle.
+- Always keep the **system prompt** (never summarized). In **v1 safe-harbor**, everything else
+  prior is summarized (fidelity comes from bookend quoting, below). The **most recent ~8K tokens
+  verbatim** (`keep-recent`, configurable) is the **fast-follow** (#2/#3), not v1. Never cut
+  across an in-progress tool cycle.
 - **Anchored, evolving structured summary (D-28):** a fixed Markdown template (Goal /
   Constraints & Preferences / Progress / Key Decisions / Next Steps / Critical Context /
   Relevant Files), capped (~4K tokens). On later compactions **update** the prior summary
@@ -288,16 +309,15 @@ or orphaned. There is no safe middle.
 - The compaction cut lands on a **whole-tool-cycle boundary** — it never orphans a thinking
   block from its tool_use/tool_result, and never bisects an in-progress cycle.
 
-**Full-summarize safe-harbor mode.** Summarizing *everything* prior into the blob (zero
-thinking replay) is definitionally safe — from the provider's view it's just a **new
-conversation seeded with a big starter summary**, with nothing to validate. This is the
-guaranteed-safe fallback, and the **conservative default for Fable** until the partial-keep
-regime is empirically cleared (O-02). The cheaper partial-keep regime (recent ~8K verbatim +
-summarized older middle) is preferred where a provider is confirmed to accept it.
+**Full-summarize safe-harbor mode — the v1 regime (D-38).** Summarizing *everything* prior into
+the blob (zero thinking replay) is definitionally safe — from the provider's view it's just a
+**new conversation seeded with a big starter summary**, with nothing to validate. v1 uses this
+as the **sole** compaction regime; the perfect-or-gone rules above then apply only to *normal*
+(non-compaction) replay, where recent turns are sent verbatim per D-14.
 
-- Verified by a targeted test that reasoning survives a compaction (TESTING.md, Tier 1 cached +
-  Tier 3 live Fable) — and specifically that partial-keep either validates or we fall back to
-  the safe-harbor.
+- Verified by tests that (a) normal replay round-trips reasoning verbatim (D-14) and (b) a
+  safe-harbor compaction produces a valid request that Fable accepts (TESTING.md). The
+  partial-keep tests arrive with the #2 fast-follow.
 
 ### Related
 
@@ -306,8 +326,8 @@ summarized older middle) is preferred where a provider is confirmed to accept it
   non-destructive overlay; targets non-reasoning items first.
 - **Transparency:** compaction/minimize events are shown in the UI and recorded; the
   pre-compaction tree stays in persisted history (§8) — nothing is truly lost.
-- **Remaining open (O-02):** only the *empirical* verification of Fable's exact boundary; the
-  strategy above is otherwise decided.
+- **O-02 resolved (D-38):** mooted by design — v1 ships safe-harbor only, #2 partial-keep-lite
+  is the safe fast-follow, and the Fable-risky #3 is retired. Nothing left to test-gate.
 
 ## 16. Images / multimodal
 

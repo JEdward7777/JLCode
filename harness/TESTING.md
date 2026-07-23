@@ -49,11 +49,12 @@ startup scan, zero deps, no native binary. Test fixtures are committed to the re
 periodic Tier-3 live runs catch **provider-side drift** — the exact rot that breaks KiloCode.
 So Tier 3 gets run occasionally even when the cached tiers are green.
 
-**Named must-pass test — reasoning survives compaction (D-28).** A dedicated case runs a
-conversation past a compaction and asserts the kept-verbatim turns still replay their
-`reasoning_details` (signature/encrypted/redacted) **byte-identical** to what was stored, and
-that the summary node sits on a clean turn boundary. Runs cached in Tier 1; run live against
-**Fable** in Tier 3 to confirm the provider accepts it (the O-02 boundary check).
+**Named must-pass tests — Fable-safety (D-28, D-38).** v1 uses the safe-harbor regime, so:
+(a) **normal replay** round-trips `reasoning_details` (signature/encrypted/redacted)
+**byte-identical** to what was stored (D-14) — cached Tier 1, live **Fable** Tier 3; and
+(b) a **safe-harbor compaction** produces a request Fable accepts (no signed thinking carried
+across the cut). The partial-keep "reasoning survives compaction" tests arrive with the
+#2 fast-follow.
 
 ## LLM-as-judge
 

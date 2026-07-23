@@ -1,12 +1,12 @@
 # JLCode — Architecture
 
-> ✅ **Reviewed & agreed** (2026-07-22) — the load-bearing choices here were worked
-> through with Joshua and are logged in [`DECISIONS.md`](DECISIONS.md) (D-13…D-22).
-> One item is intentionally deferred to build time: **O-02** (compaction specifics +
-> the Fable×compaction boundary), which is empirical rather than answerable on paper.
+> ✅ **Reviewed & agreed** — the load-bearing choices here were worked through with
+> Joshua and are logged in [`DECISIONS.md`](DECISIONS.md) (D-13…D-38). **No open
+> architecture questions remain** (O-02 resolved by design → D-38: v1 compaction uses
+> the full-summarize safe-harbor; the Fable-risky regime is retired).
 
-Status: **agreed** (2026-07-22). Describes how the spec ([`SPEC.md`](SPEC.md)) is
-realized. Changes from here should update [`DECISIONS.md`](DECISIONS.md) deliberately.
+Status: **agreed**. Describes how the spec ([`SPEC.md`](SPEC.md)) is realized.
+Changes from here should update [`DECISIONS.md`](DECISIONS.md) deliberately.
 
 ---
 
@@ -175,9 +175,10 @@ never read back into a request.
 - Token accounting per config (budget = fraction of the model's context window).
 - On threshold: append a **checkpoint (`replayCut`) entry** whose `summary` covers everything
   up to it. Sent context = `summary + entries after the checkpoint`; the full tree is retained.
-- **Reasoning × compaction (O-02, open):** proposed safe default — keep recent assistant
-  entries verbatim with reasoning (never compact across an in-progress tool cycle); only older
-  completed entries fall above the cut and are summarized. To be verified against Fable empirically.
+- **Reasoning × compaction (D-38):** v1 uses the **full-summarize safe-harbor** — no signed
+  thinking crosses a compaction, so it's Fable-safe by construction. Keeping recent entries
+  verbatim (partial-keep-lite) is the deferred fidelity fast-follow. The perfect-or-gone rules
+  apply to *normal* replay (D-14).
 - Agent-directed minimize/expand (X-08) reuses the same non-destructive overlay, later.
 - Compaction/minimize events are emitted to the frontend and recorded.
 

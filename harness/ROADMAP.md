@@ -83,12 +83,13 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 **Goal:** long conversations stay in-window and Fable-safe.
 - Token accounting from model metadata; trigger modes (auto / manual / suggest / cancelable /
   hard-forced) (D-27).
-- Checkpoint-overlay compaction; anchored evolving summary + **bookend quoting**; **cache-reuse
-  fast path** (same-model) + cross-model fallback (D-28, D-29).
-- **Full-summarize safe-harbor**, Fable-conservative default; **perfect-or-gone** replay rule.
-- LLM-as-judge test helper; **Tier-3 Fable boundary test** (resolves O-02).
-- **Done when:** conversations compact automatically/optionally without breaking Fable; the
-  reasoning-survives-compaction test passes cached and live.
+- Checkpoint-overlay compaction; **full-summarize safe-harbor (the v1 regime, D-38)**; anchored
+  evolving summary + **bookend quoting**; **cache-reuse fast path** (same-model) + cross-model
+  fallback (D-28, D-29).
+- LLM-as-judge test helper; tests that normal replay round-trips reasoning (D-14) and a
+  safe-harbor compaction produces a Fable-valid request.
+- **Done when:** conversations compact automatically/optionally without breaking Fable.
+- *(Fast-follow, post-v1: partial-keep-lite #2 for higher recent-context fidelity — D-38.)*
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-08)
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
