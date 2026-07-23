@@ -8,6 +8,7 @@ import {
   removeModelConfig,
   resolveForCwd,
   setBinding,
+  updateModelConfig,
   type NewModelConfig,
 } from "../src/config/operations";
 
@@ -55,6 +56,17 @@ describe("model config operations", () => {
     const bound = setBinding(config, "/work/clientA", added.id);
     expect(resolveForCwd(bound, "/work/clientA")?.id).toBe(added.id);
     expect(resolveForCwd(bound, "/somewhere/else")).toBeUndefined();
+  });
+
+  it("updates fields and merges sampling in place", () => {
+    const { config, added } = addModelConfig(defaultConfig(), base("A", "m"));
+    const step1 = updateModelConfig(config, added.id, { model: "m2", sampling: { maxTokens: 16 } });
+    expect(step1.updated.model).toBe("m2");
+    expect(step1.updated.sampling).toEqual({ maxTokens: 16 });
+    // A second patch merges rather than replaces sampling.
+    const step2 = updateModelConfig(step1.config, added.id, { sampling: { temperature: 0.2 } });
+    expect(step2.updated.sampling).toEqual({ maxTokens: 16, temperature: 0.2 });
+    expect(step2.updated.id).toBe(added.id); // same config, edited in place
   });
 
   it("removing a config prunes bindings that pointed at it", () => {

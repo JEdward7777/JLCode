@@ -15,8 +15,16 @@ import {
   removeModelConfig,
   resolveForCwd,
   setBinding,
+  updateModelConfig,
+  type ModelConfigPatch,
 } from "./operations.js";
-import { APPROVAL_POLICIES, MODES, REASONING_EFFORTS, type ModelConfig } from "./types.js";
+import {
+  APPROVAL_POLICIES,
+  MODES,
+  REASONING_EFFORTS,
+  type ModelConfig,
+  type SamplingParams,
+} from "./types.js";
 
 const CONFIG_HELP = `jlcode config — manage model configurations
 
@@ -24,10 +32,52 @@ const CONFIG_HELP = `jlcode config — manage model configurations
   config which                     show the config selected for this directory
   config use <name|id>             bind this directory to a config
   config clone <src> <new-name>    clone an existing config
-  config add --name <> --model <>  add a config (key read from stdin)
-             [--effort <>] [--mode <>] [--approval <>] [--system <>]
+  config add --name <> --model <>  add a config (key read from stdin or JLCODE_ADD_KEY)
+  config set <name|id> [flags]     edit fields of an existing config
   config remove <name|id>          delete a config
+
+Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
+  --mode <ask|plan|code> --approval <manual|auto-safe|full-auto|read-only>
+  --system <text> --max-tokens <n> --temperature <n> --top-p <n>
 `;
+
+function numberFlag(flags: Record<string, string | boolean>, key: string): number | undefined {
+  const s = flagString(flags, key);
+  if (s === undefined) return undefined;
+  const n = Number(s);
+  if (Number.isNaN(n)) throw new Error(`Invalid number for --${key}: "${s}"`);
+  return n;
+}
+
+function samplingFromFlags(flags: Record<string, string | boolean>): Partial<SamplingParams> {
+  const out: Partial<SamplingParams> = {};
+  const t = numberFlag(flags, "temperature");
+  if (t !== undefined) out.temperature = t;
+  const p = numberFlag(flags, "top-p");
+  if (p !== undefined) out.topP = p;
+  const m = numberFlag(flags, "max-tokens");
+  if (m !== undefined) out.maxTokens = m;
+  return out;
+}
+
+function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPatch {
+  const patch: ModelConfigPatch = {};
+  const name = flagString(flags, "name");
+  if (name) patch.name = name;
+  const model = flagString(flags, "model");
+  if (model) patch.model = model;
+  const effort = oneOf(flagString(flags, "effort"), REASONING_EFFORTS, "effort");
+  if (effort) patch.reasoningEffort = effort;
+  const mode = oneOf(flagString(flags, "mode"), MODES, "mode");
+  if (mode) patch.defaultMode = mode;
+  const approval = oneOf(flagString(flags, "approval"), APPROVAL_POLICIES, "approval");
+  if (approval) patch.defaultApproval = approval;
+  const system = flagString(flags, "system");
+  if (system !== undefined) patch.systemPromptAddendum = system;
+  const sampling = samplingFromFlags(flags);
+  if (Object.keys(sampling).length > 0) patch.sampling = sampling;
+  return patch;
+}
 
 function shortId(id: string): string {
   return id.length > 12 ? id.slice(0, 12) : id;
@@ -115,6 +165,7 @@ export async function runConfig(args: string[]): Promise<number> {
       const openRouterKey = process.env.JLCODE_ADD_KEY ?? (await readSecret("OpenRouter API key (input hidden): "));
       if (!openRouterKey) throw new Error("No key provided.");
       const config = loadConfig(paths);
+      const sampling = samplingFromFlags(flags);
       const { config: next, added } = addModelConfig(config, {
         name,
         model,
@@ -123,10 +174,26 @@ export async function runConfig(args: string[]): Promise<number> {
         systemPromptAddendum: flagString(flags, "system"),
         defaultMode: oneOf(flagString(flags, "mode"), MODES, "mode") ?? "code",
         defaultApproval: oneOf(flagString(flags, "approval"), APPROVAL_POLICIES, "approval") ?? "manual",
+        sampling: Object.keys(sampling).length > 0 ? sampling : undefined,
         compaction: { auto: true },
       });
       saveConfig(next, paths);
       process.stdout.write(`Added → ${added.name}  ${shortId(added.id)}\n`);
+      return 0;
+    }
+
+    case "set": {
+      const { positionals, flags } = parseArgs(rest);
+      const ref = positionals[0];
+      if (!ref) throw new Error("Usage: jlcode config set <name|id> [--model <> --max-tokens <> …]");
+      const config = loadConfig(paths);
+      const { config: next, updated } = updateModelConfig(config, ref, patchFromFlags(flags));
+      saveConfig(next, paths);
+      const mt = updated.sampling?.maxTokens;
+      process.stdout.write(
+        `Updated → ${updated.name}  ${updated.model}  effort:${updated.reasoningEffort ?? "-"}` +
+          `${mt !== undefined ? `  max_tokens:${mt}` : ""}  ${shortId(updated.id)}\n`,
+      );
       return 0;
     }
 

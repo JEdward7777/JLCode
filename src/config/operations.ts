@@ -4,7 +4,14 @@
  * here does IO (the store handles that).
  */
 import { newId } from "../util/id.js";
-import type { Config, ModelConfig } from "./types.js";
+import type {
+  ApprovalPolicy,
+  Config,
+  Mode,
+  ModelConfig,
+  ReasoningEffort,
+  SamplingParams,
+} from "./types.js";
 
 /** Fields a caller supplies when creating a config (id/timestamps are generated). */
 export type NewModelConfig = Omit<ModelConfig, "id" | "createdAt" | "updatedAt">;
@@ -51,6 +58,48 @@ export function cloneModelConfig(
   if (!source) throw new Error(`No model config matching "${sourceRef}"`);
   const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = source;
   return addModelConfig(config, { ...rest, name: newName });
+}
+
+export interface ModelConfigPatch {
+  name?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  systemPromptAddendum?: string;
+  defaultMode?: Mode;
+  defaultApproval?: ApprovalPolicy;
+  sampling?: Partial<SamplingParams>;
+}
+
+/** Edit an existing config in place (merging sampling), bumping updatedAt. */
+export function updateModelConfig(
+  config: Config,
+  ref: string,
+  patch: ModelConfigPatch,
+): { config: Config; updated: ModelConfig } {
+  const target = findModelConfig(config, ref);
+  if (!target) throw new Error(`No model config matching "${ref}"`);
+
+  const mergedSampling: Record<string, number> = {};
+  for (const [k, v] of Object.entries({ ...target.sampling, ...patch.sampling })) {
+    if (typeof v === "number") mergedSampling[k] = v;
+  }
+
+  const updated: ModelConfig = {
+    ...target,
+    ...(patch.name !== undefined ? { name: patch.name } : {}),
+    ...(patch.model !== undefined ? { model: patch.model } : {}),
+    ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort } : {}),
+    ...(patch.systemPromptAddendum !== undefined ? { systemPromptAddendum: patch.systemPromptAddendum } : {}),
+    ...(patch.defaultMode !== undefined ? { defaultMode: patch.defaultMode } : {}),
+    ...(patch.defaultApproval !== undefined ? { defaultApproval: patch.defaultApproval } : {}),
+    sampling: Object.keys(mergedSampling).length > 0 ? mergedSampling : undefined,
+    updatedAt: new Date().toISOString(),
+  };
+
+  return {
+    config: { ...config, modelConfigs: config.modelConfigs.map((c) => (c.id === target.id ? updated : c)) },
+    updated,
+  };
 }
 
 export function removeModelConfig(config: Config, ref: string): Config {

@@ -15,8 +15,10 @@ import { SessionManager } from "../session/manager.js";
 import type { Session } from "../session/session.js";
 
 export interface ServerDeps {
-  config: ModelConfig;
-  driver: LlmDriver;
+  /** Re-read the selected config on demand, so CLI edits are picked up live. */
+  resolveConfig: () => ModelConfig | undefined;
+  /** Build a driver for a config (OpenRouter, or a fake for offline tests). */
+  makeDriver: (config: ModelConfig) => LlmDriver;
   version: string;
 }
 
@@ -59,15 +61,35 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   const app = new Hono();
   const manager = new SessionManager();
 
-  app.get("/health", (c) =>
-    c.json({ ok: true, version: deps.version, config: deps.config.name, model: deps.config.model }),
-  );
+  app.get("/health", (c) => {
+    const config = deps.resolveConfig();
+    return c.json({
+      ok: true,
+      version: deps.version,
+      config: config?.name ?? null,
+      model: config?.model ?? null,
+    });
+  });
+
+  // What a *new* thread would use right now (reflects live CLI config changes).
+  app.get("/config", (c) => {
+    const config = deps.resolveConfig();
+    if (!config) return c.json({ error: "no config selected" }, 404);
+    return c.json({
+      name: config.name,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort ?? null,
+      maxTokens: config.sampling?.maxTokens ?? null,
+      hasKey: Boolean(config.openRouterKey),
+    });
+  });
 
   app.get("/sessions", (c) =>
     c.json({
       sessions: manager.list().map((s) => ({
         id: s.id,
         status: s.status,
+        model: s.config.model,
         entries: s.conversation.entries.length,
       })),
     }),
@@ -79,6 +101,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json({
       id: session.id,
       status: session.status,
+      model: session.config.model,
       entries: session.conversation.entries.map(entryView),
     });
   });
@@ -95,7 +118,10 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       session = manager.get(body.sessionId);
       if (!session) return c.json({ error: "no such session" }, 404);
     } else {
-      session = manager.create({ config: deps.config, driver: deps.driver });
+      // A new thread resolves the *current* config, so CLI switches take effect.
+      const config = deps.resolveConfig();
+      if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
+      session = manager.create({ config, driver: deps.makeDriver(config) });
     }
 
     const { assistant, errors, truncation } = await sendAndCollect(session, body.text);

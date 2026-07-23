@@ -6,9 +6,10 @@
 import { resolvePaths } from "../paths.js";
 import { getVersion } from "../version.js";
 import { loadConfig } from "../config/store.js";
-import { resolveForCwd } from "../config/operations.js";
+import { resolveForCwd, findModelConfig } from "../config/operations.js";
 import { OpenRouterClient } from "../llm/client.js";
 import type { LlmDriver } from "../llm/types.js";
+import type { ModelConfig } from "../config/types.js";
 import { echoDriver } from "../session/fake.js";
 import { parseArgs, flagString } from "../util/args.js";
 import { createServer } from "./server.js";
@@ -19,28 +20,38 @@ const HOST = "127.0.0.1";
 
 export async function runServe(args: string[]): Promise<number> {
   const { flags } = parseArgs(args);
-  const config = resolveForCwd(loadConfig(resolvePaths()), process.cwd());
+  const paths = resolvePaths();
+  const cwd = process.cwd();
+  const fake = process.env.JLCODE_FAKE_LLM === "1";
+
+  // Re-read on every new thread so `jlcode config set/use` takes effect live.
+  // `--config <name>` pins a specific config regardless of the cwd binding.
+  const pinned = flagString(flags, "config");
+  const resolveConfig = () => {
+    const cfg = loadConfig(paths);
+    return pinned ? findModelConfig(cfg, pinned) : resolveForCwd(cfg, cwd);
+  };
+  const makeDriver = (config: ModelConfig): LlmDriver =>
+    fake
+      ? echoDriver()
+      : new OpenRouterClient({
+          apiKey: config.openRouterKey,
+          referer: "https://github.com/JEL-LL/JLCode",
+          title: "JLCode",
+        });
+
+  const config = resolveConfig();
   if (!config) {
-    process.stderr.write(`No model config selected for ${process.cwd()}.\nUse: jlcode config use <name>\n`);
+    process.stderr.write(`No model config selected for ${cwd}.\nUse: jlcode config use <name>\n`);
     return 1;
   }
-
-  const fake = process.env.JLCODE_FAKE_LLM === "1";
   if (!fake && !config.openRouterKey) {
     process.stderr.write(`Config "${config.name}" has no OpenRouter key. Re-add it.\n`);
     return 1;
   }
 
-  const driver: LlmDriver = fake
-    ? echoDriver()
-    : new OpenRouterClient({
-        apiKey: config.openRouterKey,
-        referer: "https://github.com/JEL-LL/JLCode",
-        title: "JLCode",
-      });
-
   const port = Number(flagString(flags, "port") ?? process.env.JLCODE_PORT ?? DEFAULT_PORT);
-  const { app } = createServer({ config, driver, version: getVersion() });
+  const { app } = createServer({ resolveConfig, makeDriver, version: getVersion() });
   const server = await startNodeServer((req) => app.fetch(req), { host: HOST, port });
 
   const base = `http://${HOST}:${port}`;

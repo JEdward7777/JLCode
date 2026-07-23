@@ -15,7 +15,7 @@ const config: ModelConfig = {
 };
 
 function makeApp() {
-  return createServer({ config, driver: echoDriver(), version: "0.0.0" }).app;
+  return createServer({ resolveConfig: () => config, makeDriver: () => echoDriver(), version: "0.0.0" }).app;
 }
 
 async function post(app: ReturnType<typeof makeApp>, path: string, body: unknown) {
