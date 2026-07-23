@@ -7,15 +7,21 @@
  */
 import { Hono } from "hono";
 import type { ModelConfig } from "../config/types.js";
-import type { Entry } from "../conversation/types.js";
+import type { Conversation, Entry } from "../conversation/types.js";
+import type { ConversationStore } from "../persist/conversation-store.js";
 import { SessionManager } from "../session/manager.js";
 import type { Session } from "../session/session.js";
 
 export interface ServerDeps {
   /** Re-read the selected config on demand, so CLI edits are picked up live. */
   resolveConfig: () => ModelConfig | undefined;
-  /** Build a fully-wired session (driver + tools + sandbox + gate) for a config. */
-  newSession: (config: ModelConfig) => Session;
+  /** Build a fully-wired session (driver + tools + sandbox + gate); pass a
+   *  loaded conversation to resume it. */
+  newSession: (config: ModelConfig, conversation?: Conversation) => Session;
+  /** Persistence for conversations (resume + history). */
+  store: ConversationStore;
+  /** The server's working directory (sandbox root + history filter default). */
+  workingDir: string;
   version: string;
   /** Optional: called by POST /shutdown so a caller can stop the dev server. */
   onShutdown?: () => void;
@@ -47,6 +53,7 @@ function stateOf(session: Session): Record<string, unknown> {
   const lastAssistant = [...entries].reverse().find((e) => e.type === "assistant");
   const base: Record<string, unknown> = {
     sessionId: session.id,
+    conversationId: session.conversation.id,
     status: session.status,
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };
@@ -58,6 +65,19 @@ function stateOf(session: Session): Record<string, unknown> {
 export function createServer(deps: ServerDeps): { app: Hono; manager: SessionManager } {
   const app = new Hono();
   const manager = new SessionManager();
+
+  /** Build a session, register it, and wire persistence. Pass a loaded
+   *  conversation to resume; otherwise a fresh conversation log is created. */
+  function startSession(config: ModelConfig, conversation?: Conversation): Session {
+    const session = deps.newSession(config, conversation);
+    if (!conversation) {
+      void deps.store.create({ id: session.conversation.id, workingDir: deps.workingDir, configName: config.name });
+    }
+    session.onEvent((e) => {
+      if (e.type === "entry") void deps.store.entry(session.conversation.id, e.entry);
+    });
+    return manager.add(session);
+  }
 
   app.get("/health", (c) => {
     const config = deps.resolveConfig();
@@ -114,7 +134,11 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   });
 
   app.post("/chat", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; sessionId?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      text?: unknown;
+      sessionId?: unknown;
+      conversationId?: unknown;
+    };
     if (typeof body.text !== "string" || body.text.trim() === "") {
       return c.json({ error: "body must include a non-empty 'text'" }, 400);
     }
@@ -127,7 +151,13 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } else {
       const config = deps.resolveConfig();
       if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
-      session = manager.add(deps.newSession(config));
+      if (typeof body.conversationId === "string") {
+        const loaded = deps.store.load(body.conversationId);
+        if (!loaded) return c.json({ error: "no such conversation" }, 404);
+        session = startSession(config, loaded); // resume from disk
+      } else {
+        session = startSession(config); // fresh
+      }
     }
 
     try {
@@ -136,6 +166,20 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       return c.json({ error: (err as Error).message }, 409);
     }
     return c.json(stateOf(session));
+  });
+
+  // History for a directory (default the server's dir; ?dir=all for everything).
+  app.get("/conversations", (c) => {
+    const dir = c.req.query("dir");
+    const rows = dir === "all" ? deps.store.list() : deps.store.list(dir ?? deps.workingDir);
+    return c.json({ conversations: rows });
+  });
+
+  // A persisted conversation, loaded from disk (distinct from a live /session).
+  app.get("/conversation/:id", (c) => {
+    const conv = deps.store.load(c.req.param("id"));
+    if (!conv) return c.json({ error: "no such conversation" }, 404);
+    return c.json({ id: conv.id, activeLeaf: conv.activeLeaf, entries: conv.entries.map(entryView) });
   });
 
   // Resolve a pending approval: {approve: bool, editedArgs?, reason?} (D-16).

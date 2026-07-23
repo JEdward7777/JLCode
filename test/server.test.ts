@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { createServer } from "../src/server/server";
+import { ConversationStore } from "../src/persist/conversation-store";
 import { echoDriver } from "../src/session/fake";
 import { Session } from "../src/session/session";
 import { Sandbox } from "../src/tools/sandbox";
@@ -23,10 +24,23 @@ const config: ModelConfig = {
   updatedAt: "",
 };
 
+let storeDir: string;
+let store: ConversationStore;
+beforeEach(() => {
+  storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-srvstore-"));
+  store = new ConversationStore(storeDir);
+});
+afterEach(async () => {
+  await store.close();
+  fs.rmSync(storeDir, { recursive: true, force: true });
+});
+
 function makeApp() {
   return createServer({
     resolveConfig: () => config,
-    newSession: (c) => new Session({ config: c, driver: echoDriver() }),
+    newSession: (c, conversation) => new Session({ config: c, driver: echoDriver(), conversation }),
+    store,
+    workingDir: "/work/test",
     version: "0.0.0",
   }).app;
 }
@@ -68,6 +82,35 @@ describe("dev server", () => {
     expect((await post(app, "/chat", { text: "" })).status).toBe(400);
     expect((await post(app, "/chat", { text: "hi", sessionId: "nope" })).status).toBe(404);
   });
+
+  it("resumes a conversation by id in a fresh server ('restart')", async () => {
+    const first = await post(makeApp(), "/chat", { text: "remember me" });
+    const convId = first.json.conversationId as string;
+    expect(convId).toBeTruthy();
+    await store.flush();
+
+    // A brand-new server = a fresh (empty) SessionManager; resume must come from disk.
+    const app2 = makeApp();
+    const resumed = await post(app2, "/chat", { text: "still here?", conversationId: convId });
+    expect(resumed.json.conversationId).toBe(convId);
+    await store.flush();
+
+    const conv = (await (await app2.request(`/conversation/${convId}`)).json()) as {
+      entries: Array<{ type: string }>;
+    };
+    expect(conv.entries.map((e) => e.type)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("lists conversations by working directory", async () => {
+    const r = await post(makeApp(), "/chat", { text: "hi" });
+    await store.flush();
+    const here = (await (await makeApp().request("/conversations")).json()) as { conversations: Array<{ id: string }> };
+    expect(here.conversations.some((row) => row.id === r.json.conversationId)).toBe(true);
+    const elsewhere = (await (await makeApp().request("/conversations?dir=/nope")).json()) as {
+      conversations: unknown[];
+    };
+    expect(elsewhere.conversations.length).toBe(0);
+  });
 });
 
 describe("dev server — approval flow", () => {
@@ -104,13 +147,16 @@ describe("dev server — approval flow", () => {
   function toolApp() {
     return createServer({
       resolveConfig: () => config,
-      newSession: (c) =>
+      store,
+      workingDir: root,
+      newSession: (c, conversation) =>
         new Session({
           config: c,
           driver: toolDriver(),
           tools: new ToolRegistry(fileTools()),
           sandbox: new Sandbox([root]),
           gate: new ModeApprovalGate("code", "manual"),
+          conversation,
         }),
       version: "0.0.0",
     }).app;

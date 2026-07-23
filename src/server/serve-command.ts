@@ -16,6 +16,8 @@ import { ToolRegistry, defaultTools } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { Sandbox } from "../tools/sandbox.js";
 import { ModeApprovalGate } from "../tools/mode-gate.js";
+import { ConversationStore } from "../persist/conversation-store.js";
+import type { Conversation } from "../conversation/types.js";
 import { parseArgs, flagString } from "../util/args.js";
 import { createServer } from "./server.js";
 import { startNodeServer } from "./node-adapter.js";
@@ -48,7 +50,7 @@ export async function runServe(args: string[]): Promise<number> {
   // A fully-wired session: driver + native tools + sandbox (fenced to cwd plus
   // any remembered roots) + the mode∩approval gate from the config
   // (D-07/D-08/D-19). "Remember this root" persists to folderRoots[cwd].
-  const newSession = (config: ModelConfig): Session => {
+  const newSession = (config: ModelConfig, conversation?: Conversation): Session => {
     const cfg = loadConfig(paths);
     const roots = [cwd, ...(cfg.folderRoots?.[cwd] ?? [])];
     return new Session({
@@ -57,6 +59,7 @@ export async function runServe(args: string[]): Promise<number> {
       tools: new ToolRegistry([...defaultTools(), askUserTool()]),
       sandbox: new Sandbox(roots),
       gate: new ModeApprovalGate(config.defaultMode, config.defaultApproval, cfg.autoSafeAllowlist),
+      conversation,
       onAddRoot: (dir) => {
         const current = loadConfig(paths);
         const existing = current.folderRoots?.[cwd] ?? [];
@@ -66,6 +69,8 @@ export async function runServe(args: string[]): Promise<number> {
       },
     });
   };
+
+  const store = new ConversationStore(paths.conversationsDir);
 
   const config = resolveConfig();
   if (!config) {
@@ -83,11 +88,14 @@ export async function runServe(args: string[]): Promise<number> {
   const { app } = createServer({
     resolveConfig,
     newSession,
+    store,
+    workingDir: cwd,
     version: getVersion(),
     onShutdown: () => setTimeout(() => closeServer(), 100),
   });
   const server = await startNodeServer((req) => app.fetch(req), { host: HOST, port });
-  closeServer = () => server.close(() => process.exit(0));
+  // Flush pending persistence writes before exiting.
+  closeServer = () => void store.flush().finally(() => server.close(() => process.exit(0)));
 
   const base = `http://${HOST}:${port}`;
   process.stderr.write(

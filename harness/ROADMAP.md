@@ -22,9 +22,13 @@ Built, tested (69 Tier-0/1 tests green), and committed through `b70532f`:
   out-of-fence access prompts allow-once / remember-root (persisted `folderRoots`) / deny.
 - **P4 (in progress):** `AppendLog` (D-37 — single serialized async queue per file, no locks) +
   `ConversationStore` (append-only JSONL per conversation, injectable dir) + Session emits `entry`
-  events + resume from a loaded conversation + history `list(workingDir)`. Done at the library
-  level (persist→load→resume round-trip tested). **Still to do in P4:** wire into the server
-  (resume by id, history endpoints), fork/rewind navigation, the separate debug journal.
+  events + resume from a loaded conversation. **Wired into the dev server:** `/chat` resumes via
+  `conversationId`, `GET /conversations?dir=` history, `GET /conversation/:id` from disk; store
+  flushed on `/shutdown`. **Live-validated cross-process restart-resume** (two server processes,
+  shared data dir, isolated from real history). **Still to do in P4:** fork/rewind navigation; the
+  separate debug journal; make persistence read-your-writes consistent (currently fire-and-forget
+  — await the turn's entry writes before responding, or flush per turn, so a `/conversation` read
+  right after `/chat` isn't a line behind).
 - **Dev harness (beyond the phase list):** `jlcode serve` HTTP endpoint (`/chat`, `/session/:id`,
   `/approve`, `/answer`, `/config`, `/health`, `POST /shutdown`); `serve --config <name>` pins a
   config; server re-resolves config live; sandbox fenced to the launch dir. Fake echo driver via
