@@ -26,6 +26,7 @@ export type { Conversation, Entry } from "./conversation/types.js";
 export { OpenRouterClient } from "./llm/client.js";
 export { streamSSE, chunkToEvents, accumulate } from "./llm/stream.js";
 export { LlmCache, hashRequest, requestSignature, stableStringify } from "./llm/cache.js";
+export { CachingDriver } from "./llm/caching-driver.js";
 export type { ChatRequest, ChatMessage, StreamEvent, AssistantResult, LlmDriver } from "./llm/types.js";
 
 // Tools + sandbox

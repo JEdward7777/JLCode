@@ -38,7 +38,14 @@ gets garbage-collected, every run would re-record (re-spend) and it would never 
 Contrast with the *conversation-store* test dirs, which are deliberately ephemeral temp dirs
 (injected `JLCODE_DATA_DIR`) — those we throw away; the LLM cache we keep. Refresh a fixture
 deliberately (delete its file / `--refresh`); otherwise it persists across runs and CI so
-replays stay free.
+replays stay free. **Bonus of the in-repo location: the git diff highlights when a recorded
+response changes** — change code, and the diff shows the ramifications on the hashes/responses.
+(The distinct *runtime* response cache, §21, lives in the OS data store instead — an `npx` user
+has no repo; "transfer machines = re-pay" is acceptable there.)
+
+**A `CachingDriver` wraps a driver + cache**: on a hit it replays the recorded result and
+**never calls the underlying driver** (proven by a test with a *throwing* driver underneath — a
+hit returns the cached result without throwing); on a miss it calls through and records.
 
 > **Not the same as provider prompt caching (D-26).** This local cache stores *our whole
 > responses* to avoid repeat calls. Provider prompt caching is a server-side input-token
