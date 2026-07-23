@@ -26,8 +26,10 @@ Built, tested (69 Tier-0/1 tests green), and committed through `b70532f`:
   `conversationId`, `GET /conversations?dir=` history, `GET /conversation/:id` from disk; store
   flushed on `/shutdown`; `/chat`, `/approve`, `/answer` **flush before responding**
   (read-your-writes). **Live-validated cross-process restart-resume** (two server processes,
-  shared data dir, isolated from real history). **Still to do in P4:** fork/rewind navigation; the
-  separate debug journal.
+  shared data dir, isolated from real history). **Fork/rewind:** `setActiveLeaf` (rewind/switch),
+  `editFork` (pencil-edit = sibling branch), persisted `active-leaf` so resume restores the viewed
+  branch; server `/session/:id/rewind` + `/edit`; entries expose id/parent. **Still to do in P4:**
+  the separate debug journal.
 - **Dev harness (beyond the phase list):** `jlcode serve` HTTP endpoint (`/chat`, `/session/:id`,
   `/approve`, `/answer`, `/config`, `/health`, `POST /shutdown`); `serve --config <name>` pins a
   config; server re-resolves config live; sandbox fenced to the launch dir. Fake echo driver via

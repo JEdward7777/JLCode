@@ -61,3 +61,13 @@ export function setActiveLeaf(conv: Conversation, leafId: string): Conversation 
 export function childrenOf(conv: Conversation, parentId: string | null): Entry[] {
   return conv.entries.filter((e) => e.parent === parentId);
 }
+
+/** Descend from an entry along the latest child at each step to a branch tip. */
+export function leafOf(conv: Conversation, entryId: string): string {
+  let cursor = entryId;
+  for (;;) {
+    const kids = childrenOf(conv, cursor);
+    if (kids.length === 0) return cursor;
+    cursor = kids[kids.length - 1]!.id;
+  }
+}

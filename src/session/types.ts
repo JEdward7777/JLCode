@@ -35,6 +35,7 @@ export interface ApprovalDecision {
 
 export type SessionEvent =
   | { type: "entry"; entry: Entry } // full tree node, for the persistence projection (D-37)
+  | { type: "active-leaf"; leaf: string } // rewind / branch switch — persisted so resume restores it
   | { type: "user"; entryId: string; text: string }
   | { type: "assistant-start" }
   | { type: "text"; delta: string }

@@ -13,7 +13,7 @@ import { newId } from "../util/id.js";
 import type { ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
-import { newConversation, appendEntry, type EntryInput } from "../conversation/tree.js";
+import { newConversation, appendEntry, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages } from "../conversation/wire.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
@@ -87,6 +87,27 @@ export class Session {
     const base = options.systemPrompt ?? BASE_SYSTEM;
     this.systemPrompt = addendum ? `${base}\n\n${addendum}` : base;
     this.conversation = options.conversation ?? newConversation();
+  }
+
+  /** Rewind / switch branches: point the active leaf at an existing entry.
+   *  The next `send()` will fork a sibling off it (D-10, D-17). Persisted. */
+  setActiveLeaf(entryId: string): void {
+    if (!this.conversation.entries.some((e) => e.id === entryId)) {
+      throw new Error(`No such entry: ${entryId}`);
+    }
+    this.conversation = treeSetActiveLeaf(this.conversation, entryId);
+    this.emit({ type: "active-leaf", leaf: entryId });
+  }
+
+  /** Edit-and-fork: create a sibling of `entryId` (off its parent) with new text
+   *  and run a turn — the pencil-edit affordance (D-17). */
+  async editFork(entryId: string, text: string): Promise<void> {
+    const entry = this.conversation.entries.find((e) => e.id === entryId);
+    if (!entry) throw new Error(`No such entry: ${entryId}`);
+    // Point at the edited entry's parent so send() appends a sibling; the new
+    // entry's own `parent` records the fork, so no active-leaf record is needed.
+    this.conversation = { ...this.conversation, activeLeaf: entry.parent };
+    await this.send(text);
   }
 
   /** Append an entry to the tree and emit it for the persistence projection. */

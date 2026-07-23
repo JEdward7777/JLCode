@@ -111,6 +111,26 @@ describe("dev server", () => {
     };
     expect(elsewhere.conversations.length).toBe(0);
   });
+
+  it("edit forks a sibling branch and rewind switches the active branch", async () => {
+    const app = makeApp();
+    const id = (await post(app, "/chat", { text: "q1" })).json.sessionId as string;
+
+    type Row = { id: string; parent: string | null; type: string };
+    const s1 = (await (await app.request(`/session/${id}`)).json()) as { entries: Row[] };
+    const user1 = s1.entries.find((e) => e.type === "user")!;
+
+    await post(app, `/session/${id}/edit`, { entryId: user1.id, text: "q2" });
+    const s2 = (await (await app.request(`/session/${id}`)).json()) as { entries: Row[] };
+    // Two user messages now branch off the root.
+    expect(s2.entries.filter((e) => e.parent === null && e.type === "user")).toHaveLength(2);
+
+    const assistant1 = s2.entries.find((e) => e.parent === user1.id && e.type === "assistant")!;
+    const rw = await post(app, `/session/${id}/rewind`, { entryId: assistant1.id });
+    expect(rw.json.status).toBe("idle");
+    const s3 = (await (await app.request(`/session/${id}`)).json()) as { activeLeaf: string };
+    expect(s3.activeLeaf).toBe(assistant1.id);
+  });
 });
 
 describe("dev server — approval flow", () => {

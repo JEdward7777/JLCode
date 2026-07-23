@@ -28,11 +28,13 @@ export interface ServerDeps {
 }
 
 function entryView(entry: Entry): Record<string, unknown> {
+  const base = { id: entry.id, parent: entry.parent }; // ids for fork/rewind navigation
   switch (entry.type) {
     case "user":
-      return { type: "user", text: entry.text };
+      return { ...base, type: "user", text: entry.text };
     case "assistant":
       return {
+        ...base,
         type: "assistant",
         text: entry.text,
         toolCalls: entry.toolCalls?.map((t) => ({ name: t.function.name, arguments: t.function.arguments })),
@@ -41,9 +43,9 @@ function entryView(entry: Entry): Record<string, unknown> {
         finishReason: entry.finishReason,
       };
     case "tool":
-      return { type: "tool", name: entry.name, content: entry.content, isError: entry.isError ?? false };
+      return { ...base, type: "tool", name: entry.name, content: entry.content, isError: entry.isError ?? false };
     case "compaction":
-      return { type: "compaction", summary: entry.summary };
+      return { ...base, type: "compaction", summary: entry.summary };
   }
 }
 
@@ -75,6 +77,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     }
     session.onEvent((e) => {
       if (e.type === "entry") void deps.store.entry(session.conversation.id, e.entry);
+      else if (e.type === "active-leaf") void deps.store.activeLeaf(session.conversation.id, e.leaf);
     });
     return manager.add(session);
   }
@@ -129,8 +132,41 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       id: session.id,
       status: session.status,
       model: session.config.model,
+      activeLeaf: session.conversation.activeLeaf,
       entries: session.conversation.entries.map(entryView),
     });
+  });
+
+  // Rewind / switch branch: point the active leaf at an existing entry (D-10).
+  app.post("/session/:id/rewind", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { entryId?: unknown };
+    if (typeof body.entryId !== "string") return c.json({ error: "body must include 'entryId'" }, 400);
+    try {
+      session.setActiveLeaf(body.entryId);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    await deps.store.flush();
+    return c.json(stateOf(session));
+  });
+
+  // Edit-and-fork a message: create a sibling with new text and run (D-17).
+  app.post("/session/:id/edit", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { entryId?: unknown; text?: unknown };
+    if (typeof body.entryId !== "string" || typeof body.text !== "string") {
+      return c.json({ error: "body must include 'entryId' and 'text'" }, 400);
+    }
+    try {
+      await session.editFork(body.entryId, body.text);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    await deps.store.flush();
+    return c.json(stateOf(session));
   });
 
   app.post("/chat", async (c) => {

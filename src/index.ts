@@ -18,7 +18,7 @@ export type {
 } from "./config/types.js";
 
 // Conversation tree + wire assembly
-export { newConversation, appendEntry, pathToLeaf, setActiveLeaf, childrenOf } from "./conversation/tree.js";
+export { newConversation, appendEntry, pathToLeaf, setActiveLeaf, childrenOf, leafOf } from "./conversation/tree.js";
 export { buildWireMessages } from "./conversation/wire.js";
 export type { Conversation, Entry } from "./conversation/types.js";
 
