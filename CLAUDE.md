@@ -31,11 +31,28 @@ deliberately and record it in `DECISIONS.md` — don't let them silently drift.
   is specifically targeting that expensive model/feature. See [`harness/TESTING.md`](harness/TESTING.md).
 - Match the surrounding code's style, naming, and comment density.
 
+## Working discipline (read this every session)
+
+These are automatic — don't wait to be reminded:
+
+1. **Commit at every meaningful milestone.** Never pile epochs of work into the working
+   tree uncommitted. A completed, tested unit → commit it. The working tree should rarely
+   hold more than one focused change.
+2. **Never commit red.** Build and run the free-tier tests (`npm run build && npm test`)
+   before committing; only commit green. If a test **flakes**, root-cause it and fix it —
+   don't shrug it off or commit through it. Leave a note for future-you if the cause is a hunch.
+3. **Tests cost money.** Default runs are the free tiers (0+1). Before any paid tier
+   (2/3, live models), **ask Joshua which level** — unless the task specifically targets that
+   model/feature. See [`harness/TESTING.md`](harness/TESTING.md).
+4. **Keep the harness current.** Update `ROADMAP.md`'s "Current status — resume here" block at
+   each milestone so a lost session resumes cleanly. Record deliberate design changes in
+   `DECISIONS.md`; don't let code and spec drift.
+
 ## Git
 
 - This repo commits under the identity **Joshua Lansford <Joshua@lansfords.com>**
-  (set locally). Claude manages commits: commit at meaningful milestones with
-  clear messages. Do not push unless asked.
+  (set locally). Claude manages commits per the discipline above: commit at meaningful
+  milestones with clear messages. Do not push unless asked.
 
 ## Related project
 

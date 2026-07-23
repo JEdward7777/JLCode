@@ -4,6 +4,14 @@ import path from "node:path";
 import fs from "node:fs";
 import { AppendLog } from "../src/persist/append-log";
 
+// FLAKE HISTORY (2026-07-23): this suite failed once — 1 of 83 — during a commit
+// run (all other runs green). Suspected cause: AppendLog instances created
+// directly here (not via the forPath registry) were never closed by closeAll(),
+// leaking file descriptors across tests; under load that likely tripped a
+// descriptor limit. FIX (hoped-for): track every log opened here and close it in
+// afterEach (below). 6/6 clean runs afterward. If this suite flakes AGAIN, the
+// fd-leak theory was WRONG — look instead at fsync latency or a real
+// write-ordering race in AppendLog, not test isolation.
 let dir: string;
 const opened: AppendLog[] = [];
 /** Create a log and track it so afterEach closes its fd (no leaks under load). */

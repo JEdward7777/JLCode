@@ -14,9 +14,9 @@ Built, tested (69 Tier-0/1 tests green), and committed through `b70532f`:
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
   keys via stdin or `JLCODE_ADD_KEY`; `config.json` chmod 600).
-- **P2** OpenRouter client (streaming, verbatim reasoning, request-keyed cache *primitive*
-  `src/llm/cache.ts`) + conversation tree/wire + Session/SessionManager + `chat` REPL. Truncation
-  (D-30) + circuit breaker (D-32).
+- **P2** OpenRouter client (streaming, verbatim reasoning, request-keyed cache `src/llm/cache.ts`
+  + `CachingDriver` — proven to serve hits without calling the model) + conversation tree/wire +
+  Session/SessionManager + `chat` REPL. Truncation (D-30) + circuit breaker (D-32).
 - **P3a** sandbox + native tools (read/write/delete/list/glob/grep + run_command) + tool loop.
 - **P3b** mode∩approval gate + pause→approve/deny/**edit** + `ask_user`; **soft fence** (D-19):
   out-of-fence access prompts allow-once / remember-root (persisted `folderRoots`) / deny.
