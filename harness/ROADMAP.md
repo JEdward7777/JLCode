@@ -33,8 +33,10 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - **Request-keyed LLM cache** (D-24) so tests are free after first record.
 - Conversation tree in memory (append-only parent-pointer, `activeLeaf`) + wire assembly
   (D-15, D-17). A minimal CLI loop: send a message, stream a reply.
+- **Truncation handling (D-30):** detect `finish_reason: length`; re-express truncated
+  reasoning as plain-text input so the model continues (no silent loss/loop).
 - **Done when:** you can hold a real conversation from the terminal; reasoning round-trips;
-  Tier-1 cached tests cover the loop.
+  a truncated turn is detected and recoverable; Tier-1 cached tests cover the loop.
 
 ## Phase 3 — Tools, sandbox, modes & approval
 **Goal:** the agent can do gated work.
@@ -43,8 +45,10 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - Structured **`ask_user`** tool (D-18).
 - Mode capability gate (Ask/Plan/Code) ∩ approval policies; **editable-before-approval** (D-07,
   D-08, D-16).
+- **Truncation-safe tool exec (D-30):** never apply a partial tool call; atomic writes; the
+  additive-vs-replacing split (additive keeps + "continue"; replacing rejects); visible signals.
 - **Done when:** the agent edits files & runs commands under the fence, respecting mode +
-  approval, with inline command editing. Tier-0/1 tested.
+  approval, with inline command editing; a truncated write never deletes a tail. Tier-0/1 tested.
 
 ## Phase 4 — Persistence, resume, fork/rewind
 **Goal:** conversations survive and branch.

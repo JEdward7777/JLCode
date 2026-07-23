@@ -410,6 +410,36 @@ conversations. The **append-only transcript** keeps the prefix byte-stable so ca
 compaction/fork are the natural invalidation points. This is the **provider input-token
 cache** — distinct from the **local response cache** (§21, D-24) and the test cache (TESTING.md).
 
+## 23. Robustness: output truncation (max_tokens)
+
+When the provider stops with `finish_reason: "length"` (or a tool call's arguments don't fully
+parse), the turn was **cut off**. KiloCode v5 lost the content, never told the model (so it
+**looped**), and worst of all a truncated edit's missing tail became a **silent deletion**.
+Handling (agreed, D-30):
+
+- **Detect, never be blind.** `finish_reason == "length"` or incomplete/unparsable tool-call
+  args → a first-class **TruncationEvent**, surfaced in the UI and the debug journal (§14).
+- **Reasoning cut mid-thought — re-express, don't replay.** The partial thinking is incomplete
+  and unsigned, so it is **not** replayed as a block (perfect-or-gone, §15). Instead it is handed
+  back as **plain-text input**: *"You hit the output limit while thinking; here are your partial
+  thoughts: … — continue from here."* Fable-safe (no signature to validate), lossless, and the
+  model resumes **aware**, so it doesn't loop. (Same **"re-express, don't replay"** principle as
+  bookend-quoting and the safe-harbor in §15.)
+- **Tool-call cut off — split by op type:**
+  - **Additive (create / append / insert):** a partial can't delete anything, so keep the
+    recovered content and return a **visible tool-result** telling the model it was cut off and to
+    continue — enabling **resumable, chunked file creation**. (If args are unrecoverable, reject + notify.)
+  - **Replacing (range-edit / full rewrite):** a missing tail *is* a deletion, so **reject
+    atomically** (all-or-nothing; temp→fsync→rename) and return a visible "not applied — redo
+    smaller / additively." This is why the file tools favor truncation-resistant additive/anchored
+    edits (§9, D-30).
+- **Anti-loop.** Every truncation emits a **visible** signal the model sees next turn; two
+  identical truncations in a row → **escalate to the user** (ask-user, §13). Optional one-time
+  `max_tokens` bump for near-misses (configurable), coordinated with the context budget (§15).
+
+"Never apply a partial edit" and "keep partial file creation" are consistent — they're the two
+halves of the additive-vs-replacing split.
+
 ---
 
 ## Open questions
