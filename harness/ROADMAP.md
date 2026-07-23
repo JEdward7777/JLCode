@@ -9,7 +9,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ---
 
-## Phase 0 — Scaffold & foundations
+## Phase 0 — Scaffold & foundations ✅ done (2026-07-23)
 **Goal:** an installable, testable empty shell.
 - TypeScript project; **Vitest**; **Hono** dep; `package.json` with a `bin` so `npx jlcode`
   runs (D-22). Minimal-dep discipline, no native binaries (D-25).
