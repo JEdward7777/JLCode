@@ -11,7 +11,7 @@
 import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
-import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall } from "../llm/types.js";
+import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { newConversation, appendEntry, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages } from "../conversation/wire.js";
@@ -21,7 +21,10 @@ import type { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolGate } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
 import { ASK_USER } from "../tools/ask-user.js";
+import { TaskRegistry } from "../tools/task-registry.js";
+import type { TaskView } from "../tools/task-registry.js";
 import { computeCost } from "./spend.js";
+import type { QueuedMessage } from "./types.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -56,9 +59,35 @@ export interface SessionOptions {
   conversation?: Conversation;
   /** Initial whole-tree spend cap in USD (D-33). Breach → no further LLM call. */
   spendCapUsd?: number;
+  /** Background-task registry (D-34); a fresh one is created if omitted. */
+  tasks?: TaskRegistry;
+  /** How long a background command may run before the watchdog asks the model
+   *  whether to kill it (D-34). Default 30 min; small values drive tests. */
+  watchdogMs?: number;
 }
 
+/** Default watchdog interval — 30 minutes (D-34). */
+const WATCHDOG_MS = 30 * 60 * 1000;
+
 const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
+
+/** The structured yes/no the watchdog asks the model out-of-band (D-34). */
+const DECIDE_KILL_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "decide_kill",
+    description:
+      "Decide whether to kill a long-running background command. kill=true terminates it now; kill=false lets it keep running.",
+    parameters: {
+      type: "object",
+      properties: {
+        kill: { type: "boolean", description: "true to terminate the command now" },
+        reason: { type: "string", description: "brief rationale" },
+      },
+      required: ["kill"],
+    },
+  },
+};
 
 type StepOutcome = "done" | "paused-approval" | "paused-input";
 
@@ -132,12 +161,23 @@ export class Session {
   private readonly onAddRoot: ((dir: string) => void) | undefined;
   private consecutiveFailures = 0;
   private readonly pricing: ModelConfig["pricing"];
+  private readonly watchdogMs: number;
   private readonly listeners = new Set<SessionListener>();
 
   // Resumable-loop state.
   private pendingToolCalls: ToolCall[] = [];
   private pendingApproval: { request: ApprovalRequest; call: ToolCall; tool: Tool } | undefined;
   private pendingQuestion: { request: AskUserRequest; call: ToolCall } | undefined;
+  // Global stop (D-34): "hard" aborts the in-flight LLM + kills tasks + clears
+  // the queue; "soft" lets running work finish but takes no further LLM turn.
+  private stopScope: "hard" | "soft" | null = null;
+  private abortController: AbortController | undefined;
+  /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
+  private readonly tasks: TaskRegistry;
+  /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
+  private queue: QueuedMessage[] = [];
+  /** Per-task watchdog timers (30-min out-of-band kill prompt, D-34). */
+  private readonly watchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(options: SessionOptions) {
     if (options.tools && !options.sandbox) throw new Error("A tool registry requires a sandbox");
@@ -161,6 +201,15 @@ export class Session {
     this.conversation = options.conversation ?? newConversation();
     this.pricing = options.config.pricing;
     this.spendCapUsd = options.spendCapUsd;
+    this.watchdogMs = options.watchdogMs ?? WATCHDOG_MS;
+    this.tasks = options.tasks ?? new TaskRegistry();
+    // Forward task lifecycle to subscribers (UI list) and arm/disarm the
+    // per-task watchdog (D-34).
+    this.tasks.onEvent((e) => {
+      this.emit(e);
+      if (e.type === "task-start") this.armWatchdog(e.task.id);
+      else if (e.type === "task-end") this.disarmWatchdog(e.task.id);
+    });
     // Whole-tree spend survives resume: recompute from the stored usage of every
     // assistant entry across all branches (D-33), then grow it per new turn.
     this.spendUsd = this.conversation.entries.reduce(
@@ -183,6 +232,128 @@ export class Session {
   /** At/over the cap → the next LLM call is declined (D-33). */
   private capBlocked(): boolean {
     return this.spendCapUsd !== undefined && this.spendUsd >= this.spendCapUsd;
+  }
+
+  /** Global stop (D-34). "hard" is the big red button: abort the in-flight LLM
+   *  request, kill every background task, drop the queue and any pending work.
+   *  "soft" is loop-only: leave running commands to finish but take no further
+   *  LLM turn. If the loop is running it observes the flag and settles itself. */
+  stop(scope: "hard" | "soft"): void {
+    this.stopScope = scope;
+    if (scope === "hard") {
+      this.abortController?.abort();
+      this.tasks?.killAll("stop");
+      this.queue = [];
+      this.pendingToolCalls = [];
+      this.pendingApproval = undefined;
+      this.pendingQuestion = undefined;
+      this.emit({ type: "queue", queue: [] });
+    }
+    this.emit({ type: "stopped", scope });
+    if (this.status !== "running") this.settleStopped();
+    // else: the running advance() loop notices stopScope and settles at a safe point.
+  }
+
+  /** Clear the stop flag and return to idle — called once the loop unwinds. */
+  private settleStopped(): void {
+    this.stopScope = null;
+    this.status = "idle";
+  }
+
+  /** The background tasks currently running (D-34), for the UI list. */
+  get taskList(): TaskView[] {
+    return this.tasks.list();
+  }
+
+  /** Kill a specific background task from the UI (D-34). */
+  killTask(id: string): boolean {
+    return this.tasks.kill(id, "user");
+  }
+
+  /** The messages queued for the next turn boundary (D-34). */
+  get queuedMessages(): QueuedMessage[] {
+    return [...this.queue];
+  }
+
+  // ---- Watchdog: after 30 min, ask the model (out-of-band) to kill or keep a
+  // long-running command (D-34). The Q&A is NOT added to the conversation; a
+  // "kill" decision is reflected only via the eventual tool result, so the model
+  // learns it killed the task rather than that it completed.
+
+  private armWatchdog(taskId: string): void {
+    if (this.watchdogMs <= 0) return; // disabled (0 / negative)
+    const timer = setTimeout(() => void this.watchdogCheck(taskId), this.watchdogMs);
+    (timer as { unref?: () => void }).unref?.(); // don't hold the process open
+    this.watchdogTimers.set(taskId, timer);
+  }
+
+  private disarmWatchdog(taskId: string): void {
+    const timer = this.watchdogTimers.get(taskId);
+    if (timer) clearTimeout(timer);
+    this.watchdogTimers.delete(taskId);
+  }
+
+  private async watchdogCheck(taskId: string): Promise<void> {
+    this.watchdogTimers.delete(taskId);
+    const view = this.tasks.get(taskId);
+    if (!view || view.status !== "running") return; // ended already
+    let kill = false;
+    try {
+      kill = await this.askWatchdogKill(taskId, view.command);
+    } catch {
+      kill = false; // on any error, keep it and re-ask later
+    }
+    if (this.tasks.get(taskId)?.status !== "running") return; // ended meanwhile
+    if (kill) this.tasks.kill(taskId, "watchdog");
+    else this.armWatchdog(taskId); // re-ask after another interval
+  }
+
+  /** One out-of-band model call: given the conversation so far plus the task's
+   *  elapsed time and output, decide kill/keep. Counts toward whole-tree spend
+   *  (D-33) but never touches the conversation tree. */
+  private async askWatchdogKill(taskId: string, command: string): Promise<boolean> {
+    const elapsedMin = Math.round(this.tasks.elapsedMs(taskId) / 60000);
+    const output = this.tasks.output(taskId);
+    const tail = output.length > 4000 ? "…" + output.slice(-4000) : output;
+    const messages = buildWireMessages(this.conversation, { system: this.systemPrompt });
+    messages.push({
+      role: "user",
+      content:
+        `[watchdog] A background command you started has been running for ~${elapsedMin} min without exiting:\n` +
+        `  $ ${command}\n\n` +
+        `Output so far:\n${tail || "(no output yet)"}\n\n` +
+        `Call decide_kill: kill=true terminates it now, kill=false lets it keep running ` +
+        `(you'll be asked again later). This exchange is not added to the conversation.`,
+    });
+    const req: ChatRequest = { model: this.config.model, messages, tools: [DECIDE_KILL_TOOL] };
+    const startedAt = Date.now();
+    const events: StreamEvent[] = [];
+    for await (const ev of this.driver.streamChat(req)) events.push(ev);
+    const result = accumulate(events);
+    const turnUsd = computeCost(result.usage, this.pricing);
+    this.spendUsd += turnUsd;
+    this.emit({ type: "spend", totalUsd: this.spendUsd, turnUsd, usage: result.usage });
+    this.emit({
+      type: "debug",
+      record: {
+        kind: "llm",
+        ms: Date.now() - startedAt,
+        model: req.model,
+        messages: req.messages.length,
+        tools: ["decide_kill"],
+        finishReason: result.finishReason,
+        usage: result.usage,
+        textPreview: `[watchdog] ${command.slice(0, 60)}`,
+      },
+    });
+    const call = result.toolCalls.find((t) => t.function.name === "decide_kill");
+    if (!call) return false; // no decision → keep it running
+    try {
+      const args = JSON.parse(call.function.arguments || "{}") as { kill?: unknown };
+      return args.kill === true;
+    } catch {
+      return false;
+    }
   }
 
   /** Switch capability mode and/or approval policy for this live session and
@@ -274,6 +445,7 @@ export class Session {
     if (this.status === "awaiting-approval" || this.status === "awaiting-input") {
       throw new Error("Session is waiting for input; resolve it before sending.");
     }
+    this.stopScope = null; // a fresh message clears any prior stop flag
     const entry = this.pushEntry({ type: "user", text });
     this.emit({ type: "user", entryId: entry.id, text });
     this.pendingToolCalls = [];
@@ -325,8 +497,14 @@ export class Session {
   private async advance(): Promise<void> {
     this.status = "running";
     for (let iter = 0; iter < this.maxToolIterations; iter++) {
+      // Global stop observed at a turn boundary (D-34): soft or hard both settle
+      // here; a hard stop has already aborted/killed/cleared.
+      if (this.stopScope) return this.settleStopped();
+
       while (this.pendingToolCalls.length > 0) {
         const outcome = await this.tryExecute(this.pendingToolCalls[0]!);
+        // A hard stop mid-command (the child was killed) bails immediately.
+        if (this.stopScope === "hard") return this.settleStopped();
         if (outcome === "paused-approval") {
           this.status = "awaiting-approval";
           return;
@@ -338,6 +516,10 @@ export class Session {
         this.pendingToolCalls.shift(); // "done" → dequeue
       }
 
+      // A stop requested *during* this iteration's tool run (soft or hard): take
+      // no further LLM turn. Running commands were allowed to finish above.
+      if (this.stopScope) return this.settleStopped();
+
       // Spend cap (D-33): at/over the cap, decline the next LLM call. Kill
       // nothing; just pause so the user can raise the cap (which resumes us).
       if (this.capBlocked()) {
@@ -348,7 +530,10 @@ export class Session {
       }
 
       const result = await this.oneAssistantTurn();
-      if (!result) return; // error/halt already handled
+      if (!result) {
+        if (this.stopScope) this.settleStopped(); // aborted by a hard stop
+        return; // else error/halt already handled
+      }
 
       if (result.finishReason === "length") {
         this.emit({
@@ -360,7 +545,35 @@ export class Session {
       if (!this.tools || result.toolCalls.length === 0) break; // final answer
       this.pendingToolCalls = [...result.toolCalls];
     }
+    this.stopScope = null; // settled normally; a soft stop on the last turn is spent
     this.status = "idle";
+    await this.drainQueue();
+  }
+
+  // ---- Queued message (D-34): typed mid-turn, applied FIFO at a turn boundary.
+
+  /** Queue a message to apply at the next turn boundary. If the session is idle,
+   *  it is sent right away (the boundary is now). Returns the queued id. */
+  async enqueue(text: string): Promise<void> {
+    this.queue.push({ id: newId("q"), text });
+    this.emit({ type: "queue", queue: [...this.queue] });
+    if (this.status === "idle") await this.drainQueue();
+  }
+
+  /** Replace the pending queue wholesale — the UI's edit/cancel affordance. */
+  setQueue(messages: { text: string }[]): void {
+    this.queue = messages.map((m) => ({ id: newId("q"), text: m.text }));
+    this.emit({ type: "queue", queue: [...this.queue] });
+  }
+
+  /** At a settled boundary, apply the next queued message (FIFO), unless stopped
+   *  or cap-blocked. */
+  private async drainQueue(): Promise<void> {
+    if (this.status !== "idle" || this.stopScope || this.capReached) return;
+    const next = this.queue.shift();
+    if (!next) return;
+    this.emit({ type: "queue", queue: [...this.queue] });
+    await this.send(next.text);
   }
 
   private async oneAssistantTurn(): Promise<AssistantResult | undefined> {
@@ -369,13 +582,17 @@ export class Session {
     const startedAt = Date.now();
     const toolNames = (req.tools ?? []).map((t) => t.function.name);
     this.emit({ type: "assistant-start" });
+    this.abortController = new AbortController();
     try {
-      for await (const ev of this.driver.streamChat(req)) {
+      for await (const ev of this.driver.streamChat(req, { signal: this.abortController.signal })) {
         events.push(ev);
         if (ev.type === "text") this.emit({ type: "text", delta: ev.delta });
         else if (ev.type === "reasoning") this.emit({ type: "reasoning", delta: ev.delta });
       }
     } catch (err) {
+      // A hard stop aborts the request mid-stream (D-34): discard the turn
+      // without counting it as a failure — advance() settles the loop.
+      if (this.stopScope === "hard" || (err as Error).name === "AbortError") return undefined;
       this.consecutiveFailures++;
       this.emit({ type: "error", message: (err as Error).message });
       this.emit({
@@ -523,7 +740,7 @@ export class Session {
   ): Promise<void> {
     this.emit({ type: "tool-start", name: tool.name });
     const startedAt = Date.now();
-    const res = await tool.execute(args, { sandbox: this.sandbox! });
+    const res = await tool.execute(args, { sandbox: this.sandbox!, tasks: this.tasks });
     const note = edited ? "[note: the user edited the arguments before running]\n" : "";
     this.appendToolResult(call, note + res.content, res.isError ?? false);
     this.emit({

@@ -5,6 +5,7 @@
  */
 import type { ToolDef } from "../llm/types.js";
 import type { Sandbox } from "./sandbox.js";
+import type { TaskRegistry } from "./task-registry.js";
 
 /** Capability class, used by the Ask/Plan/Code mode gate. */
 export type ToolKind = "read" | "write" | "command" | "meta";
@@ -16,6 +17,9 @@ export interface ToolResult {
 
 export interface ToolContext {
   sandbox: Sandbox;
+  /** Background-task registry (D-34) — long-running commands register here so
+   *  they can be listed, killed, and watchdog-watched. */
+  tasks?: TaskRegistry;
 }
 
 export interface Tool {

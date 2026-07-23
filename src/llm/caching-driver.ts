@@ -8,7 +8,7 @@
  */
 import { accumulate } from "./stream.js";
 import type { LlmCache } from "./cache.js";
-import type { AssistantResult, ChatRequest, LlmDriver, StreamEvent } from "./types.js";
+import type { AssistantResult, ChatRequest, LlmDriver, StreamEvent, StreamOptions } from "./types.js";
 
 /** Reconstruct a stream from a recorded result (accumulate() folds it back). */
 function* replay(result: AssistantResult): Generator<StreamEvent> {
@@ -29,14 +29,14 @@ export class CachingDriver implements LlmDriver {
     private readonly cache: LlmCache,
   ) {}
 
-  async *streamChat(req: ChatRequest): AsyncGenerator<StreamEvent, void, unknown> {
+  async *streamChat(req: ChatRequest, opts?: StreamOptions): AsyncGenerator<StreamEvent, void, unknown> {
     const hit = this.cache.get(req);
     if (hit) {
       yield* replay(hit); // served from cache — the underlying driver is NOT called
       return;
     }
     const events: StreamEvent[] = [];
-    for await (const ev of this.inner.streamChat(req)) {
+    for await (const ev of this.inner.streamChat(req, opts)) {
       events.push(ev);
       yield ev;
     }

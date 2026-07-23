@@ -5,7 +5,7 @@
  * is testable offline (D-24). Nothing here interprets reasoning.
  */
 import { streamSSE, chunkToEvents } from "./stream.js";
-import type { ChatRequest, LlmDriver, StreamEvent } from "./types.js";
+import type { ChatRequest, LlmDriver, StreamEvent, StreamOptions } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -33,7 +33,7 @@ export class OpenRouterClient implements LlmDriver {
     this.title = options.title;
   }
 
-  async *streamChat(req: ChatRequest): AsyncGenerator<StreamEvent, void, unknown> {
+  async *streamChat(req: ChatRequest, opts?: StreamOptions): AsyncGenerator<StreamEvent, void, unknown> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
@@ -49,7 +49,12 @@ export class OpenRouterClient implements LlmDriver {
       stream_options: { include_usage: true },
       usage: { include: true },
     });
-    const res = await this.doFetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers, body });
+    const res = await this.doFetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body,
+      signal: opts?.signal,
+    });
 
     if (!res.ok) {
       const detail = await res.text().catch(() => "");

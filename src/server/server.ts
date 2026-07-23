@@ -101,6 +101,8 @@ function stateOf(session: Session): Record<string, unknown> {
     spendUsd: session.spendUsd,
     spendCapUsd: session.spendCapUsd ?? null,
     capReached: session.capReached,
+    tasks: session.taskList,
+    queue: session.queuedMessages,
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };
   // `approval` is the policy (above); the pending request rides separately so the
@@ -262,6 +264,47 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     else if (typeof body.capUsd === "number" && body.capUsd >= 0 && Number.isFinite(body.capUsd)) cap = body.capUsd;
     else return c.json({ error: "body must include 'capUsd' as a non-negative number or null" }, 400);
     await session.setSpendCap(cap);
+    await deps.store.flush();
+    return c.json(stateOf(session));
+  });
+
+  // Global stop (D-34): {scope: "hard"|"soft"}. hard = abort LLM + kill tasks +
+  // clear queue; soft = let running commands finish but take no further LLM turn.
+  app.post("/session/:id/stop", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { scope?: unknown };
+    const scope = body.scope === "soft" ? "soft" : "hard"; // default to the big red button
+    session.stop(scope);
+    return c.json(stateOf(session));
+  });
+
+  // Kill one background task (D-34) — the per-task Kill button.
+  app.post("/session/:id/task/:taskId/kill", (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const killed = session.killTask(c.req.param("taskId"));
+    if (!killed) return c.json({ error: "no such running task" }, 404);
+    return c.json(stateOf(session));
+  });
+
+  // Queued message (D-34): {text} enqueues; {queue:[{text}]} replaces the whole
+  // pending list (the edit/cancel affordance).
+  app.post("/session/:id/queue", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; queue?: unknown };
+    if (Array.isArray(body.queue)) {
+      const msgs = body.queue
+        .filter((m): m is Record<string, unknown> => Boolean(m) && typeof m === "object")
+        .map((m) => ({ text: typeof m.text === "string" ? m.text : "" }))
+        .filter((m) => m.text.trim() !== "");
+      session.setQueue(msgs);
+    } else if (typeof body.text === "string" && body.text.trim() !== "") {
+      await session.enqueue(body.text);
+    } else {
+      return c.json({ error: "body must include a non-empty 'text' or a 'queue' array" }, 400);
+    }
     await deps.store.flush();
     return c.json(stateOf(session));
   });

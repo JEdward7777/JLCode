@@ -70,7 +70,13 @@ export interface AssistantResult {
   usage?: Usage;
 }
 
+/** Per-call options a driver may honor. `signal` lets a global Stop abort an
+ *  in-flight request mid-stream (D-34); drivers may ignore it. */
+export interface StreamOptions {
+  signal?: AbortSignal;
+}
+
 /** The one thing a session needs from the model — injectable for tests (D-24). */
 export interface LlmDriver {
-  streamChat(req: ChatRequest): AsyncGenerator<StreamEvent, void, unknown>;
+  streamChat(req: ChatRequest, opts?: StreamOptions): AsyncGenerator<StreamEvent, void, unknown>;
 }

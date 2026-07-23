@@ -1,8 +1,15 @@
 /** Events a session emits on its stream (the persisted/UI/bus source, §11). */
 import type { ToolKind } from "../tools/types.js";
+import type { TaskView } from "../tools/task-registry.js";
 import type { Entry } from "../conversation/types.js";
 import type { Usage } from "../llm/types.js";
 import type { ApprovalPolicy, Mode } from "../config/types.js";
+
+/** A message typed mid-turn, waiting to apply at the next turn boundary (D-34). */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+}
 
 /** A verbose per-turn record for the debug journal (D-15) — never replayed. */
 export type DebugRecord =
@@ -88,6 +95,11 @@ export type SessionEvent =
   | { type: "spend"; totalUsd: number; turnUsd: number; usage?: Usage } // whole-tree spend (D-33)
   | { type: "cap"; capUsd: number | null } // the spend cap was set/raised/cleared (D-33)
   | { type: "cap-reached"; spendUsd: number; capUsd: number } // breach → no further LLM call (D-33)
+  | { type: "stopped"; scope: "hard" | "soft" } // global stop: hard abort vs loop-only (D-34)
+  | { type: "queue"; queue: QueuedMessage[] } // the queued-message list changed (D-34)
+  | { type: "task-start"; task: TaskView } // a background command started (D-34)
+  | { type: "task-update"; task: TaskView } // a task changed (e.g. kill requested)
+  | { type: "task-end"; task: TaskView } // a task finished / was killed
   | { type: "truncation"; message: string }
   | { type: "error"; message: string }
   | { type: "halted"; reason: string };
