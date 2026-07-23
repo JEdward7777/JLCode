@@ -125,6 +125,11 @@ Windows/macOS: use the platform config/data dirs; `JLCODE_CONFIG_DIR` / `JLCODE_
 override everywhere (Docker sets these explicitly). SQLite is the noted upgrade path if
 multi-instance concurrency or search ever demand it.
 
+**Testability (D-23):** the conversation/journal store takes an **injectable data dir** (never a
+hardcoded global), so tests point it at a temp dir and then inspect what landed — no polluting
+real history. An **ephemeral / no-persist mode** skips writing entirely for runs that shouldn't
+record. (This is how test runs "relocate the logs" and self-evaluate the result.)
+
 ### Persistence: event stream → projections (D-37)
 
 Each session has **one ordered event stream** (the same events the bus §11 carries). The
@@ -150,8 +155,12 @@ Conceptually one record per conversation, materialized as the append-only JSONL 
 folded on load. **Tree structure comes solely from `parent` pointers, never from file/append
 order** — so concurrently-appended, *interleaved* branches re-read correctly and never merge;
 fold is index-then-link (order-independent). Ids are **generated random (not content-hashed)**,
-so two nodes with identical text stay distinct (the opposite of git's dedupe). `entries` is
-**append-only**; each entry has a stable generated `id` and a
+so two nodes with identical text stay distinct (the opposite of git's dedupe). **These generated
+ids never go on the wire** — only role/content/tool_calls/`tool_call_id`/reasoning reach the model
+(and the cache key, D-24); the only wire ids are provider-issued `tool_call_id`s (fixed once
+recorded). So ids stay free to be random without breaking zero-cost test replay. *(Guard: never
+put a generated id into a wire message.)* `entries` is **append-only**; each entry has a stable
+generated `id` and a
 `parent` id. A *branch* is the chain you get tracing `parent` from a leaf upward; `activeLeaf`
 restores the viewed branch on resume. Fork = append a sibling off a parent (the pencil-edit of a
 user message does exactly this); rewind = append an `activeLeaf` change. The JSON below is the
