@@ -248,18 +248,33 @@ full node tree is preserved on disk — like a fresh conversation carrying a sum
 
 ### Fable-safety rules (the whole point)
 
+**Guiding law — perfect-or-gone, per whole tool cycle.** A "tampered" verdict fires when a
+signed thinking block's **signature fails to validate** (it was edited/reconstructed) **or**
+when a kept thinking block is **orphaned** (its paired tool_use/tool_result was summarized
+away). So every signed thinking block is either replayed **byte-exact with its entire tool
+cycle intact**, or **removed entirely with its whole cycle** — never edited, reconstructed,
+or orphaned. There is no safe middle.
+
 - **Kept-verbatim recent turns are replayed from their original stored entries** — the opaque
-  `reasoning_details` (incl. the **signature / encrypted / redacted** payload) intact and
-  unmodified (D-14). Never reconstruct a replayed assistant turn from serialized text; the
-  provider validates the signature and any edit invalidates it.
+  `reasoning_details` (incl. **signature / encrypted / redacted** payload) intact and unmodified
+  (D-14). Never reconstruct a replayed assistant turn from serialized text.
 - The flattened text used as **summary input** may render reasoning as plain text — that copy
   is *input to the summarizer only* and is **never replayed**.
 - Summarized older turns are **dropped from replay** (replaced by the summary), so their
   reasoning is never sent — no signature to offend.
-- The summary node lands on a **clean turn boundary**, so it never splits a thinking→tool_use
-  pairing among the kept turns. Preserve tool-call/result pairing.
+- The compaction cut lands on a **whole-tool-cycle boundary** — it never orphans a thinking
+  block from its tool_use/tool_result, and never bisects an in-progress cycle.
+
+**Full-summarize safe-harbor mode.** Summarizing *everything* prior into the blob (zero
+thinking replay) is definitionally safe — from the provider's view it's just a **new
+conversation seeded with a big starter summary**, with nothing to validate. This is the
+guaranteed-safe fallback, and the **conservative default for Fable** until the partial-keep
+regime is empirically cleared (O-02). The cheaper partial-keep regime (recent ~8K verbatim +
+summarized older middle) is preferred where a provider is confirmed to accept it.
+
 - Verified by a targeted test that reasoning survives a compaction (TESTING.md, Tier 1 cached +
-  Tier 3 live Fable).
+  Tier 3 live Fable) — and specifically that partial-keep either validates or we fall back to
+  the safe-harbor.
 
 ### Related
 
