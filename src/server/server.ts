@@ -98,6 +98,9 @@ function stateOf(session: Session): Record<string, unknown> {
     status: session.status,
     mode: session.mode,
     approval: session.approval,
+    spendUsd: session.spendUsd,
+    spendCapUsd: session.spendCapUsd ?? null,
+    capReached: session.capReached,
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };
   // `approval` is the policy (above); the pending request rides separately so the
@@ -245,6 +248,21 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (mode === undefined && approval === undefined) return c.json({ error: "nothing to change" }, 400);
     session.setModeApproval(mode, approval);
     deps.persistDefaults?.(session.config.name, { mode, approval });
+    return c.json(stateOf(session));
+  });
+
+  // Set / raise / clear the whole-tree spend cap (D-33). Body: {capUsd: number|null}.
+  // Raising above current spend after a breach resumes the paused loop.
+  app.post("/session/:id/cap", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { capUsd?: unknown };
+    let cap: number | null;
+    if (body.capUsd === null) cap = null;
+    else if (typeof body.capUsd === "number" && body.capUsd >= 0 && Number.isFinite(body.capUsd)) cap = body.capUsd;
+    else return c.json({ error: "body must include 'capUsd' as a non-negative number or null" }, 400);
+    await session.setSpendCap(cap);
+    await deps.store.flush();
     return c.json(stateOf(session));
   });
 

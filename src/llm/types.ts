@@ -22,6 +22,11 @@ export interface Usage {
   completionTokens?: number;
   totalTokens?: number;
   cachedTokens?: number;
+  /** Authoritative spend for this call in USD, when the provider reports it
+   *  (OpenRouter `usage.cost` with `usage:{include:true}`) — honors cache
+   *  discounts natively (D-33). Absent for the fake driver → we fall back to
+   *  config pricing. */
+  costUsd?: number;
 }
 
 export interface ChatMessage {

@@ -33,12 +33,15 @@ export async function* streamSSE(body: ReadableStream<Uint8Array>): AsyncGenerat
 }
 
 function mapUsage(u: any): Usage {
-  return {
+  const usage: Usage = {
     promptTokens: u?.prompt_tokens,
     completionTokens: u?.completion_tokens,
     totalTokens: u?.total_tokens,
     cachedTokens: u?.prompt_tokens_details?.cached_tokens,
   };
+  // OpenRouter reports authoritative spend in `cost` when asked (D-33).
+  if (typeof u?.cost === "number") usage.costUsd = u.cost;
+  return usage;
 }
 
 /** Translate one OpenAI streaming chunk into zero or more normalized events. */

@@ -41,7 +41,14 @@ export class OpenRouterClient implements LlmDriver {
     if (this.referer) headers["HTTP-Referer"] = this.referer;
     if (this.title) headers["X-Title"] = this.title;
 
-    const body = JSON.stringify({ ...req, stream: true, stream_options: { include_usage: true } });
+    // `usage.include` asks OpenRouter to report authoritative per-call `cost`
+    // (cache-aware) so spend accounting doesn't have to price tokens itself (D-33).
+    const body = JSON.stringify({
+      ...req,
+      stream: true,
+      stream_options: { include_usage: true },
+      usage: { include: true },
+    });
     const res = await this.doFetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers, body });
 
     if (!res.ok) {

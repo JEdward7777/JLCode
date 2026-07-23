@@ -36,6 +36,16 @@ export interface SamplingParams {
   maxTokens?: number;
 }
 
+/** Fallback pricing for spend accounting (D-33), in USD per million tokens. Used
+ *  only when OpenRouter doesn't return an authoritative `cost` (e.g. the fake
+ *  driver, or a provider that omits it). Cached prompt tokens bill at
+ *  `cachedPromptPerMTok` when set, else at the normal prompt rate. */
+export interface ModelPricing {
+  promptPerMTok?: number;
+  completionPerMTok?: number;
+  cachedPromptPerMTok?: number;
+}
+
 export interface CompactionSettings {
   /** Summarizer model id; default = the working model (D-27/D-38). */
   model?: string;
@@ -57,6 +67,8 @@ export interface ModelConfig {
   model: string;
   reasoningEffort?: ReasoningEffort;
   sampling?: SamplingParams;
+  /** Fallback per-token pricing (D-33) when the API doesn't report `cost`. */
+  pricing?: ModelPricing;
   systemPromptAddendum?: string;
   defaultMode: Mode;
   defaultApproval: ApprovalPolicy;

@@ -21,6 +21,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolGate } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
 import { ASK_USER } from "../tools/ask-user.js";
+import { computeCost } from "./spend.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -53,6 +54,8 @@ export interface SessionOptions {
   onAddRoot?: (dir: string) => void;
   /** Resume from an existing (loaded) conversation instead of a fresh one. */
   conversation?: Conversation;
+  /** Initial whole-tree spend cap in USD (D-33). Breach → no further LLM call. */
+  spendCapUsd?: number;
 }
 
 const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
@@ -109,6 +112,14 @@ export class Session {
   /** Live capability mode + approval policy (D-07/D-08), switchable at runtime. */
   mode: Mode;
   approval: ApprovalPolicy;
+  /** Whole-tree spend so far, in USD (D-33) — sum over every model call charged
+   *  to this conversation; only grows (fork/rewind don't refund). */
+  spendUsd = 0;
+  /** Optional spend cap (D-33); at/over it, no further LLM call is made. */
+  spendCapUsd: number | undefined;
+  /** True once a cap breach has blocked the next LLM call, until the cap is
+   *  raised. Nothing is killed — the loop just declines to continue (D-33). */
+  capReached = false;
 
   private readonly driver: LlmDriver;
   private readonly systemPrompt: string;
@@ -120,6 +131,7 @@ export class Session {
   private readonly maxToolIterations: number;
   private readonly onAddRoot: ((dir: string) => void) | undefined;
   private consecutiveFailures = 0;
+  private readonly pricing: ModelConfig["pricing"];
   private readonly listeners = new Set<SessionListener>();
 
   // Resumable-loop state.
@@ -147,6 +159,30 @@ export class Session {
     const base = options.systemPrompt ?? BASE_SYSTEM;
     this.systemPrompt = addendum ? `${base}\n\n${addendum}` : base;
     this.conversation = options.conversation ?? newConversation();
+    this.pricing = options.config.pricing;
+    this.spendCapUsd = options.spendCapUsd;
+    // Whole-tree spend survives resume: recompute from the stored usage of every
+    // assistant entry across all branches (D-33), then grow it per new turn.
+    this.spendUsd = this.conversation.entries.reduce(
+      (sum, e) => (e.type === "assistant" ? sum + computeCost(e.usage, this.pricing) : sum),
+      0,
+    );
+  }
+
+  /** Set / raise / clear the spend cap (D-33). Raising above current spend after
+   *  a breach clears the block and resumes the paused loop; nothing is killed. */
+  async setSpendCap(capUsd: number | null): Promise<void> {
+    this.spendCapUsd = capUsd ?? undefined;
+    this.emit({ type: "cap", capUsd });
+    if (this.capReached && !this.capBlocked()) {
+      this.capReached = false;
+      await this.advance(); // resume where the breach paused us
+    }
+  }
+
+  /** At/over the cap → the next LLM call is declined (D-33). */
+  private capBlocked(): boolean {
+    return this.spendCapUsd !== undefined && this.spendUsd >= this.spendCapUsd;
   }
 
   /** Switch capability mode and/or approval policy for this live session and
@@ -302,6 +338,15 @@ export class Session {
         this.pendingToolCalls.shift(); // "done" → dequeue
       }
 
+      // Spend cap (D-33): at/over the cap, decline the next LLM call. Kill
+      // nothing; just pause so the user can raise the cap (which resumes us).
+      if (this.capBlocked()) {
+        this.capReached = true;
+        this.emit({ type: "cap-reached", spendUsd: this.spendUsd, capUsd: this.spendCapUsd! });
+        this.status = "idle";
+        return;
+      }
+
       const result = await this.oneAssistantTurn();
       if (!result) return; // error/halt already handled
 
@@ -380,6 +425,9 @@ export class Session {
       usage: result.usage,
     });
     this.consecutiveFailures = 0;
+    const turnUsd = computeCost(result.usage, this.pricing);
+    this.spendUsd += turnUsd;
+    this.emit({ type: "spend", totalUsd: this.spendUsd, turnUsd, usage: result.usage });
     this.emit({
       type: "assistant-end",
       entryId: entry.id,
