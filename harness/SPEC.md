@@ -462,6 +462,44 @@ errors, unresolved truncations, tool errors, invalid/unparsable tool calls, no-p
 Protects against runaway loops and, importantly, **runaway cost** (D-32). This is the backstop
 behind the per-case handling (truncation §23, approvals §6).
 
+## 25. Cost accounting, spend display & cap (D-33)
+
+- The UI shows **current spend in a corner of the screen**, updating live.
+- Spend is the **whole-tree total** — *every* model call charged to this conversation: all
+  branches (fork/rewind don't erase what was spent), **plus compaction summaries, judge calls,
+  and (future) sub-thread spend that rolls up (§27)**. Not just the active branch.
+- Computed from token usage × model pricing (OpenRouter metadata), honoring cached-token
+  discounts (§22); recorded per call in the debug journal (§14).
+- A **settable spend limit**; on breach the agent **hard-stops and escalates** (awaiting-input,
+  §13), offering to raise the cap — same backstop family as the circuit breaker (§24). *Proposed
+  default: a per-conversation limit plus an optional global/per-config cap — veto if you want
+  only one.*
+
+## 26. Activity & interruption control (D-34)
+
+- **Background tasks are first-class.** Long-running operations (shell commands that don't
+  return promptly; future sub-threads §27) are tracked with live status and are **individually
+  killable** from the UI — the affordance to kill a task that hung or won't finish soon.
+- **Queued message.** You can type a message mid-turn; it **queues and applies at the next turn
+  boundary** rather than interrupting the in-flight turn (FIFO; editable/cancelable before it
+  applies). Lets you drop in an idea without derailing the current turn.
+- **Global stop button.** Kills **all activity at once** — the agent loop *and* every background
+  task. The big red button, distinct from the gentle queued-message path and the targeted
+  per-task kill.
+- All three are POST actions on the transport (§11); status and kill/stop states flow back over SSE.
+
+## 27. Future direction: agent orchestration / sub-threads (forward constraint)
+
+**Not now.** Keep the way clear for the agent to **spin up sub-threads / sub-agents that run
+(possibly in the background) and report back**. Forward constraints (respect; don't build yet):
+
+- Sub-threads are their **own sessions** (own transcript trees, §8) **linked to a parent**, and
+  **report results back** to the parent (as tool results / messages).
+- Their **spend rolls up into the tree total** (§25); the **per-task kill and global stop** (§26)
+  extend to them; they appear in the background-task list (§26) and the future fleet view (§18).
+- The transport-agnostic event bus (§11) and session model must accommodate a **tree/graph of
+  agents**, not just one.
+
 ---
 
 ## Open questions

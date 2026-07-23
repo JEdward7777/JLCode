@@ -50,8 +50,11 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
   D-08, D-16).
 - **Truncation-safe tool exec (D-30):** never apply a partial tool call; atomic writes; the
   additive-vs-replacing split (additive keeps + "continue"; replacing rejects); visible signals.
+- **Background-task model (D-34):** long-running shell commands tracked with status + killable
+  (UI affordance lands in P5). Per-turn **spend accounting** groundwork (D-33).
 - **Done when:** the agent edits files & runs commands under the fence, respecting mode +
-  approval, with inline command editing; a truncated write never deletes a tail. Tier-0/1 tested.
+  approval, with inline command editing; a truncated write never deletes a tail; long tasks are
+  trackable/killable. Tier-0/1 tested.
 
 ## Phase 4 — Persistence, resume, fork/rewind
 **Goal:** conversations survive and branch.
@@ -65,8 +68,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - Hono server; **SSE down / POST up** event bus (D-18); configurable port.
 - Chat view: markdown + **Mermaid** + inline images (D-11-era §11); approval UI with **edit**;
   `ask_user` buttons/multi-question forms; mode/approval controls; branch arrows; **TTS button**.
+- **Cost & control (D-33, D-34):** live **whole-tree spend** in a corner + settable **cap**;
+  **queued message** (applies between turns); **background-task list with per-task kill**;
+  **global stop button**.
 - **Auth** (P-01): localhost-by-default bind, hashed password, one-time setup token, session cookie.
-- **Done when:** you drive JLCode from a browser with full markdown, approvals, forking, login.
+- **Done when:** you drive JLCode from a browser with full markdown, approvals, forking, login,
+  live spend + cap, queued messages, and stop/kill controls.
 
 ## Phase 6 — Compaction
 **Goal:** long conversations stay in-window and Fable-safe.
@@ -81,9 +88,9 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-08)
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
-agent-directed minimize/expand (X-08) · remote control / fleet view (§18) · browser-driven
-app testing · VS Code webview · response-caching product feature (§21) · file viewer &
-upload/download chrome.
+agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
+remote control / fleet view (§18) · browser-driven app testing · VS Code webview ·
+response-caching product feature (§21) · file viewer & upload/download chrome.
 
 ---
 
