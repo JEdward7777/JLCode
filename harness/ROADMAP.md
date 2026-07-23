@@ -1,9 +1,9 @@
 # JLCode — Roadmap
 
-Status: **placeholder.** The v1 build sequence is intentionally *not* laid out yet —
-it depends on the architecture decisions still open in [`DECISIONS.md`](DECISIONS.md)
-(§Open) / [`ARCHITECTURE.md`](ARCHITECTURE.md). We'll fill this in **with Joshua** once
-those are settled, rather than pre-committing a plan.
+Status: **ready to firm up.** The load-bearing architecture is now settled
+([`DECISIONS.md`](DECISIONS.md) D-13…D-22; only O-02 deferred to build time), so the phase
+plan below can move from sketch to an agreed sequence. Next session: confirm the ordering
+with Joshua and start building the skeleton.
 
 ## What's in v1 vs later
 

@@ -1,24 +1,29 @@
 # JLCode — Architecture
 
-> ⚠️ **UNREVIEWED PROPOSAL — not agreed.** Everything below was drafted by Claude
-> as a *starting point for discussion*, not decided with Joshua. Each choice here
-> is an open question to work through together. Do not treat as settled.
+> ✅ **Reviewed & agreed** (2026-07-22) — the load-bearing choices here were worked
+> through with Joshua and are logged in [`DECISIONS.md`](DECISIONS.md) (D-13…D-22).
+> One item is intentionally deferred to build time: **O-02** (compaction specifics +
+> the Fable×compaction boundary), which is empirical rather than answerable on paper.
 
-Status: **proposal, pending review** (2026-07-22). Describes a *candidate* for how
-the spec ([`SPEC.md`](SPEC.md)) could be realized. Material choices move to
-[`DECISIONS.md`](DECISIONS.md) only once agreed.
+Status: **agreed** (2026-07-22). Describes how the spec ([`SPEC.md`](SPEC.md)) is
+realized. Changes from here should update [`DECISIONS.md`](DECISIONS.md) deliberately.
 
 ---
 
 ## 1. Runtime & stack
 
 - **Node.js + TypeScript.** Chosen for the eventual VS Code plugin path (extensions
-  are Node/TS), strong OpenAI/OpenRouter + MCP SDKs, and type-safe tool schemas.
-- **OpenRouter** via the OpenAI-compatible API (OpenAI Node SDK pointed at the
-  OpenRouter base URL). Tool calling uses the OpenAI function-calling protocol.
-- HTTP layer kept **thin** over the core; exact framework TBD (lightweight, e.g.
-  Fastify/Hono-class). Token streaming to the browser via SSE (revisit WebSocket if
-  bidirectional needs grow). — *tentative, see DECISIONS D-09.*
+  are Node/TS), strong ecosystem + MCP SDK, and type-safe tool schemas.
+- **OpenRouter** via the OpenAI-compatible API using a **thin custom fetch client (D-21)** —
+  we own the exact request/response JSON so the opaque `reasoning_details` round-trips verbatim
+  (D-14). Tool calling uses the OpenAI function-calling protocol.
+- HTTP layer kept **thin** over the core, on **Hono (D-20)** — TS-first, clean SSE, and portable
+  to the Cloudflare edge for the future proxy (§18).
+- **Packaging (D-22):** published as `jlcode` with a `bin` entry so `npx jlcode` runs without a
+  global install (the JS analogue of `file_utils`' `uvx`).
+- **Transport = SSE (down) + POST (up) — AGREED (D-18).** Server streams events to the
+  browser over SSE (reconnect/resume via Last-Event-ID); the browser sends discrete actions
+  as POSTs. This is the concrete wiring of the event bus (§2) for the HTTP frontend.
 
 ## 2. Layering (transport-agnostic core)
 
@@ -74,7 +79,10 @@ Plan mode's git allowlist is a small fixed set (`git add`, `git commit`, and rea
 - **Native file tools:** `read_file`, `write_file`, `create_file`, `delete_file`,
   `rename`, `list_dir`, `glob`, `grep`. All paths pass through the **sandbox** (§6).
 - **Shell:** `run_command`, local execution, gated by §4.
-- **ask_followup:** pauses the loop, emits an ask-user event, resumes on the answer.
+- **ask_user (D-18):** pauses the loop and emits an awaiting-input event. Two shapes — a
+  prose question waits on the text box; a structured call (questions, options, multiSelect,
+  optional free-text) renders buttons/fields. Resumes when the POSTed answer returns as the
+  tool result. Approvals reuse this awaiting-input machinery with an approve/deny/edit form.
 - **MCP client (later):** generic; the sandbox validates path-bearing arguments
   *before* forwarding, so `file_utils` and others stay fenced even though they don't
   self-enforce.
@@ -83,10 +91,18 @@ Tool schemas are defined once in TypeScript and rendered to the OpenAI function 
 
 ## 6. Sandbox / workspace fence
 
-- A single resolver maps every tool-supplied path to an absolute real path and rejects
-  anything outside the active workspace root (the launch directory by default; explicitly
-  wideable). Resolves symlinks; blocks `..` escapes. One enforcement point for native
-  tools and (later) MCP forwarding.
+**AGREED (D-19).** A single resolver maps every tool-supplied path to its real absolute path
+(symlinks followed), blocks `..` escapes, and requires the resolved path to sit inside an
+**allowed root**. Allowed roots = the **launch directory** (default) + any pre-declared roots
+(per-directory persisted state / model config / launch flag).
+
+- **Out-of-fence access → approval prompt** (reuses the awaiting-input machinery, §5), offering
+  **allow once / allow + persist as a new authorized root for this launch dir / deny**. The
+  prompt proposes the accessed path's containing directory as the root, adjustable before saving;
+  persisted roots are stored per-directory in the config store (alongside the folder→config
+  binding, §7).
+- One enforcement point for native tools and (later) MCP forwarding — the path is validated
+  before it reaches any tool or is forwarded to any MCP server.
 
 ## 7. Persistence & stores — **AGREED (D-13, D-15, D-17)**
 
@@ -166,4 +182,4 @@ never read back into a request.
 
 ## Naming
 
-- Working name **JLCode**; CLI/package name tentatively `jlcode`. (DECISIONS O-09, open.)
+- Working name **JLCode**; CLI/package name **`jlcode`**, npx-compatible (D-22).

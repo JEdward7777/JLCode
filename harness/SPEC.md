@@ -143,8 +143,10 @@ Nothing project-specific is written into the project folder.
 ## 9. File access
 
 - **Native file tools** are the v1 primary: read, write, create, delete, rename,
-  list, glob, grep — all behind a **single workspace sandbox/fence** so access can be
-  confined to the launch folder (or explicitly widened).
+  list, glob, grep — all behind a **single workspace sandbox/fence** (agreed, D-19):
+  hard fence (read + write) to the launch dir + pre-declared allowed roots; symlink-safe,
+  `..` blocked. **Out-of-fence access prompts** you to *allow once / allow + remember this
+  root for this workspace / deny* — delivering per-client isolation without dead-ends.
 - The `../file_utils` MCP server is a **specialist** (anchor-based surgical edits of
   large / mojibake-prone files) and lacks listing/glob/grep/whole-file-read/create-delete
   and any sandbox. It is **not** the v1 file layer. When MCP lands (ROADMAP), it plugs
@@ -165,6 +167,8 @@ Nothing project-specific is written into the project folder.
   events; frontends subscribe. This keeps a future curses frontend and a VS Code
   webview as additive work, not rewrites.
 - Port is **configurable** (env/flag) so Docker containers don't conflict.
+- **Transport (agreed, D-18):** SSE for server→browser streaming (events, tokens,
+  awaiting-input), POST for browser→server actions (send, approve/deny/edit, answer, switch).
 - **Rich rendering:** the chat view renders **markdown**, including **Mermaid diagrams**
   and inline images (§16). *(Near-term.)*
 - **Chat view vs. workbench chrome (forward constraint):** the **chat view** is a
@@ -187,11 +191,10 @@ the remote system viewing the page (needed for the web/remote case; redundant in
 - The model can **pause and ask the user a question** via a dedicated tool, then
   continue once answered. This pause is the canonical **"awaiting input"** state (reused
   by approvals §6, notifications §19, and the future fleet view §18).
-- **Question UX (to design with the frontend/transport, O-01):** at minimum a free-text
-  input the agent waits on. Desirable richer forms: **suggested-answer buttons**, and
-  **multiple questions at once**, each with suggested options and/or text fields (the same
-  shape as this project's own structured-question tool). The agent chooses the shape; the
-  frontend renders it; a plain-text frontend can always fall back to text.
+- **Question UX (agreed, D-18):** a **prose** question waits on a free-text box; a structured
+  **`ask_user` tool** delivers **suggested-answer buttons** and/or **multiple questions at once**
+  with options and/or text fields (same shape as this project's own structured-question tool).
+  The agent chooses the shape; the frontend renders it; a plain-text frontend falls back to text.
 
 ## 14. Diagnostics & logging
 
