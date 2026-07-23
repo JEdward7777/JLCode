@@ -1,0 +1,24 @@
+# Secrets — never commit. Model configs (with OpenRouter keys) live in the
+# OS-level config store, NOT in the project; but guard against stray local ones.
+.env
+.env.*
+*.local.env
+secrets.json
+
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
+
+# Test / coverage
+coverage/
+.nyc_output/
