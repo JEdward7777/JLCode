@@ -1,9 +1,10 @@
 # JLCode — Roadmap
 
-Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-38, no open
+Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-40, no open
 items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
-resume / fork-rewind / debug-journal done). **Next: Phase 5 — the HTTP browser frontend, which
-completes Milestone M3 "real product".**
+resume / fork-rewind / debug-journal done). **Next: Phase 5 — the HTTP browser frontend (sliced
+P5a…P5f below), which completes Milestone M3 "real product".** Stack: **React + Vite** (D-39);
+serving/auth is a **CLI serve-mode surface** (D-40).
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
@@ -47,7 +48,9 @@ built but not yet wired as the live record/replay layer (Tier-1) or the runtime 
 outside `serve`.
 
 To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
-continue at the next unchecked phase below.
+continue at the next unchecked phase below. **Phase 5 is now sliced P5a…P5f (see below); next up
+is P5a — React + Vite toolchain + SSE/POST transport + bare streaming chat.** Stack decided in
+D-39; serve-mode/auth surface in D-40.
 
 ---
 
@@ -110,19 +113,54 @@ with the P5 frontend.)*
 - Fork (sibling branch) / rewind (move `activeLeaf`) navigation (D-10, D-17).
 - **Done when:** restart resumes a conversation; you can fork/rewind and navigate branches.
 
-## Phase 5 — HTTP frontend
-**Goal:** the real product — a browser you talk to.
-- Hono server; **SSE down / POST up** event bus (D-18); configurable port.
-- Chat view: markdown + **Mermaid** + inline images (D-11-era §11); approval UI with **edit**;
-  `ask_user` buttons/multi-question forms; mode/approval controls; branch arrows; **TTS button**.
-- **Cost & control (D-33, D-34):** live **whole-tree spend** in a corner + settable **cap**;
-  **queued message** (applies between turns); **background-task list with per-task kill**;
-  **global stop button**.
-- **Concurrent sessions (D-36):** the "bag of agents" UI — hold/switch multiple live sessions in
-  the same folder, each with its own status/spend/controls (shared-folder, worktrees deferred).
-- **Auth** (P-01): localhost-by-default bind, hashed password, one-time setup token, session cookie.
-- **Done when:** you drive JLCode from a browser with full markdown, approvals, forking, login,
-  live spend + cap, queued messages, and stop/kill controls.
+## Phase 5 — HTTP frontend (React + Vite, D-39)
+**Goal:** the real product — a browser you talk to. Sliced into six independently-shippable
+vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack is **React + Vite**
+(D-39): the build toolchain is a devDependency that emits **pre-built static assets**, so the
+`npx jlcode` runtime stays native-free (honors D-25's intent).
+
+### P5a — Client toolchain + transport skeleton
+- React + Vite wired: client bundle **built to static assets**, served by the Hono server;
+  `npm run build` produces them; dev-time HMR is a dev convenience only.
+- **SSE down / POST up** event bus (D-18, §11) replacing the JSON dev endpoints; the per-session
+  event stream (D-37) is the wire. Configurable port; **`--serve` bind arg** selects localhost
+  (default, no auth) vs outward (D-40) — bind surface lands here, password modes in P5f.
+- Bare chat view over the existing Session/SessionManager: send, **stream tokens**, render markdown.
+- **Done when:** you hold a streaming, markdown-rendered conversation in the browser (localhost).
+
+### P5b — Interactive gating in the browser
+- Approval UI with **edit-before-approve** (D-07/D-08/D-16); `ask_user` single + multi-question
+  forms (D-18); mode (Ask/Plan/Code) + approval-policy controls; **soft-fence** out-of-fence
+  prompts — allow-once / remember-root / deny (D-19).
+- **Done when:** the agent does gated tool work (read/write/run under the fence) entirely from
+  the browser, with inline command editing.
+
+### P5c — Cost & interruption control (D-33, D-34)
+- Live **whole-tree spend** in a screen corner + settable **cap** (hard-stop on breach, offer
+  raise); **queued message** (turn-boundary, editable/cancelable); **background-task list with
+  per-task kill** (the D-34 kill carve-out lands here); **global stop**.
+- **Done when:** spend + cap are visible and enforced; background tasks are killable; stop halts
+  the loop and every task.
+
+### P5d — Branching, journal & rich rendering
+- Branch-arrow **fork/rewind navigation** over the P4 endpoints (D-10/D-17); **debug-journal
+  viewer** (D-15); **Mermaid** + inline images (§11); **TTS button**.
+- **Done when:** you navigate branches, inspect a turn's journal, see diagrams/images, hear replies.
+
+### P5e — Concurrent sessions — the "bag of agents" (D-36)
+- Multi-session UI: hold/switch **N live sessions** in the same folder, each with its own
+  status/spend/controls; the per-session bus is **multiplexed** to the frontend. (Shared-folder;
+  worktree isolation stays deferred.)
+- **Done when:** multiple live sessions coexist and are independently drivable in the browser.
+
+### P5f — Serve modes & auth (D-40, was P-01)
+- **`--serve` bind scope:** localhost-default (no password) vs **outward** (auth required; targets
+  the future proxy/phone path, §18). **Password provisioning** three ways: CLI arg (discouraged),
+  a **prompt-me** flag, or **generate → print password + one-hit URL** (token embedded) that
+  authenticates and sets the **httpOnly session cookie** on first load. Password stored **hashed**
+  in the config store. All non-localhost endpoints guarded.
+- **Done when:** localhost serves auth-free for dev; outward serving requires auth via any of the
+  three provisioning modes; nothing sensitive is served unauthenticated when bound outward.
 
 ## Phase 6 — Compaction
 **Goal:** long conversations stay in-window and Fable-safe.

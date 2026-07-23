@@ -10,6 +10,8 @@ Spec references point at [`SPEC.md`](SPEC.md).
 
 | # | Decision | Why | Ref |
 |---|----------|-----|-----|
+| D-39 | **Frontend stack = React + Vite.** Phase 5 is a React SPA bundled by Vite. **Beaten-path beats dep-count:** minimize-deps (D-25) is a *means* to less complication, so where a smaller-but-off-mainline choice (Preact, a newer framework) would spend maintainer surprise, the mainline wins. Vite/React devDeps (incl. their native build binaries) are **build-time only** — `npm run build` emits **pre-built static assets** served by Hono, so the shipped `npx jlcode` **runtime stays native-free**, which is what D-25 actually protects. Core stays transport-agnostic (D-02) so a curses/webview frontend remains additive | Joshua: minimize-deps serves simplicity, not the reverse; use the most comfortable, best-documented, least-surprising stack. React+Vite is the mainline; the dep weight lives in the build, not the runtime | Joshua; SPEC §11, D-25/D-02 |
+| D-40 | **Serving & auth = a CLI serve-mode surface, not a login wall.** A **`--serve` bind arg** selects scope: **localhost (default) → no password** (frictionless dev/test) vs **outward → auth required** (targets the future proxy/phone path, §18/X-05). **Password provisioning, three modes:** (a) password on the CLI (works, discouraged/"bad form"); (b) a **prompt-me** flag → read it interactively; (c) **generate → print the password + a one-hit URL with the token embedded** that authenticates and sets the **httpOnly session cookie** on first load (generalizes P-01's one-time setup token). Password kept **hashed** in the config store; all endpoints guarded when bound outward. Bind arg lands in **P5a**, password modes in **P5f** | Joshua's design: the launch argument declares how it's served, so localhost testing needs no password ceremony, and outward exposure (via his proxy) is an explicit opt-in with a low-friction first-hit auth. **Resolves P-01** | Joshua; SPEC §20, §18 |
 | D-01 | Runtime: **Node.js + TypeScript** | Path to a future VS Code plugin; strong OpenRouter/OpenAI + MCP SDKs; type-safe tool schemas | SPEC §2 |
 | D-02 | Primary interface v1: **HTTP** (browser + markdown), built over a **transport-agnostic core** (curses seam kept, not built) | Docker port concerns, future remote + VS Code webview fold-in; Joshua chose "http for now" with the abstraction seam | SPEC §11 |
 | D-03 | File access: **native tools + workspace sandbox** as v1 primary; `file_utils` MCP **deferred**, pluggable later | `file_utils` is a surgical-edit specialist — no list/glob/grep/whole-read/create-delete and no sandbox | SPEC §9 |
@@ -66,7 +68,7 @@ Spec references point at [`SPEC.md`](SPEC.md).
 
 | # | Topic | Recommendation | Ref |
 |---|-------|----------------|-----|
-| P-01 | Auth | Localhost-by-default bind + **hashed** password in config store + one-time printed setup token + httpOnly session cookie + TLS for remote | SPEC §20 |
+| P-01 | Auth | **Resolved → D-40** (serve-mode bind arg; localhost = no auth; outward = auth via CLI / prompt / generate-and-print-one-hit-URL; hashed password + httpOnly cookie) | SPEC §20 |
 | P-02 | Attention notifications | **External push service** (ntfy/Pushover/Telegram), no PWA, triggered by the "awaiting input" state | SPEC §19 |
 
 ## Open
