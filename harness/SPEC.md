@@ -488,17 +488,48 @@ behind the per-case handling (truncation §23, approvals §6).
   per-task kill.
 - All three are POST actions on the transport (§11); status and kill/stop states flow back over SSE.
 
-## 27. Future direction: agent orchestration / sub-threads (forward constraint)
+## 27. Concurrency, sessions & orchestration
 
-**Not now.** Keep the way clear for the agent to **spin up sub-threads / sub-agents that run
-(possibly in the background) and report back**. Forward constraints (respect; don't build yet):
+### Vocabulary (keep these distinct)
 
-- Sub-threads are their **own sessions** (own transcript trees, §8) **linked to a parent**, and
-  **report results back** to the parent (as tool results / messages).
-- Their **spend rolls up into the tree total** (§25); the **per-task kill and global stop** (§26)
-  extend to them; they appear in the background-task list (§26) and the future fleet view (§18).
-- The transport-agnostic event bus (§11) and session model must accommodate a **tree/graph of
-  agents**, not just one.
+- **Branch** — an alternate *history* within one conversation (fork/rewind, §8). **Passive:**
+  navigating a branch runs nothing; at most one live leaf per running session.
+- **Session** — a live **running agent loop** bound to a conversation, with its own mode, config,
+  status, cost, background tasks, and event stream. **Concurrency = multiple live sessions.**
+- **Instance** — a whole JLCode process (Docker / fleet axis, §18), aggregated later by the proxy.
+
+A history fork never silently starts or stops execution; anything executing is a **visible
+session** with a running/idle status. "Fork into two live threads" is an *explicit* spawn of a
+second session, not a side effect of branching.
+
+### v1: multiple concurrent sessions, shared folder (D-36)
+
+One server hosts a **SessionManager** = N independent, first-class sessions ("a bag of agents");
+the per-session event bus (§11) is multiplexed to the frontend. Sessions may run **concurrently
+in the same folder** — e.g. one committing the harness while another codes, or a side
+"by-the-way" thread.
+
+**Anti-entropy invariant (governing rule):** JLCode's own state stays consistent under any number
+of concurrent sessions. Each session **fully owns its mutable state**; sessions share only
+(a) read-mostly config, (b) append-only / per-session-file data stores (one file per conversation
+→ no write contention), and (c) the workspace filesystem. The filesystem is the **single
+deliberately-unguarded** shared resource: concurrent edits are a documented **"running with
+scissors" power-user risk**, never a source of internal inconsistency. **Nothing is
+"the current session"; no global-current state.**
+
+- Each session holds its **own config** (the folder→config binding, D-06, is only the default for
+  a *new* session); its **own** whole-tree spend (D-33, with a folder/global view summing live
+  sessions); its own mode/approval, background tasks, and stop/kill controls (D-34).
+
+### Deferred (same mechanism, later)
+
+- **Workspace isolation via git worktrees** — *postponed*. When added, an editing session can take
+  its own worktree/branch so concurrent editing is safe (merge after); read-mostly side threads
+  still just share the folder.
+- **Agent-initiated orchestration (D-35)** — an agent spawning sub-sessions that report back is the
+  **same** session mechanism, just agent- rather than user-initiated: sub-sessions are linked to a
+  parent, **report results back**, their **spend rolls up** (§25), **kill/stop extends** to them
+  (§26), and they appear in the bag + the fleet view (§18).
 
 ---
 

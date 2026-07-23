@@ -33,6 +33,8 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - **Request-keyed LLM cache** (D-24) so tests are free after first record.
 - Conversation tree in memory (append-only parent-pointer, `activeLeaf`) + wire assembly
   (D-15, D-17). A minimal CLI loop: send a message, stream a reply.
+- **Session as a first-class object under a `SessionManager` (D-36)** — even at N=1, no
+  "global current session" assumptions, so concurrency stays additive (the anti-entropy invariant).
 - **Truncation handling (D-30):** detect `finish_reason: length`; re-express truncated
   reasoning as plain-text input so the model continues (no silent loss/loop). **Streaming
   partial recovery of tool-call args** (D-31): retain raw `arguments`, streaming value
@@ -71,6 +73,8 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 - **Cost & control (D-33, D-34):** live **whole-tree spend** in a corner + settable **cap**;
   **queued message** (applies between turns); **background-task list with per-task kill**;
   **global stop button**.
+- **Concurrent sessions (D-36):** the "bag of agents" UI — hold/switch multiple live sessions in
+  the same folder, each with its own status/spend/controls (shared-folder, worktrees deferred).
 - **Auth** (P-01): localhost-by-default bind, hashed password, one-time setup token, session cookie.
 - **Done when:** you drive JLCode from a browser with full markdown, approvals, forking, login,
   live spend + cap, queued messages, and stop/kill controls.
@@ -89,8 +93,9 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-08)
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
-remote control / fleet view (§18) · browser-driven app testing · VS Code webview ·
-response-caching product feature (§21) · file viewer & upload/download chrome.
+**workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·
+browser-driven app testing · VS Code webview · response-caching product feature (§21) ·
+file viewer & upload/download chrome.
 
 ---
 
