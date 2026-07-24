@@ -17,6 +17,7 @@ import type { ConversationStore } from "../persist/conversation-store.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
 import type { Session } from "../session/session.js";
+import type { AuthGuard } from "./auth.js";
 
 export interface ServerDeps {
   /** Re-read the selected config on demand, so CLI edits are picked up live. */
@@ -39,6 +40,9 @@ export interface ServerDeps {
   /** Optional: directory of the built browser client (dist/web). When set, a
    *  catch-all serves it (SPA fallback to index.html). Omitted in tests. */
   staticDir?: string;
+  /** Optional: an auth guard installed ahead of every route (D-40). Present when
+   *  bound outward (non-loopback); absent on a localhost bind = no auth. */
+  auth?: AuthGuard;
 }
 
 const STATIC_TYPES: Record<string, string> = {
@@ -121,6 +125,10 @@ function stateOf(session: Session): Record<string, unknown> {
 export function createServer(deps: ServerDeps): { app: Hono; manager: SessionManager } {
   const app = new Hono();
   const manager = new SessionManager();
+
+  // Outward-bind auth (D-40): guard every route + expose /auth/login. Installed
+  // first so the middleware wraps all handlers below (localhost bind = no auth).
+  deps.auth?.install(app);
 
   /** Build a session, register it, and wire persistence. Pass a loaded
    *  conversation to resume; otherwise a fresh conversation log is created. */

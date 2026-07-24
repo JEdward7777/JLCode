@@ -65,6 +65,15 @@ Spec references point at [`SPEC.md`](SPEC.md).
 | D-34c | **30-min task watchdog is an out-of-band model decision.** When a command passes 30 min, a *separate* model call — carrying the conversation context **plus the task's output-so-far and elapsed time** — decides kill/keep via a structured `decide_kill` tool. A **"no"** re-arms for another 30 min and is **never appended**; a **"yes"** kills, and is reflected **only via the tool result** so the model learns it killed the task (not that it completed). The call counts toward whole-tree spend but never mutates the conversation tree. | A hung/forgotten background process needs a reaper, but the agent must *see enough* (output + duration) to judge — and these periodic checks must not bloat or rewrite history. |
 | D-34d | **`send()` refuses a busy (running) session** — the queued message is the only mid-turn input path. | Prevents a mistimed Send from re-entering the loop; makes the FIFO queue the single, well-defined turn-boundary mechanism. |
 
+## P5f refinements (implement D-40 — Joshua's calls during the build)
+
+| Ref | Refinement | Rationale |
+|-----|------------|-----------|
+| D-40a | **Auth trigger = the existing `--host` seam, not a separate `--serve` arg.** A loopback bind serves auth-free; a non-loopback (outward) bind requires a password. This replaces P5a's "no auth yet" warning with real enforcement — no new bind flag. Provisioning flags: `--password <pw>` (discouraged), `--password-prompt`, `--generate-password`. | The bind scope was already declared via `--host` (P5a); reusing it keeps one seam instead of two that could disagree. |
+| D-40b | **The one-hit sign-in URL is printed in *all* provisioning modes** — even when the user supplied the password (`--password`/`--password-prompt`), not only for `--generate-password`. | Joshua: "print out the [one-hit] url with authentication on it even [when] the user provided the password." Frictionless first login regardless of how the password was set; the generated password is only echoed when we generated it. |
+| D-40c | **Cookie signing secret is persisted** in the config store's `auth` block (not per-process). The session cookie is a stateless HMAC-signed `{exp}`, so **sessions survive a server restart**. | Joshua's call: a restart shouldn't force every browser to re-log-in. The one-hit *token* stays in-memory (launch-scoped, single-use) — only the long-lived cookie secret persists. |
+| D-40d | **Hashing = `node:crypto` scrypt** (salted, hex); **no `Secure` flag** on the cookie (`HttpOnly` + `SameSite=Strict` only). | scrypt is built-in — honors D-25 (no native dep). An outward bind may be plain HTTP behind Joshua's TLS proxy, where `Secure` would silently drop the cookie. |
+
 ## Deferred (non-goals for v1; keep possible)
 
 | # | Item | Note | Ref |

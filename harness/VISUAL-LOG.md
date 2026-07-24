@@ -202,3 +202,35 @@ Close-to-stop (the ✕: hard-stop + drop from the bag + `session-removed`) is
 covered by the server tests; the removed-frame → drop-tab → refocus path is the
 client reducer's `removed` case (Tier-0). Not exercised visually (later): auth
 (P5f).
+
+---
+
+## P5f — serve modes & auth (D-40) · 2026-07-24 · ✅ looked good
+
+**Screenshots:** [`visual/p5f-login.png`](visual/p5f-login.png) ·
+[`visual/p5f-authed-app.png`](visual/p5f-authed-app.png)
+
+Ran the built server **bound outward** (`serve --host 0.0.0.0 --generate-password`,
+`JLCODE_FAKE_LLM=1`, isolated config/data dirs) so the auth guard is active, then
+drove Chrome via CDP. The launch banner printed **`AUTH ON (outward bind)`** with
+the generated password and a **one-hit sign-in URL** (`/?token=…`). Confirmed with
+my own eyes:
+
+- **Login page (unauthenticated)** — navigating to `/` with no cookie serves the
+  self-contained sign-in card ("JLCode", a password field, **Sign in**), light/dark
+  aware, centered. This is the guard returning the login HTML (with a 401) for a
+  browser navigation rather than leaking the app.
+- **One-hit URL logs in** — visiting the printed `/?token=…` set the **httpOnly
+  session cookie** (303 → clean `/`) and the **full app loaded authenticated**: the
+  green SSE status dot (the live `/events` stream connected *carrying the cookie*),
+  the left rail, and the seeded conversation ("Hello from behind auth!" → "You said:
+  …"). So the cookie authorizes SSE + every API call, not just the first page.
+- **The guard actually guards (not just the UI)** — probed server-side during the
+  peek: an in-browser (cookie-bearing) `GET /health` returned **200**, while the
+  same endpoint hit from Node **without** the cookie returned **401**, and a
+  `POST /auth/login` with the wrong password returned **401**. Nothing sensitive is
+  served unauthenticated when bound outward.
+
+Not exercised visually (covered by `test/auth.test.ts`): the one-hit token being
+**single-use** (a second exchange 401s), cookie **tamper/expiry** rejection, scrypt
+hash verify, and that a **localhost bind serves auth-free** (no guard installed).

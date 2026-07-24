@@ -41,6 +41,18 @@ describe("config store", () => {
     expect(loaded.modelConfigs[0]!.openRouterKey).toBe("sk-secret");
   });
 
+  it("round-trips the outward-serve auth block, dropping a partial one (D-40)", () => {
+    const c = defaultConfig();
+    c.auth = { passwordHash: "abc", salt: "def", cookieSecret: "ghi", updatedAt: "2026-07-24T00:00:00Z" };
+    saveConfig(c, paths);
+    expect(loadConfig(paths).auth).toEqual(c.auth);
+
+    // A malformed/partial auth block (missing cookieSecret) is dropped on load.
+    mkdirSync(paths.configDir, { recursive: true });
+    writeFileSync(paths.configFile, JSON.stringify({ auth: { passwordHash: "x", salt: "y" } }));
+    expect(loadConfig(paths).auth).toBeUndefined();
+  });
+
   it.skipIf(process.platform === "win32")("writes the config file with 0600 perms", () => {
     saveConfig(defaultConfig(), paths);
     const mode = statSync(paths.configFile).mode & 0o777;

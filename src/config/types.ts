@@ -77,6 +77,19 @@ export interface ModelConfig {
   updatedAt: string;
 }
 
+/** Server-mode auth material for outward binds (D-40, P5f). Server-wide (not
+ *  per model-config): a hashed password + a persisted cookie-signing secret.
+ *  Kept here so it inherits the config file's chmod-600 protection. */
+export interface AuthConfig {
+  /** scrypt hash of the serve password, hex. */
+  passwordHash: string;
+  /** Per-password random salt, hex. */
+  salt: string;
+  /** HMAC key for signing session cookies, hex (persisted → cookies survive restart). */
+  cookieSecret: string;
+  updatedAt: string;
+}
+
 /** The whole config-store document. */
 export interface Config {
   version: number;
@@ -87,5 +100,7 @@ export interface Config {
   folderRoots?: Record<string, string[]>;
   /** Commands auto-approved under the Auto-safe policy (D-08). */
   autoSafeAllowlist: string[];
+  /** Outward-serve auth (D-40); absent until a password is provisioned. */
+  auth?: AuthConfig;
   prefs?: Record<string, unknown>;
 }

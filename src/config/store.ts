@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync } from "n
 import path from "node:path";
 import type { JlcodePaths } from "../paths.js";
 import { resolvePaths } from "../paths.js";
-import { CONFIG_VERSION, type Config, type ModelConfig } from "./types.js";
+import { CONFIG_VERSION, type AuthConfig, type Config, type ModelConfig } from "./types.js";
 
 export function defaultConfig(): Config {
   return { version: CONFIG_VERSION, modelConfigs: [], folderBindings: {}, autoSafeAllowlist: [] };
@@ -56,6 +56,7 @@ function normalize(raw: unknown): Config {
   for (const [dir, list] of Object.entries(rootsRaw)) {
     if (Array.isArray(list)) folderRoots[dir] = list.filter((x): x is string => typeof x === "string");
   }
+  const auth = normalizeAuth(r.auth);
   return {
     version: typeof r.version === "number" ? r.version : CONFIG_VERSION,
     modelConfigs,
@@ -64,7 +65,22 @@ function normalize(raw: unknown): Config {
     autoSafeAllowlist: Array.isArray(r.autoSafeAllowlist)
       ? r.autoSafeAllowlist.filter((c): c is string => typeof c === "string")
       : [],
+    ...(auth ? { auth } : {}),
     prefs: r.prefs as Config["prefs"],
+  };
+}
+
+/** Coerce the outward-serve auth block (D-40); dropped unless all fields present. */
+function normalizeAuth(raw: unknown): AuthConfig | undefined {
+  const r = asRecord(raw);
+  if (typeof r.passwordHash !== "string" || typeof r.salt !== "string" || typeof r.cookieSecret !== "string") {
+    return undefined;
+  }
+  return {
+    passwordHash: r.passwordHash,
+    salt: r.salt,
+    cookieSecret: r.cookieSecret,
+    updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : new Date().toISOString(),
   };
 }
 

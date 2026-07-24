@@ -22,8 +22,19 @@ import type { Conversation } from "../conversation/types.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { parseArgs, flagString } from "../util/args.js";
+import { readSecret } from "../util/prompt.js";
 import { createServer } from "./server.js";
 import { startNodeServer } from "./node-adapter.js";
+import { randomBytes } from "node:crypto";
+import {
+  createAuthGuard,
+  generatePassword,
+  hashPassword,
+  randomToken,
+  type AuthGuard,
+  type AuthSecrets,
+} from "./auth.js";
+import type { AuthConfig } from "../config/types.js";
 
 const DEFAULT_PORT = 4517;
 const DEFAULT_HOST = "127.0.0.1";
@@ -100,13 +111,54 @@ export async function runServe(args: string[]): Promise<number> {
   }
 
   const port = Number(flagString(flags, "port") ?? process.env.JLCODE_PORT ?? DEFAULT_PORT);
-  // Bind seam (D-40): localhost by default; --host selects the bind scope.
-  // Auth for outward binds arrives in P5f — warn until then.
+  // Bind seam (D-40): localhost by default; --host selects the bind scope. An
+  // outward (non-loopback) bind requires auth (provisioned just below).
   const host = flagString(flags, "host") ?? DEFAULT_HOST;
-  if (!LOOPBACK.has(host)) {
-    process.stderr.write(
-      `WARNING: binding ${host} (non-loopback) — there is no auth yet (P5f/D-40); anyone who can reach this port can drive the agent.\n`,
-    );
+  const outward = !LOOPBACK.has(host);
+
+  // P5f auth (D-40): outward binds are guarded by a hashed password. Password
+  // provisioning, three ways: --password <pw> (discouraged), --password-prompt
+  // (read interactively), --generate-password (make one and print it). If none
+  // is given but a password is already stored, reuse it. A one-hit setup URL is
+  // always printed so first login is frictionless even for a chosen password.
+  let auth: AuthGuard | undefined;
+  let oneHitUrl: string | undefined;
+  let generatedPassword: string | undefined;
+  if (outward) {
+    const provided = flagString(flags, "password");
+    const wantGenerate = flags["generate-password"] === true;
+    const wantPrompt = flags["password-prompt"] === true;
+
+    let plaintext: string | undefined;
+    if (wantGenerate) plaintext = generatePassword();
+    else if (provided) plaintext = provided;
+    else if (wantPrompt) plaintext = await readSecret("Set server password: ");
+
+    const current = loadConfig(paths);
+    let secrets: AuthSecrets | undefined = current.auth;
+    if (plaintext) {
+      const { salt, hash } = hashPassword(plaintext);
+      secrets = {
+        passwordHash: hash,
+        salt,
+        cookieSecret: current.auth?.cookieSecret ?? randomBytes(32).toString("hex"),
+        updatedAt: new Date().toISOString(),
+      };
+      saveConfig({ ...current, auth: secrets as AuthConfig }, paths);
+      if (wantGenerate) generatedPassword = plaintext; // only echo one we made
+    }
+    if (!secrets) {
+      process.stderr.write(
+        `Binding ${host} (outward) requires a password. Provision one with:\n` +
+          `  --generate-password        generate & print a password\n` +
+          `  --password-prompt          type one interactively\n` +
+          `  --password <pw>            pass one on the CLI (discouraged)\n`,
+      );
+      return 1;
+    }
+    const oneHit = randomToken();
+    auth = createAuthGuard({ secrets, oneHitToken: oneHit });
+    oneHitUrl = `http://${host}:${port}/?token=${oneHit}`;
   }
   // eslint-disable-next-line prefer-const
   let closeServer = (): void => {};
@@ -119,6 +171,7 @@ export async function runServe(args: string[]): Promise<number> {
     version: getVersion(),
     onShutdown: () => setTimeout(() => closeServer(), 100),
     staticDir: staticDir(),
+    auth,
     // Persist a live mode/approval switch as the config's new default (Joshua's
     // call: the header controls both re-gate now and stick for next launch).
     persistDefaults: (configName, patch) => {
@@ -143,11 +196,23 @@ export async function runServe(args: string[]): Promise<number> {
 
   const base = `http://${host}:${port}`;
   const client = staticDir() ? `open ${base}/  in your browser` : `browser client not built — run \`npm run build\``;
+  // Auth banner (D-40): outward binds print the one-hit sign-in URL (always, even
+  // for a chosen password — Joshua's call) and any generated password.
+  const authLines = auth
+    ? [
+        ``,
+        `AUTH ON (outward bind) —`,
+        ...(generatedPassword ? [`  password: ${generatedPassword}`] : []),
+        `  one-hit sign-in URL (sets the session cookie on first load):`,
+        `    ${oneHitUrl}`,
+      ]
+    : [];
   process.stderr.write(
     [
       `JLCode dev server — ${config.name} (${config.model})${fake ? " [fake]" : ""}`,
       `listening on ${base}  (pid ${process.pid})`,
       `  ${client}`,
+      ...authLines,
       ``,
       `  curl -s ${base}/health`,
       `  curl -sX POST ${base}/shutdown        # stop the server (no UI button; curl-only)`,

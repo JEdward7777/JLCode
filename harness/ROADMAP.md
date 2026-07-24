@@ -2,17 +2,17 @@
 
 Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-43, no open
 items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
-resume / fork-rewind / debug-journal done). **In Phase 5 — the HTTP browser frontend (sliced
-P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b + P5c + P5d + P5e done; next
-is P5f (serve modes & auth) — the last slice.** Stack: **React + Vite** (D-39); serving/auth is a
-**CLI serve-mode surface** (D-40).
+resume / fork-rewind / debug-journal done). **Phase 5 — the HTTP browser frontend (sliced P5a…P5f)
+— is COMPLETE (P5a…P5f all done), which completes Milestone M3 "real product".** Stack: **React +
+Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40). **Next milestone: M4 — Phase 6
+compaction.**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (141 Tier-0/1 tests green), and committed through P5e:
+Built, tested (149 Tier-0/1 tests green), and committed through **P5f — Phase 5 is done**:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -49,17 +49,18 @@ built but not yet wired as the live record/replay layer (Tier-1) or the runtime 
 outside `serve`.
 
 To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
-continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a + P5b +
-P5c + P5d + P5e are done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b:
-browser approvals with edit-before-approve, multi-question ask_user, live mode/approval controls,
-out-of-fence soft-fence prompts; P5c: whole-tree spend + settable cap, queued message,
-background-task kill + 30-min watchdog, two-mode global stop; P5d: tree-driven view with inline
-branch arrows + pencil edit-fork, per-turn + drawer debug-journal viewer, real lazy-loaded Mermaid
-+ inline images, TTS; P5e: concurrent sessions — left rail of N live sessions, one multiplexed
-per-instance bus, close-to-stop — all verified end-to-end in Chrome, see
-[`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is P5f — serve modes & auth (D-40): the last Phase-5
-slice.** Stack decided in D-39; serve-mode/auth surface in D-40. **141 Tier-0/1 tests green.**
-Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+continue at the next unchecked phase below. **Phase 5 (P5a…P5f) is COMPLETE** (P5a: React+Vite
+client, SSE/POST bus, streaming markdown chat; P5b: browser approvals with edit-before-approve,
+multi-question ask_user, live mode/approval controls, out-of-fence soft-fence prompts; P5c:
+whole-tree spend + settable cap, queued message, background-task kill + 30-min watchdog, two-mode
+global stop; P5d: tree-driven view with inline branch arrows + pencil edit-fork, per-turn + drawer
+debug-journal viewer, real lazy-loaded Mermaid + inline images, TTS; P5e: concurrent sessions —
+left rail of N live sessions, one multiplexed per-instance bus, close-to-stop; **P5f: serve
+modes & auth — outward bind requires a hashed password, three provisioning modes, httpOnly signed
+session cookie + one-hit setup URL, guard over every route** — all verified end-to-end in Chrome,
+see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is Phase 6 — compaction (M4).** Stack decided in
+D-39; serve-mode/auth in D-40. **149 Tier-0/1 tests green.** Rendered surfaces get a real-browser
+peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 
@@ -245,14 +246,33 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
   [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5e). **Done.**
 - **Done when:** multiple live sessions coexist and are independently drivable in the browser. ✅
 
-### P5f — Serve modes & auth (D-40, was P-01)
-- **`--serve` bind scope:** localhost-default (no password) vs **outward** (auth required; targets
-  the future proxy/phone path, §18). **Password provisioning** three ways: CLI arg (discouraged),
-  a **prompt-me** flag, or **generate → print password + one-hit URL** (token embedded) that
-  authenticates and sets the **httpOnly session cookie** on first load. Password stored **hashed**
-  in the config store. All non-localhost endpoints guarded.
+### P5f — Serve modes & auth (D-40, was P-01) ✅ done (2026-07-24)
+- **Bind scope = the existing `--host` seam** (Joshua's call): a loopback bind serves **auth-free**;
+  a **non-loopback (outward) bind requires auth**, replacing P5a's warning with real enforcement.
+- **Password provisioning, three ways** on `serve`: **`--password <pw>`** (discouraged),
+  **`--password-prompt`** (read via `readSecret`, off argv), **`--generate-password`** (make one +
+  print it). If none is given but a password is already stored, it's reused. The password is kept
+  **hashed** (`node:crypto` **scrypt**, salted — no native dep, D-25) in the config store's new
+  server-wide **`auth`** block.
+- **One-hit setup URL is always printed** (Joshua's call — even when the user chose the password):
+  a launch-scoped, single-use token embedded in `/?token=…`; first load exchanges it for the cookie
+  (303 → clean path) so it never lingers in history.
+- **httpOnly signed session cookie** — a stateless `{exp}` payload HMAC-signed with a **persisted**
+  `cookieSecret` (Joshua's call), so sessions **survive a server restart**. `SameSite=Strict`,
+  `HttpOnly`, no `Secure` (an outward bind may be plain HTTP behind Joshua's TLS proxy).
+- **The guard wraps every route** (installed before them): the login POST + one-hit exchange are the
+  only unauthenticated paths; a browser navigation without a cookie gets the **login page** (a
+  self-contained HTML card that POSTs `/auth/login`), everything else gets **401**.
+- **Verified:** 8 new Tier-0 tests (`test/auth.test.ts`: scrypt hash verify + wrong-password reject;
+  cookie sign/verify + tamper/expiry/wrong-key reject; cookie-header parse + typeable password;
+  guard 401s the API + serves login HTML to browsers; login accepts the right password then the
+  cookie unlocks the API; one-hit token is single-use; **no auth dep = open** localhost path; plus a
+  config-store `auth` round-trip that drops a partial block). **Looked at it in Chrome** — the login
+  page, the one-hit-URL login into the live authenticated app (SSE + API on the cookie), and a
+  server-side probe (authed 200 / no-cookie 401 / bad-password 401) — see
+  [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5f). **Done.**
 - **Done when:** localhost serves auth-free for dev; outward serving requires auth via any of the
-  three provisioning modes; nothing sensitive is served unauthenticated when bound outward.
+  three provisioning modes; nothing sensitive is served unauthenticated when bound outward. ✅
 
 ## Phase 6 — Compaction
 **Goal:** long conversations stay in-window and Fable-safe.
