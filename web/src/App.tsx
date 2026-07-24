@@ -4,6 +4,11 @@ import {
   answer as apiAnswer,
   approve as apiApprove,
   setMode as apiSetMode,
+  setCap as apiSetCap,
+  stopSession as apiStop,
+  killTask as apiKillTask,
+  queueMessage as apiQueue,
+  setQueue as apiSetQueue,
   createOrGetSession,
   loadSession,
   openEvents,
@@ -12,7 +17,9 @@ import {
   type ApprovalRequest,
   type AskUserRequest,
   type Mode,
+  type QueuedMessage,
   type SessionState,
+  type TaskView,
   type UiMessage,
   type WireEvent,
 } from "./api";
@@ -44,6 +51,11 @@ export function App() {
   const [approval, setApprovalState] = useState<ApprovalPolicy>("manual");
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [pendingAsk, setPendingAsk] = useState<AskUserRequest | null>(null);
+  const [spendUsd, setSpendUsd] = useState(0);
+  const [capUsd, setCapUsd] = useState<number | null>(null);
+  const [capReached, setCapReached] = useState(false);
+  const [tasks, setTasks] = useState<TaskView[]>([]);
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const sessionRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [workWord, setWorkWord] = useState(WORKING[0]!);
@@ -55,6 +67,11 @@ export function App() {
     setPendingApproval(s.approvalRequest ?? null);
     setPendingAsk(s.question ?? null);
     setWorking(s.status === "running");
+    if (typeof s.spendUsd === "number") setSpendUsd(s.spendUsd);
+    if (s.spendCapUsd !== undefined) setCapUsd(s.spendCapUsd);
+    if (typeof s.capReached === "boolean") setCapReached(s.capReached);
+    if (s.tasks) setTasks(s.tasks);
+    if (s.queue) setQueue(s.queue);
   }, []);
 
   const onEvent = useCallback(
@@ -67,6 +84,36 @@ export function App() {
         case "mode":
           setModeState(e.mode as Mode);
           setApprovalState(e.approval as ApprovalPolicy);
+          break;
+        case "spend":
+          setSpendUsd(e.totalUsd as number);
+          break;
+        case "cap":
+          setCapUsd((e.capUsd as number | null) ?? null);
+          setCapReached(false);
+          break;
+        case "cap-reached":
+          setCapReached(true);
+          setWorking(false);
+          setNotice(`Spend cap reached ($${(e.spendUsd as number).toFixed(4)} / $${(e.capUsd as number).toFixed(2)}). Raise it to continue.`);
+          break;
+        case "stopped":
+          setWorking(false);
+          setNotice(e.scope === "hard" ? "Stopped — aborted the turn and killed all tasks." : "Stopping after the current work — no further turn.");
+          break;
+        case "queue":
+          setQueue((e.queue as QueuedMessage[]) ?? []);
+          break;
+        case "task-start":
+        case "task-update":
+          setTasks((ts) => {
+            const t = e.task as TaskView;
+            const rest = ts.filter((x) => x.id !== t.id);
+            return t.status === "running" ? [...rest, t] : rest;
+          });
+          break;
+        case "task-end":
+          setTasks((ts) => ts.filter((x) => x.id !== (e.task as TaskView).id));
           break;
         case "assistant-start":
           setWorking(true);
@@ -145,7 +192,10 @@ export function App() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages, working, pendingApproval, pendingAsk]);
 
-  const blocked = working || pendingApproval !== null || pendingAsk !== null;
+  // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
+  // background command is running, or a prompt is open. While busy, the composer
+  // queues (D-34) instead of sending.
+  const blocked = working || tasks.length > 0 || pendingApproval !== null || pendingAsk !== null;
 
   const submit = useCallback(async () => {
     const text = input.trim();
@@ -202,12 +252,72 @@ export function App() {
     }
   }, []);
 
+  // Queue the composer text for the next turn boundary (D-34).
+  const queueMsg = useCallback(async () => {
+    const text = input.trim();
+    const id = sessionRef.current;
+    if (!text || !id) return;
+    setInput("");
+    try {
+      await apiQueue(id, text);
+    } catch (err) {
+      setNotice((err as Error).message);
+    }
+  }, [input]);
+
+  const changeCap = useCallback(async (next: number | null) => {
+    const id = sessionRef.current;
+    if (!id) return;
+    setNotice(null);
+    try {
+      await apiSetCap(id, next);
+    } catch (err) {
+      setNotice((err as Error).message);
+    }
+  }, []);
+
+  const stop = useCallback(async (scope: "hard" | "soft") => {
+    const id = sessionRef.current;
+    if (!id) return;
+    try {
+      await apiStop(id, scope);
+    } catch (err) {
+      setNotice((err as Error).message);
+    }
+  }, []);
+
+  const killOne = useCallback(async (taskId: string) => {
+    const id = sessionRef.current;
+    if (!id) return;
+    try {
+      await apiKillTask(id, taskId);
+    } catch (err) {
+      setNotice((err as Error).message);
+    }
+  }, []);
+
+  // Cancel one queued message (drop it); editing = drop it back into the box.
+  const cancelQueued = useCallback(
+    async (qid: string) => {
+      const id = sessionRef.current;
+      if (!id) return;
+      try {
+        await apiSetQueue(id, queue.filter((m) => m.id !== qid).map((m) => ({ text: m.text })));
+      } catch (err) {
+        setNotice((err as Error).message);
+      }
+    },
+    [queue],
+  );
+
   return (
     <div className="app">
       <header className="topbar">
         <span className="brand">JLCode</span>
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "connecting…"} />
         <div className="controls">
+          <SpendChip spendUsd={spendUsd} capUsd={capUsd} capReached={capReached} onSetCap={changeCap} />
+          <StopControl active={working || tasks.length > 0} onStop={stop} />
           <div className="seg" role="group" aria-label="mode">
             {MODES.map((m) => (
               <button key={m} className={m === mode ? "on" : ""} onClick={() => void changeMode({ mode: m })}>
@@ -236,30 +346,198 @@ export function App() {
           <Message key={i} m={m} />
         ))}
         {working && <div className="working">{workWord}</div>}
+        {tasks.length > 0 && <TasksPanel tasks={tasks} onKill={killOne} />}
         {pendingApproval && <ApprovalCard request={pendingApproval} onResolve={resolveApproval} />}
         {pendingAsk && <AskForm request={pendingAsk} onSubmit={submitAnswer} />}
+        {capReached && <CapBanner spendUsd={spendUsd} capUsd={capUsd} onRaise={changeCap} />}
         {notice && <div className="notice">{notice}</div>}
       </div>
+
+      {queue.length > 0 && (
+        <div className="queue">
+          <span className="queue-label">queued</span>
+          {queue.map((m) => (
+            <button key={m.id} className="queued" title="cancel" onClick={() => void cancelQueued(m.id)}>
+              <span className="queued-text">{m.text}</span>
+              <span className="x">✕</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <footer className="composer">
         <textarea
           value={input}
           placeholder={
-            pendingApproval || pendingAsk ? "Respond to the agent above…" : "Message JLCode…  (Enter to send, Shift+Enter for newline)"
+            pendingApproval || pendingAsk
+              ? "Respond to the agent above…"
+              : blocked
+                ? "Queue a message for the next turn…  (Enter to queue)"
+                : "Message JLCode…  (Enter to send, Shift+Enter for newline)"
           }
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void submit();
+              if (blocked) void queueMsg();
+              else void submit();
             }
           }}
           rows={2}
         />
-        <button onClick={() => void submit()} disabled={blocked || !input.trim()}>
-          Send
-        </button>
+        {blocked ? (
+          <button onClick={() => void queueMsg()} disabled={!input.trim()}>
+            Queue
+          </button>
+        ) : (
+          <button onClick={() => void submit()} disabled={!input.trim()}>
+            Send
+          </button>
+        )}
       </footer>
+    </div>
+  );
+}
+
+/** Live whole-tree spend in the corner (D-33); click to set / raise / clear the
+ *  cap. Turns red on breach. */
+function SpendChip({
+  spendUsd,
+  capUsd,
+  capReached,
+  onSetCap,
+}: {
+  spendUsd: number;
+  capUsd: number | null;
+  capReached: boolean;
+  onSetCap: (v: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const commit = () => {
+    const v = parseFloat(draft);
+    onSetCap(Number.isFinite(v) && v >= 0 ? v : null);
+    setOpen(false);
+    setDraft("");
+  };
+  return (
+    <div className="spend-wrap">
+      <button
+        className={`spend ${capReached ? "breach" : ""}`}
+        title="whole-tree spend — click to set a cap"
+        onClick={() => setOpen((o) => !o)}
+      >
+        ${spendUsd.toFixed(4)}
+        {capUsd !== null && <span className="cap"> / ${capUsd.toFixed(2)}</span>}
+      </button>
+      {open && (
+        <div className="spend-pop">
+          <label>Spend cap (USD)</label>
+          <input
+            autoFocus
+            inputMode="decimal"
+            placeholder={capUsd !== null ? String(capUsd) : "e.g. 1.00"}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && commit()}
+          />
+          <div className="spend-actions">
+            <button className="primary" onClick={commit}>
+              Set
+            </button>
+            <button
+              onClick={() => {
+                onSetCap(null);
+                setOpen(false);
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The big red Stop (hard abort) with a caret menu for the soft, loop-only stop
+ *  that lets running commands finish (D-34). */
+function StopControl({ active, onStop }: { active: boolean; onStop: (scope: "hard" | "soft") => void }) {
+  const [menu, setMenu] = useState(false);
+  return (
+    <div className="stop-wrap">
+      <button className="stop" disabled={!active} onClick={() => onStop("hard")} title="stop everything now">
+        ◼ Stop
+      </button>
+      <button className="stop caret" disabled={!active} onClick={() => setMenu((m) => !m)} aria-label="stop options">
+        ▾
+      </button>
+      {menu && active && (
+        <div className="stop-menu">
+          <button
+            onClick={() => {
+              onStop("soft");
+              setMenu(false);
+            }}
+          >
+            Stop LLM loop only
+            <span className="hint">let running commands finish; take no further turn</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Running background commands (D-34): elapsed time + a per-task Kill. */
+function TasksPanel({ tasks, onKill }: { tasks: TaskView[]; onKill: (id: string) => void }) {
+  const [, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const elapsed = (ms: number) => {
+    const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
+  return (
+    <div className="card tasks">
+      <div className="card-head">
+        <span className="tool">background tasks</span>
+        <span className="reason">running · killable</span>
+      </div>
+      {tasks.map((t) => (
+        <div className="task" key={t.id}>
+          <code className="task-cmd">{t.command}</code>
+          <span className="task-time">{elapsed(t.startedAt)}</span>
+          <button className="danger" onClick={() => onKill(t.id)}>
+            Kill
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Cap-reached banner (D-33): nothing was killed; raising the cap resumes. */
+function CapBanner({ spendUsd, capUsd, onRaise }: { spendUsd: number; capUsd: number | null; onRaise: (v: number) => void }) {
+  return (
+    <div className="card cap-banner">
+      <div className="fence-note">
+        ⚠ Spend cap reached — ${spendUsd.toFixed(4)}
+        {capUsd !== null ? ` / $${capUsd.toFixed(2)}` : ""}. The agent stopped before the next model call; nothing was
+        killed.
+      </div>
+      <div className="actions">
+        {capUsd !== null && (
+          <>
+            <button className="primary" onClick={() => onRaise(capUsd * 2)}>
+              Double the cap (${(capUsd * 2).toFixed(2)})
+            </button>
+            <button onClick={() => onRaise(capUsd + 1)}>+ $1.00</button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

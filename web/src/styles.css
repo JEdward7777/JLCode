@@ -213,6 +213,232 @@ body {
   cursor: pointer;
 }
 
+/* Spend chip + cap popover (D-33) */
+.spend-wrap,
+.stop-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.spend {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.spend .cap {
+  color: var(--muted);
+}
+.spend.breach {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.spend-pop {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 10;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.spend-pop label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.spend-pop input {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+.spend-pop input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.spend-actions {
+  display: flex;
+  gap: 6px;
+}
+.spend-actions button {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.spend-actions button.primary {
+  background: var(--accent);
+  color: #08111f;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+/* Global stop button + soft-stop menu (D-34) */
+.stop {
+  padding: 4px 10px;
+  border: 1px solid var(--danger);
+  border-radius: 8px 0 0 8px;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.stop.caret {
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  padding: 4px 7px;
+}
+.stop:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.stop:not(:disabled):hover {
+  background: var(--danger);
+  color: #1a0d0b;
+}
+.stop-menu {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 10;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  width: 230px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.stop-menu button {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.stop-menu button:hover {
+  background: var(--panel);
+}
+.stop-menu .hint {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Background-task list (D-34) */
+.card.tasks {
+  border-color: #3b4560;
+}
+.task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.task-cmd {
+  flex: 1;
+  font-size: 13px;
+  background: var(--panel-2);
+  padding: 4px 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.task-time {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.task button.danger {
+  padding: 4px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.task button.danger:hover {
+  background: var(--danger);
+  color: #1a0d0b;
+}
+
+/* Cap-reached banner (D-33) */
+.card.cap-banner {
+  border-color: var(--danger);
+}
+
+/* Queued messages (D-34) */
+.queue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 16px 0;
+}
+.queue-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+.queued {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  padding: 4px 6px 4px 11px;
+  border: 1px dashed var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.queued:hover {
+  border-color: var(--danger);
+}
+.queued-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queued .x {
+  color: var(--muted);
+  font-size: 11px;
+}
+.queued:hover .x {
+  color: var(--danger);
+}
+
 /* Interactive cards: approval + ask_user (D-16/D-18/D-19) */
 .card {
   border: 1px solid var(--border);

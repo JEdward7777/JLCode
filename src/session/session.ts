@@ -445,6 +445,9 @@ export class Session {
     if (this.status === "awaiting-approval" || this.status === "awaiting-input") {
       throw new Error("Session is waiting for input; resolve it before sending.");
     }
+    if (this.status === "running") {
+      throw new Error("Session is busy; queue the message instead.");
+    }
     this.stopScope = null; // a fresh message clears any prior stop flag
     const entry = this.pushEntry({ type: "user", text });
     this.emit({ type: "user", entryId: entry.id, text });

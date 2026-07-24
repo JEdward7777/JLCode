@@ -30,6 +30,7 @@ function normalizeModelConfig(raw: unknown): ModelConfig | undefined {
     model: typeof r.model === "string" ? r.model : "",
     reasoningEffort: r.reasoningEffort as ModelConfig["reasoningEffort"],
     sampling: r.sampling as ModelConfig["sampling"],
+    pricing: r.pricing as ModelConfig["pricing"],
     systemPromptAddendum:
       typeof r.systemPromptAddendum === "string" ? r.systemPromptAddendum : undefined,
     defaultMode: (r.defaultMode as ModelConfig["defaultMode"]) ?? "code",

@@ -39,6 +39,22 @@ export interface AskUserRequest {
   questions: AskQuestion[];
 }
 
+/** A background command (D-34) — listed, killable, watchdog-watched. */
+export interface TaskView {
+  id: string;
+  command: string;
+  startedAt: number;
+  status: "running" | "exited" | "killed";
+  exitCode?: number | null;
+  killReason?: "user" | "stop" | "watchdog";
+}
+
+/** A message queued for the next turn boundary (D-34). */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+}
+
 /** The settled-state snapshot carried on the SSE `ready` frame and returned by
  *  the action POSTs (see server stateOf). */
 export interface SessionState {
@@ -47,6 +63,11 @@ export interface SessionState {
   approval?: ApprovalPolicy; // the approval policy (D-08)
   approvalRequest?: ApprovalRequest; // the pending approval request, if any (D-16)
   question?: AskUserRequest; // the pending ask_user form, if any (D-18)
+  spendUsd?: number; // whole-tree spend so far (D-33)
+  spendCapUsd?: number | null; // the spend cap, if set (D-33)
+  capReached?: boolean; // breach → the loop declined the next LLM call (D-33)
+  tasks?: TaskView[]; // running background commands (D-34)
+  queue?: QueuedMessage[]; // pending queued messages (D-34)
 }
 
 /** A session event as it arrives over SSE (subset the UI acts on; see session/types.ts). */
@@ -132,4 +153,30 @@ export async function answer(
 /** Switch capability mode and/or approval policy for the session (D-07/D-08). */
 export async function setMode(id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }): Promise<void> {
   await postJson(`/session/${id}/mode`, patch);
+}
+
+/** Set / raise / clear the whole-tree spend cap in USD (D-33); null clears it. */
+export async function setCap(id: string, capUsd: number | null): Promise<void> {
+  await postJson(`/session/${id}/cap`, { capUsd });
+}
+
+/** Global stop (D-34): "hard" aborts the LLM + kills tasks + clears the queue;
+ *  "soft" lets running commands finish but takes no further LLM turn. */
+export async function stopSession(id: string, scope: "hard" | "soft"): Promise<void> {
+  await postJson(`/session/${id}/stop`, { scope });
+}
+
+/** Kill one background task (D-34). */
+export async function killTask(id: string, taskId: string): Promise<void> {
+  await postJson(`/session/${id}/task/${taskId}/kill`, {});
+}
+
+/** Queue a message for the next turn boundary (D-34). */
+export async function queueMessage(id: string, text: string): Promise<void> {
+  await postJson(`/session/${id}/queue`, { text });
+}
+
+/** Replace the whole pending queue — the edit/cancel affordance (D-34). */
+export async function setQueue(id: string, queue: { text: string }[]): Promise<void> {
+  await postJson(`/session/${id}/queue`, { queue });
 }

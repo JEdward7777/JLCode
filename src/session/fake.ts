@@ -44,6 +44,9 @@ function textReply(text: string): StreamEvent[] {
   const events: StreamEvent[] = [];
   for (const token of text.split(/(\s+)/)) if (token.length > 0) events.push({ type: "text", delta: token });
   events.push({ type: "finish", reason: "stop" });
+  // A plausible token count so spend accounting (D-33) has something to price
+  // when the config carries fallback pricing (the API cost is fake-driver-absent).
+  events.push({ type: "usage", usage: { promptTokens: 1000, completionTokens: Math.max(1, text.length) } });
   return events;
 }
 
@@ -51,6 +54,7 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
   return [
     { type: "tool_call", index: 0, id: `fake_${Date.now()}`, name, argsDelta: JSON.stringify(args) },
     { type: "finish", reason: "tool_calls" },
+    { type: "usage", usage: { promptTokens: 1000, completionTokens: 20 } },
   ];
 }
 
