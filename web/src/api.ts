@@ -128,13 +128,47 @@ export interface WireEvent {
   [k: string]: unknown;
 }
 
-/** Reuse a `?session=<id>` deep-link if present, else create a fresh session. */
-export async function createOrGetSession(): Promise<string> {
-  const existing = new URL(window.location.href).searchParams.get("session");
-  if (existing) return existing;
+/** A live session's roster entry on the multiplexed bus (D-43): identity + its
+ *  current settled state, enough to draw a rail badge without loading the tree. */
+export interface SessionDescriptor {
+  id: string;
+  model: string;
+  state: SessionState;
+}
+
+/** A frame on the multiplexed `/events` stream (D-43). */
+export type BusFrame =
+  | { type: "roster"; sessions: SessionDescriptor[] }
+  | { type: "session-added"; session: SessionDescriptor }
+  | { type: "session-removed"; sessionId: string }
+  | { type: "session-event"; sessionId: string; event: WireEvent };
+
+/** Create a fresh live session; returns its id. */
+export async function createSession(): Promise<string> {
   const res = await fetch("/session", { method: "POST" });
   if (!res.ok) throw new Error(`could not create session (${res.status})`);
   return (await res.json()).sessionId as string;
+}
+
+/** Close a session (D-43): the server hard-stops it and drops it from the bag,
+ *  so it no longer appears in the roster. The conversation stays on disk. */
+export async function closeSession(id: string): Promise<void> {
+  await postJson(`/session/${id}/close`, {});
+}
+
+/** Subscribe to the instance's multiplexed event stream (D-43): all sessions'
+ *  events tagged with sessionId, plus roster/added/removed lifecycle frames.
+ *  Returns the EventSource so the caller can close it. */
+export function openBus(onFrame: (f: BusFrame) => void): EventSource {
+  const es = new EventSource("/events");
+  es.onmessage = (ev) => {
+    try {
+      onFrame(JSON.parse(ev.data) as BusFrame);
+    } catch {
+      /* ignore malformed frame */
+    }
+  };
+  return es;
 }
 
 /** Load a live session's tree (entries + active leaf + conversation id) so a

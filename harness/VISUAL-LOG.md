@@ -165,3 +165,40 @@ visible so the per-message buttons show). Confirmed with my own eyes:
 Not exercised visually (covered by tests / later): the actual branch *switch* and
 pencil-edit round trips (fork-rewind + server tests); multi-session UI (P5e);
 auth (P5f).
+
+---
+
+## P5e — concurrent sessions (the "bag of agents") · 2026-07-24 · ✅ looked good
+
+**Screenshots:** [`visual/p5e-multi-approval.png`](visual/p5e-multi-approval.png) ·
+[`visual/p5e-multi-chat.png`](visual/p5e-multi-chat.png)
+
+Drove the built server with the fake agent driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs) and seeded **three live sessions** in distinct states over the
+HTTP API, then screenshotted via CDP. All three ride **one multiplexed `/events`
+stream** (D-43). Confirmed with my own eyes:
+
+- **Left rail of live sessions (D-43)** — three cards, each with the model
+  (`fake/echo-model`), a status dot, live spend (`$0.0000` — the fake driver has
+  no API cost and this peek config carries no fallback pricing; spend accrual is
+  covered by the P5c tests), and the mode (`CODE`). The focused card has the
+  accent border. A **+ New** sits at the top; a **✕** closes each card.
+- **Distinct per-session badges, live in the background** — session A **idle**
+  (grey dot), session B **needs approval** (amber dot), session C **working…**
+  (blue dot — it has a `sleep 40` running under full-auto). Crucially, in the
+  second shot I focused A and **B and C kept their amber/blue badges** — the
+  background slices stay current off the multiplexed bus while another session is
+  focused (the whole point of the fan-in).
+- **Focus swaps the pane** — focusing B shows its `write_file` **approval card**
+  (WRITE badge, editable `path`, Approve/Deny) and the composer reads "Respond to
+  the agent above…" with **Queue**; focusing A shows its clean reply ("You said:
+  …") with the per-message TTS/ⓘ tools and the composer back to "Message JLCode…"
+  with **Send** (A is idle, so it takes a fresh send; B is blocked, so it queues).
+- **Header controls are per-focused-session** — journal, spend chip, Stop (+ soft
+  caret), the ask/plan/code segmented control, and the approval dropdown all bind
+  to whichever session is focused.
+
+Close-to-stop (the ✕: hard-stop + drop from the bag + `session-removed`) is
+covered by the server tests; the removed-frame → drop-tab → refocus path is the
+client reducer's `removed` case (Tier-0). Not exercised visually (later): auth
+(P5f).

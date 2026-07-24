@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import {
@@ -12,425 +12,583 @@ import {
   setQueue as apiSetQueue,
   rewind as apiRewind,
   editFork as apiEditFork,
+  closeSession as apiClose,
+  createSession,
   fetchJournal,
-  createOrGetSession,
   loadTree,
-  openEvents,
+  openBus,
   sendChat,
   type ApprovalPolicy,
   type ApprovalRequest,
   type AskUserRequest,
+  type BusFrame,
   type EntryView,
   type JournalRecord,
   type Mode,
   type QueuedMessage,
-  type SessionState,
+  type SessionDescriptor,
   type TaskView,
-  type WireEvent,
 } from "./api";
+import {
+  newSlice,
+  reduceEvent,
+  sliceFromDescriptor,
+  applyState,
+  type LiveAssistant,
+  type SessionSlice,
+} from "./session-state";
 
 // Whimsical working-status words (SPEC §11 note: percolating…).
 const WORKING = ["percolating…", "pondering…", "noodling…", "whirring…", "cogitating…", "ruminating…"];
 const MODES: Mode[] = ["ask", "plan", "code"];
 const POLICIES: ApprovalPolicy[] = ["manual", "auto-safe", "full-auto", "read-only"];
 
-/** The in-flight assistant turn, streamed token-by-token before it becomes an
- *  entry (which only appears at turn end). Rendered as an overlay after the
- *  active-branch entries, then dropped when the real entry arrives. */
-interface LiveAssistant {
-  text: string;
-  reasoning: string;
-  truncated?: boolean;
+/** The bag of live sessions, keyed by id (D-43). One multiplexed bus feeds every
+ *  slice, so background sessions stay current while another is focused. */
+type SliceMap = Record<string, SessionSlice>;
+type SliceAction =
+  | { t: "roster"; sessions: SessionDescriptor[] }
+  | { t: "added"; session: SessionDescriptor }
+  | { t: "removed"; id: string }
+  | { t: "event"; id: string; event: import("./api").WireEvent }
+  | { t: "tree"; id: string; entries: EntryView[]; activeLeaf: string | null; conversationId: string | null }
+  | { t: "patch"; id: string; patch: Partial<SessionSlice> };
+
+function slicesReducer(state: SliceMap, action: SliceAction): SliceMap {
+  switch (action.t) {
+    case "roster": {
+      const next: SliceMap = {};
+      for (const d of action.sessions) next[d.id] = state[d.id] ? applyState(state[d.id]!, d.state) : sliceFromDescriptor(d);
+      return next;
+    }
+    case "added":
+      return state[action.session.id]
+        ? { ...state, [action.session.id]: applyState(state[action.session.id]!, action.session.state) }
+        : { ...state, [action.session.id]: sliceFromDescriptor(action.session) };
+    case "removed": {
+      if (!state[action.id]) return state;
+      const next = { ...state };
+      delete next[action.id];
+      return next;
+    }
+    case "event": {
+      const slice = state[action.id] ?? newSlice(action.id);
+      return { ...state, [action.id]: reduceEvent(slice, action.event) };
+    }
+    case "tree": {
+      const slice = state[action.id] ?? newSlice(action.id);
+      return {
+        ...state,
+        [action.id]: { ...slice, entries: action.entries, activeLeaf: action.activeLeaf, conversationId: action.conversationId, treeLoaded: true, live: null },
+      };
+    }
+    case "patch": {
+      const slice = state[action.id];
+      if (!slice) return state;
+      return { ...state, [action.id]: { ...slice, ...action.patch } };
+    }
+  }
 }
 
 export function App() {
-  // The conversation tree (all branches) + the viewed leaf (D-17). The active
-  // branch is `pathToLeaf`; sibling entries drive the ‹i/n› branch arrows.
-  const [entries, setEntries] = useState<EntryView[]>([]);
-  const [activeLeaf, setActiveLeaf] = useState<string | null>(null);
-  const [live, setLive] = useState<LiveAssistant | null>(null);
+  const [slices, dispatch] = useReducer(slicesReducer, {} as SliceMap);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
-  const [working, setWorking] = useState(false);
-  const [input, setInput] = useState("");
-  const [notice, setNotice] = useState<string | null>(null);
-  const [mode, setModeState] = useState<Mode>("code");
-  const [approval, setApprovalState] = useState<ApprovalPolicy>("manual");
-  const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
-  const [pendingAsk, setPendingAsk] = useState<AskUserRequest | null>(null);
-  const [spendUsd, setSpendUsd] = useState(0);
-  const [capUsd, setCapUsd] = useState<number | null>(null);
-  const [capReached, setCapReached] = useState(false);
-  const [tasks, setTasks] = useState<TaskView[]>([]);
-  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  // Journal + TTS are viewed only for the focused pane, so they live here and
+  // reset on focus change.
   const [journal, setJournal] = useState<JournalRecord[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-  const sessionRef = useRef<string | null>(null);
-  const convRef = useRef<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [workWord, setWorkWord] = useState(WORKING[0]!);
 
-  // Apply a settled-state snapshot (SSE `ready` frame, or an action response).
-  const applyState = useCallback((s: SessionState) => {
-    if (s.mode) setModeState(s.mode);
-    if (s.approval) setApprovalState(s.approval);
-    setPendingApproval(s.approvalRequest ?? null);
-    setPendingAsk(s.question ?? null);
-    setWorking(s.status === "running");
-    if (typeof s.spendUsd === "number") setSpendUsd(s.spendUsd);
-    if (s.spendCapUsd !== undefined) setCapUsd(s.spendCapUsd);
-    if (typeof s.capReached === "boolean") setCapReached(s.capReached);
-    if (s.tasks) setTasks(s.tasks);
-    if (s.queue) setQueue(s.queue);
+  const focusedRef = useRef<string | null>(null);
+  focusedRef.current = focusedId;
+  const initializedRef = useRef(false); // first-roster focus/auto-create ran
+  const loadingTrees = useRef(new Set<string>()); // in-flight tree fetches
+
+  const focus = useCallback((id: string) => {
+    setFocusedId(id);
+    const url = new URL(window.location.href);
+    url.searchParams.set("session", id);
+    window.history.replaceState({}, "", url);
+    setJournal([]);
+    setDrawerOpen(false);
   }, []);
 
-  // Re-sync the tree from the authoritative /session/:id snapshot. Used after
-  // our own rewind/edit (which shift the active leaf server-side) so the client
-  // never renders a stale branch.
-  const refreshTree = useCallback(async () => {
-    const id = sessionRef.current;
-    if (!id) return;
-    const t = await loadTree(id);
-    convRef.current = t.conversationId;
-    setEntries(t.entries);
-    setActiveLeaf(t.activeLeaf);
-    setLive(null);
-  }, []);
-
-  const loadJournal = useCallback(async () => {
-    const conv = convRef.current;
-    if (!conv) return;
-    setJournal(await fetchJournal(conv));
-  }, []);
-
-  const onEvent = useCallback(
-    (e: WireEvent) => {
-      switch (e.type) {
-        case "ready":
+  // Handle one multiplexed bus frame (D-43): fold session events into their
+  // slice, track the roster, and drive initial focus / auto-create.
+  const onFrame = useCallback(
+    (f: BusFrame) => {
+      switch (f.type) {
+        case "roster": {
+          dispatch({ t: "roster", sessions: f.sessions });
           setConnected(true);
-          if (e.state) applyState(e.state as SessionState);
-          break;
-        case "entry": {
-          // Live tree growth (D-37): append new nodes, advance the active leaf
-          // along the branch being built, and retire the streaming overlay once
-          // the assistant node materializes.
-          const entry = e.entry as EntryView;
-          setEntries((es) => (es.some((x) => x.id === entry.id) ? es : [...es, entry]));
-          setActiveLeaf((leaf) => (entry.parent === leaf ? entry.id : leaf));
-          if (entry.type === "assistant") setLive(null);
+          if (initializedRef.current) return;
+          initializedRef.current = true;
+          if (f.sessions.length === 0) {
+            void createSession().catch(() => {}); // an `added` frame will focus it
+            return;
+          }
+          const wanted = new URL(window.location.href).searchParams.get("session");
+          const pick = (wanted && f.sessions.find((s) => s.id === wanted)?.id) || f.sessions[0]!.id;
+          focus(pick);
           break;
         }
-        case "active-leaf":
-          setActiveLeaf(e.leaf as string);
+        case "session-added":
+          dispatch({ t: "added", session: f.session });
+          if (!focusedRef.current) focus(f.session.id);
           break;
-        case "mode":
-          setModeState(e.mode as Mode);
-          setApprovalState(e.approval as ApprovalPolicy);
+        case "session-removed":
+          dispatch({ t: "removed", id: f.sessionId });
           break;
-        case "spend":
-          setSpendUsd(e.totalUsd as number);
-          break;
-        case "cap":
-          setCapUsd((e.capUsd as number | null) ?? null);
-          setCapReached(false);
-          break;
-        case "cap-reached":
-          setCapReached(true);
-          setWorking(false);
-          setNotice(`Spend cap reached ($${(e.spendUsd as number).toFixed(4)} / $${(e.capUsd as number).toFixed(2)}). Raise it to continue.`);
-          break;
-        case "stopped":
-          setWorking(false);
-          setNotice(e.scope === "hard" ? "Stopped — aborted the turn and killed all tasks." : "Stopping after the current work — no further turn.");
-          break;
-        case "queue":
-          setQueue((e.queue as QueuedMessage[]) ?? []);
-          break;
-        case "task-start":
-        case "task-update":
-          setTasks((ts) => {
-            const t = e.task as TaskView;
-            const rest = ts.filter((x) => x.id !== t.id);
-            return t.status === "running" ? [...rest, t] : rest;
-          });
-          break;
-        case "task-end":
-          setTasks((ts) => ts.filter((x) => x.id !== (e.task as TaskView).id));
-          break;
-        case "assistant-start":
-          setWorking(true);
-          setLive({ text: "", reasoning: "" });
-          break;
-        case "reasoning":
-          setLive((l) => ({ ...(l ?? { text: "", reasoning: "" }), reasoning: (l?.reasoning ?? "") + (e.delta as string) }));
-          break;
-        case "text":
-          setLive((l) => ({ ...(l ?? { text: "", reasoning: "" }), text: (l?.text ?? "") + (e.delta as string) }));
-          break;
-        case "assistant-end":
-          setWorking(false);
-          setLive(null);
-          break;
-        case "awaiting-approval":
-          setWorking(false);
-          setLive(null);
-          setPendingApproval(e.request as ApprovalRequest);
-          break;
-        case "awaiting-input":
-          setWorking(false);
-          setLive(null);
-          setPendingAsk(e.question as AskUserRequest);
-          break;
-        case "truncation":
-          setNotice(e.message as string);
-          break;
-        case "error":
-          setNotice(e.message as string);
-          setWorking(false);
-          setLive(null);
-          break;
-        case "halted":
-          setNotice(`halted: ${e.reason as string}`);
-          setWorking(false);
-          setLive(null);
+        case "session-event":
+          dispatch({ t: "event", id: f.sessionId, event: f.event });
           break;
       }
     },
-    [applyState],
+    [focus],
   );
 
-  // Connect: create/resume a session, load its tree, subscribe to events.
+  // One connection for the whole instance (D-43).
   useEffect(() => {
-    let es: EventSource | undefined;
-    let cancelled = false;
-    (async () => {
+    const es = openBus(onFrame);
+    es.onerror = () => setConnected(false);
+    return () => es.close();
+  }, [onFrame]);
+
+  // If the focused session vanished (closed), fall back to another (or none).
+  useEffect(() => {
+    if (focusedId && !slices[focusedId]) {
+      const ids = Object.keys(slices);
+      setFocusedId(ids.length > 0 ? ids[0]! : null);
+    }
+  }, [slices, focusedId]);
+
+  // Lazily load the focused session's tree on first focus; live events grow it.
+  useEffect(() => {
+    if (!focusedId) return;
+    const slice = slices[focusedId];
+    if (!slice || slice.treeLoaded || loadingTrees.current.has(focusedId)) return;
+    loadingTrees.current.add(focusedId);
+    void loadTree(focusedId)
+      .then((t) => dispatch({ t: "tree", id: focusedId, entries: t.entries, activeLeaf: t.activeLeaf, conversationId: t.conversationId }))
+      .finally(() => loadingTrees.current.delete(focusedId));
+  }, [focusedId, slices]);
+
+  const loadJournal = useCallback(async () => {
+    const id = focusedRef.current;
+    const conv = id ? slices[id]?.conversationId : null;
+    if (!conv) return;
+    setJournal(await fetchJournal(conv));
+  }, [slices]);
+
+  const notify = useCallback((id: string, message: string) => dispatch({ t: "patch", id, patch: { notice: message } }), []);
+
+  // ---- Per-session actions (operate on the given session id). ----
+
+  const setInput = useCallback((id: string, input: string) => dispatch({ t: "patch", id, patch: { input } }), []);
+
+  const submit = useCallback(
+    async (id: string) => {
+      const text = (slices[id]?.input ?? "").trim();
+      if (!text) return;
+      dispatch({ t: "patch", id, patch: { input: "", notice: null } });
       try {
-        const id = await createOrGetSession();
-        if (cancelled) return;
-        sessionRef.current = id;
-        const url = new URL(window.location.href);
-        url.searchParams.set("session", id);
-        window.history.replaceState({}, "", url);
-        const t = await loadTree(id);
-        if (cancelled) return;
-        convRef.current = t.conversationId;
-        setEntries(t.entries);
-        setActiveLeaf(t.activeLeaf);
-        es = openEvents(id, onEvent);
+        await sendChat(id, text); // the user entry streams back over the bus
       } catch (err) {
-        if (!cancelled) setNotice((err as Error).message);
+        notify(id, (err as Error).message);
       }
-    })();
-    return () => {
-      cancelled = true;
-      es?.close();
-    };
-  }, [onEvent]);
+    },
+    [slices, notify],
+  );
 
-  // Rotate the working word while the agent is busy.
-  useEffect(() => {
-    if (!working) return;
-    let i = 0;
-    const t = setInterval(() => setWorkWord(WORKING[++i % WORKING.length]!), 1400);
-    return () => clearInterval(t);
-  }, [working]);
+  const queueMsg = useCallback(
+    async (id: string) => {
+      const text = (slices[id]?.input ?? "").trim();
+      if (!text) return;
+      dispatch({ t: "patch", id, patch: { input: "" } });
+      try {
+        await apiQueue(id, text);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [slices, notify],
+  );
 
-  // Keep the newest message / prompt in view.
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [entries, activeLeaf, live, working, pendingApproval, pendingAsk]);
-
-  // The active branch, filtered to the renderable turns (user + assistant with
-  // something to show). Tool/compaction nodes stay out of the bare chat view.
-  const path = pathToLeaf(entries, activeLeaf);
-  const rendered = path.filter((e) => e.type === "user" || (e.type === "assistant" && (e.text || e.reasoningText)));
-
-  // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
-  // background command is running, or a prompt is open. While busy, the composer
-  // queues (D-34) instead of sending.
-  const blocked = working || tasks.length > 0 || pendingApproval !== null || pendingAsk !== null;
-
-  const submit = useCallback(async () => {
-    const text = input.trim();
-    const id = sessionRef.current;
-    if (!text || !id || blocked) return;
-    setNotice(null);
-    setInput("");
-    try {
-      await sendChat(id, text); // the user entry streams back over SSE
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, [input, blocked]);
-
-  const changeMode = useCallback(async (patch: { mode?: Mode; approval?: ApprovalPolicy }) => {
-    const id = sessionRef.current;
-    if (!id) return;
-    if (patch.mode) setModeState(patch.mode); // optimistic; the `mode` event re-syncs
-    if (patch.approval) setApprovalState(patch.approval);
-    try {
-      await apiSetMode(id, patch);
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, []);
+  const changeMode = useCallback(
+    async (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => {
+      dispatch({ t: "patch", id, patch }); // optimistic; the `mode` event re-syncs
+      try {
+        await apiSetMode(id, patch);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
 
   const resolveApproval = useCallback(
-    async (decision: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => {
-      const id = sessionRef.current;
-      if (!id) return;
-      setPendingApproval(null);
-      setWorking(true);
+    async (id: string, decision: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => {
+      dispatch({ t: "patch", id, patch: { pendingApproval: null, working: true } });
       try {
         await apiApprove(id, decision);
       } catch (err) {
-        setNotice((err as Error).message);
-        setWorking(false);
+        dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
       }
     },
     [],
   );
 
-  const submitAnswer = useCallback(async (answers: Array<{ question: string; header?: string; answer: string }>) => {
-    const id = sessionRef.current;
-    if (!id) return;
-    setPendingAsk(null);
-    setWorking(true);
+  const submitAnswer = useCallback(async (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => {
+    dispatch({ t: "patch", id, patch: { pendingAsk: null, working: true } });
     try {
       await apiAnswer(id, answers);
     } catch (err) {
-      setNotice((err as Error).message);
-      setWorking(false);
+      dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
     }
   }, []);
 
-  // Queue the composer text for the next turn boundary (D-34).
-  const queueMsg = useCallback(async () => {
-    const text = input.trim();
-    const id = sessionRef.current;
-    if (!text || !id) return;
-    setInput("");
-    try {
-      await apiQueue(id, text);
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, [input]);
-
-  const changeCap = useCallback(async (next: number | null) => {
-    const id = sessionRef.current;
-    if (!id) return;
-    setNotice(null);
-    try {
-      await apiSetCap(id, next);
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, []);
-
-  const stop = useCallback(async (scope: "hard" | "soft") => {
-    const id = sessionRef.current;
-    if (!id) return;
-    try {
-      await apiStop(id, scope);
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, []);
-
-  const killOne = useCallback(async (taskId: string) => {
-    const id = sessionRef.current;
-    if (!id) return;
-    try {
-      await apiKillTask(id, taskId);
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, []);
-
-  // Cancel one queued message (drop it); editing = drop it back into the box.
-  const cancelQueued = useCallback(
-    async (qid: string) => {
-      const id = sessionRef.current;
-      if (!id) return;
+  const changeCap = useCallback(
+    async (id: string, next: number | null) => {
+      dispatch({ t: "patch", id, patch: { notice: null } });
       try {
-        await apiSetQueue(id, queue.filter((m) => m.id !== qid).map((m) => ({ text: m.text })));
+        await apiSetCap(id, next);
       } catch (err) {
-        setNotice((err as Error).message);
+        notify(id, (err as Error).message);
       }
     },
-    [queue],
+    [notify],
   );
 
-  // Switch to a sibling branch: point the active leaf at the sibling's tip (D-10).
-  const switchBranch = useCallback(async (siblingId: string) => {
-    const id = sessionRef.current;
-    if (!id) return;
-    try {
-      await apiRewind(id, leafOf(entries, siblingId));
-      await refreshTree();
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, [entries, refreshTree]);
+  const stop = useCallback(
+    async (id: string, scope: "hard" | "soft") => {
+      try {
+        await apiStop(id, scope);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
 
-  // Pencil-edit a user message → fork a sibling and run it (D-17).
-  const editMessage = useCallback(async (entryId: string, text: string) => {
-    const id = sessionRef.current;
-    if (!id) return;
-    setNotice(null);
-    try {
-      await apiEditFork(id, entryId, text);
-      await refreshTree();
-    } catch (err) {
-      setNotice((err as Error).message);
-    }
-  }, [refreshTree]);
+  const killOne = useCallback(
+    async (id: string, taskId: string) => {
+      try {
+        await apiKillTask(id, taskId);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
+
+  const cancelQueued = useCallback(
+    async (id: string, qid: string) => {
+      const remaining = (slices[id]?.queue ?? []).filter((m) => m.id !== qid).map((m) => ({ text: m.text }));
+      try {
+        await apiSetQueue(id, remaining);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [slices, notify],
+  );
+
+  const switchBranch = useCallback(
+    async (id: string, siblingId: string) => {
+      const slice = slices[id];
+      if (!slice) return;
+      try {
+        await apiRewind(id, leafOf(slice.entries, siblingId));
+        const t = await loadTree(id);
+        dispatch({ t: "tree", id, entries: t.entries, activeLeaf: t.activeLeaf, conversationId: t.conversationId });
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [slices, notify],
+  );
+
+  const editMessage = useCallback(
+    async (id: string, entryId: string, text: string) => {
+      dispatch({ t: "patch", id, patch: { notice: null } });
+      try {
+        await apiEditFork(id, entryId, text);
+        const t = await loadTree(id);
+        dispatch({ t: "tree", id, entries: t.entries, activeLeaf: t.activeLeaf, conversationId: t.conversationId });
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
 
   // Read an assistant reply aloud, or stop if it's already speaking (§11 TTS).
-  const toggleSpeak = useCallback((id: string, text: string) => {
-    const synth = window.speechSynthesis;
-    if (!synth) return;
-    if (speakingId === id) {
+  const toggleSpeak = useCallback(
+    (entryId: string, text: string) => {
+      const synth = window.speechSynthesis;
+      if (!synth) return;
+      if (speakingId === entryId) {
+        synth.cancel();
+        setSpeakingId(null);
+        return;
+      }
       synth.cancel();
-      setSpeakingId(null);
-      return;
+      const u = new SpeechSynthesisUtterance(plainText(text));
+      u.onend = () => setSpeakingId((s) => (s === entryId ? null : s));
+      setSpeakingId(entryId);
+      synth.speak(u);
+    },
+    [speakingId],
+  );
+
+  // ---- Rail actions. ----
+
+  const newSession = useCallback(async () => {
+    try {
+      const id = await createSession();
+      focus(id); // slice arrives via the `added` frame
+    } catch {
+      /* the bus will show the roster regardless */
     }
-    synth.cancel();
-    const u = new SpeechSynthesisUtterance(plainText(text));
-    u.onend = () => setSpeakingId((s) => (s === id ? null : s));
-    setSpeakingId(id);
-    synth.speak(u);
-  }, [speakingId]);
+  }, [focus]);
+
+  const closeOne = useCallback(async (id: string) => {
+    try {
+      await apiClose(id); // server hard-stops + drops it; a `removed` frame follows
+    } catch {
+      /* ignore; roster is authoritative */
+    }
+  }, []);
 
   const openDrawer = useCallback(() => {
     void loadJournal();
     setDrawerOpen(true);
   }, [loadJournal]);
 
+  const sessionList = Object.values(slices);
+  const focused = focusedId ? slices[focusedId] : undefined;
+
   return (
-    <div className="app">
-      <header className="topbar">
+    <div className="app-shell">
+      <SessionRail
+        sessions={sessionList}
+        focusedId={focusedId}
+        connected={connected}
+        onFocus={focus}
+        onNew={() => void newSession()}
+        onClose={(id) => void closeOne(id)}
+      />
+      {focused ? (
+        <ChatPane
+          key={focused.id}
+          slice={focused}
+          journal={journal}
+          drawerOpen={drawerOpen}
+          speakingId={speakingId}
+          onInput={setInput}
+          onSubmit={submit}
+          onQueue={queueMsg}
+          onChangeMode={changeMode}
+          onResolveApproval={resolveApproval}
+          onSubmitAnswer={submitAnswer}
+          onChangeCap={changeCap}
+          onStop={stop}
+          onKillTask={killOne}
+          onCancelQueued={cancelQueued}
+          onSwitchBranch={switchBranch}
+          onEditMessage={editMessage}
+          onSpeak={toggleSpeak}
+          onLoadJournal={loadJournal}
+          onOpenDrawer={openDrawer}
+          onCloseDrawer={() => setDrawerOpen(false)}
+        />
+      ) : (
+        <div className="pane empty-pane">
+          <div className="empty">No session open. Create one to get started.</div>
+          <button className="primary" onClick={() => void newSession()}>
+            + New session
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The left rail (D-43): one card per live session with its model, a status dot,
+ *  live spend and mode; click to focus, ✕ to close (stop + drop from the bag). */
+function SessionRail({
+  sessions,
+  focusedId,
+  connected,
+  onFocus,
+  onNew,
+  onClose,
+}: {
+  sessions: SessionSlice[];
+  focusedId: string | null;
+  connected: boolean;
+  onFocus: (id: string) => void;
+  onNew: () => void;
+  onClose: (id: string) => void;
+}) {
+  const statusLabel = (s: SessionSlice): string => {
+    if (s.pendingApproval) return "needs approval";
+    if (s.pendingAsk) return "needs answer";
+    if (s.capReached) return "cap reached";
+    if (s.working || s.status === "running") return "working…";
+    if (s.tasks.length > 0) return "task running";
+    if (s.status === "halted") return "halted";
+    return "idle";
+  };
+  const dotClass = (s: SessionSlice): string => {
+    if (s.pendingApproval || s.pendingAsk || s.capReached) return "attn";
+    if (s.working || s.status === "running" || s.tasks.length > 0) return "busy";
+    if (s.status === "halted") return "halt";
+    return "";
+  };
+  return (
+    <aside className="rail">
+      <div className="rail-head">
         <span className="brand">JLCode</span>
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "connecting…"} />
+      </div>
+      <button className="rail-new" onClick={onNew} title="new session">
+        + New
+      </button>
+      <div className="rail-list">
+        {sessions.length === 0 && <div className="rail-empty">no live sessions</div>}
+        {sessions.map((s) => (
+          <div
+            key={s.id}
+            className={`rail-item ${s.id === focusedId ? "focused" : ""}`}
+            onClick={() => onFocus(s.id)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === "Enter" && onFocus(s.id)}
+          >
+            <div className="rail-item-top">
+              <span className={`sdot ${dotClass(s)}`} />
+              <span className="rail-model" title={s.model}>
+                {s.model || "session"}
+              </span>
+              <button
+                className="rail-close"
+                title="close session (stops it)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(s.id);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="rail-item-meta">
+              <span className={`rail-status ${dotClass(s)}`}>{statusLabel(s)}</span>
+              <span className="rail-spend">${s.spendUsd.toFixed(4)}</span>
+              <span className="rail-mode">{s.mode}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+/** The focused session's full chat surface: header controls + thread + composer.
+ *  All state is the passed slice; all actions carry the session id back up. */
+function ChatPane({
+  slice,
+  journal,
+  drawerOpen,
+  speakingId,
+  onInput,
+  onSubmit,
+  onQueue,
+  onChangeMode,
+  onResolveApproval,
+  onSubmitAnswer,
+  onChangeCap,
+  onStop,
+  onKillTask,
+  onCancelQueued,
+  onSwitchBranch,
+  onEditMessage,
+  onSpeak,
+  onLoadJournal,
+  onOpenDrawer,
+  onCloseDrawer,
+}: {
+  slice: SessionSlice;
+  journal: JournalRecord[];
+  drawerOpen: boolean;
+  speakingId: string | null;
+  onInput: (id: string, text: string) => void;
+  onSubmit: (id: string) => void;
+  onQueue: (id: string) => void;
+  onChangeMode: (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
+  onResolveApproval: (id: string, d: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => void;
+  onSubmitAnswer: (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => void;
+  onChangeCap: (id: string, v: number | null) => void;
+  onStop: (id: string, scope: "hard" | "soft") => void;
+  onKillTask: (id: string, taskId: string) => void;
+  onCancelQueued: (id: string, qid: string) => void;
+  onSwitchBranch: (id: string, siblingId: string) => void;
+  onEditMessage: (id: string, entryId: string, text: string) => void;
+  onSpeak: (entryId: string, text: string) => void;
+  onLoadJournal: () => void;
+  onOpenDrawer: () => void;
+  onCloseDrawer: () => void;
+}) {
+  const id = slice.id;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [workWord, setWorkWord] = useState(WORKING[0]!);
+
+  // Rotate the working word while the agent is busy.
+  useEffect(() => {
+    if (!slice.working) return;
+    let i = 0;
+    const t = setInterval(() => setWorkWord(WORKING[++i % WORKING.length]!), 1400);
+    return () => clearInterval(t);
+  }, [slice.working]);
+
+  // Keep the newest message / prompt in view.
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [slice.entries, slice.activeLeaf, slice.live, slice.working, slice.pendingApproval, slice.pendingAsk]);
+
+  const path = pathToLeaf(slice.entries, slice.activeLeaf);
+  const rendered = path.filter((e) => e.type === "user" || (e.type === "assistant" && (e.text || e.reasoningText)));
+
+  // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
+  // background command is running, or a prompt is open. While busy, the composer
+  // queues (D-34) instead of sending.
+  const blocked = slice.working || slice.tasks.length > 0 || slice.pendingApproval !== null || slice.pendingAsk !== null;
+
+  return (
+    <div className="pane">
+      <header className="topbar">
+        <span className="pane-model" title={slice.model}>
+          {slice.model || "session"}
+        </span>
         <div className="controls">
-          <button className="ghost" title="debug journal (D-15)" onClick={openDrawer}>
+          <button className="ghost" title="debug journal (D-15)" onClick={onOpenDrawer}>
             journal
           </button>
-          <SpendChip spendUsd={spendUsd} capUsd={capUsd} capReached={capReached} onSetCap={changeCap} />
-          <StopControl active={working || tasks.length > 0} onStop={stop} />
+          <SpendChip spendUsd={slice.spendUsd} capUsd={slice.capUsd} capReached={slice.capReached} onSetCap={(v) => onChangeCap(id, v)} />
+          <StopControl active={slice.working || slice.tasks.length > 0} onStop={(scope) => onStop(id, scope)} />
           <div className="seg" role="group" aria-label="mode">
             {MODES.map((m) => (
-              <button key={m} className={m === mode ? "on" : ""} onClick={() => void changeMode({ mode: m })}>
+              <button key={m} className={m === slice.mode ? "on" : ""} onClick={() => onChangeMode(id, { mode: m })}>
                 {m}
               </button>
             ))}
           </div>
           <select
             className="policy"
-            value={approval}
+            value={slice.approval}
             aria-label="approval policy"
-            onChange={(e) => void changeMode({ approval: e.target.value as ApprovalPolicy })}
+            onChange={(e) => onChangeMode(id, { approval: e.target.value as ApprovalPolicy })}
           >
             {POLICIES.map((p) => (
               <option key={p} value={p}>
@@ -442,11 +600,11 @@ export function App() {
       </header>
 
       <div className="thread" ref={scrollRef}>
-        {rendered.length === 0 && !live && !pendingApproval && !pendingAsk && (
+        {rendered.length === 0 && !slice.live && !slice.pendingApproval && !slice.pendingAsk && (
           <div className="empty">Say something to get started.</div>
         )}
         {rendered.map((entry) => {
-          const siblings = childrenOf(entries, entry.parent);
+          const siblings = childrenOf(slice.entries, entry.parent);
           const branch =
             siblings.length > 1
               ? { index: siblings.findIndex((s) => s.id === entry.id), count: siblings.length, siblings }
@@ -456,29 +614,29 @@ export function App() {
               key={entry.id}
               entry={entry}
               branch={branch}
-              onSwitch={switchBranch}
-              onEdit={editMessage}
+              onSwitch={(siblingId) => onSwitchBranch(id, siblingId)}
+              onEdit={(entryId, text) => onEditMessage(id, entryId, text)}
               journal={journal.filter((r) => r.entryId === entry.id)}
-              onNeedJournal={loadJournal}
+              onNeedJournal={onLoadJournal}
               speaking={speakingId === entry.id}
-              onSpeak={toggleSpeak}
+              onSpeak={onSpeak}
             />
           );
         })}
-        {live && <LiveMessage live={live} />}
-        {working && <div className="working">{workWord}</div>}
-        {tasks.length > 0 && <TasksPanel tasks={tasks} onKill={killOne} />}
-        {pendingApproval && <ApprovalCard request={pendingApproval} onResolve={resolveApproval} />}
-        {pendingAsk && <AskForm request={pendingAsk} onSubmit={submitAnswer} />}
-        {capReached && <CapBanner spendUsd={spendUsd} capUsd={capUsd} onRaise={changeCap} />}
-        {notice && <div className="notice">{notice}</div>}
+        {slice.live && <LiveMessage live={slice.live} />}
+        {slice.working && <div className="working">{workWord}</div>}
+        {slice.tasks.length > 0 && <TasksPanel tasks={slice.tasks} onKill={(taskId) => onKillTask(id, taskId)} />}
+        {slice.pendingApproval && <ApprovalCard request={slice.pendingApproval} onResolve={(d) => onResolveApproval(id, d)} />}
+        {slice.pendingAsk && <AskForm request={slice.pendingAsk} onSubmit={(answers) => onSubmitAnswer(id, answers)} />}
+        {slice.capReached && <CapBanner spendUsd={slice.spendUsd} capUsd={slice.capUsd} onRaise={(v) => onChangeCap(id, v)} />}
+        {slice.notice && <div className="notice">{slice.notice}</div>}
       </div>
 
-      {queue.length > 0 && (
+      {slice.queue.length > 0 && (
         <div className="queue">
           <span className="queue-label">queued</span>
-          {queue.map((m) => (
-            <button key={m.id} className="queued" title="cancel" onClick={() => void cancelQueued(m.id)}>
+          {slice.queue.map((m) => (
+            <button key={m.id} className="queued" title="cancel" onClick={() => onCancelQueued(id, m.id)}>
               <span className="queued-text">{m.text}</span>
               <span className="x">✕</span>
             </button>
@@ -488,36 +646,36 @@ export function App() {
 
       <footer className="composer">
         <textarea
-          value={input}
+          value={slice.input}
           placeholder={
-            pendingApproval || pendingAsk
+            slice.pendingApproval || slice.pendingAsk
               ? "Respond to the agent above…"
               : blocked
                 ? "Queue a message for the next turn…  (Enter to queue)"
                 : "Message JLCode…  (Enter to send, Shift+Enter for newline)"
           }
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => onInput(id, e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if (blocked) void queueMsg();
-              else void submit();
+              if (blocked) onQueue(id);
+              else onSubmit(id);
             }
           }}
           rows={2}
         />
         {blocked ? (
-          <button onClick={() => void queueMsg()} disabled={!input.trim()}>
+          <button onClick={() => onQueue(id)} disabled={!slice.input.trim()}>
             Queue
           </button>
         ) : (
-          <button onClick={() => void submit()} disabled={!input.trim()}>
+          <button onClick={() => onSubmit(id)} disabled={!slice.input.trim()}>
             Send
           </button>
         )}
       </footer>
 
-      {drawerOpen && <JournalDrawer records={journal} entries={entries} onClose={() => setDrawerOpen(false)} onRefresh={loadJournal} />}
+      {drawerOpen && <JournalDrawer records={journal} entries={slice.entries} onClose={onCloseDrawer} onRefresh={onLoadJournal} />}
     </div>
   );
 }

@@ -88,6 +88,12 @@ function entryView(entry: Entry): Record<string, unknown> {
   }
 }
 
+/** A session's roster descriptor for the multiplexed bus (D-43): identity + its
+ *  current settled state, so the rail can draw a badge without loading the tree. */
+function sessionDescriptor(session: Session): Record<string, unknown> {
+  return { id: session.id, model: session.config.model, state: stateOf(session) };
+}
+
 /** Build the response describing the session's current settled state. */
 function stateOf(session: Session): Record<string, unknown> {
   const entries = session.conversation.entries;
@@ -220,6 +226,44 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     });
   });
 
+  // SSE down, multiplexed (D-43): every session's events on one connection,
+  // tagged with `sessionId`, plus added/removed lifecycle frames. This is the
+  // instance-level bus the multi-session UI subscribes to (and the shape the
+  // future fleet aggregator, §18, will fan in). A first `roster` frame lists all
+  // live sessions with their settled state; subscribe before snapshotting so no
+  // add is missed (the client dedupes by id).
+  app.get("/events", (c) => {
+    return streamSSE(c, async (stream) => {
+      const queue: unknown[] = [];
+      let wake: (() => void) | null = null;
+      const bump = () => {
+        const w = wake;
+        wake = null;
+        w?.();
+      };
+      const unsub = manager.subscribe((frame) => {
+        if (frame.kind === "event") queue.push({ type: "session-event", sessionId: frame.sessionId, event: frame.event });
+        else if (frame.kind === "added") queue.push({ type: "session-added", session: sessionDescriptor(frame.session) });
+        else queue.push({ type: "session-removed", sessionId: frame.sessionId });
+        bump();
+      });
+      stream.onAbort(() => {
+        unsub();
+        bump();
+      });
+      queue.push({ type: "roster", sessions: manager.list().map(sessionDescriptor) });
+      try {
+        while (!stream.aborted) {
+          while (queue.length > 0) await stream.writeSSE({ data: JSON.stringify(queue.shift()) });
+          if (stream.aborted) break;
+          await new Promise<void>((resolve) => (wake = resolve));
+        }
+      } finally {
+        unsub();
+      }
+    });
+  });
+
   app.get("/session/:id", (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -278,6 +322,19 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const scope = body.scope === "soft" ? "soft" : "hard"; // default to the big red button
     session.stop(scope);
     return c.json(stateOf(session));
+  });
+
+  // Close a session (D-43): hard-stop it (abort the LLM, kill tasks, clear the
+  // queue) and drop it from the bag so it stops appearing in the roster. The
+  // conversation stays on disk (recoverable from history); the manager emits a
+  // `removed` frame so every subscribed browser drops its tab.
+  app.post("/session/:id/close", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    session.stop("hard");
+    manager.remove(session.id);
+    await deps.store.flush();
+    return c.json({ closed: true });
   });
 
   // Kill one background task (D-34) — the per-task Kill button.

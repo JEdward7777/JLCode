@@ -1,18 +1,18 @@
 # JLCode — Roadmap
 
-Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-42, no open
+Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-43, no open
 items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
 resume / fork-rewind / debug-journal done). **In Phase 5 — the HTTP browser frontend (sliced
-P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b + P5c + P5d done; next is
-P5e (concurrent sessions).** Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode
-surface** (D-40).
+P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b + P5c + P5d + P5e done; next
+is P5f (serve modes & auth) — the last slice.** Stack: **React + Vite** (D-39); serving/auth is a
+**CLI serve-mode surface** (D-40).
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (128 Tier-0/1 tests green), and committed through P5d:
+Built, tested (141 Tier-0/1 tests green), and committed through P5e:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -50,15 +50,16 @@ outside `serve`.
 
 To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
 continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a + P5b +
-P5c + P5d are done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b: browser
-approvals with edit-before-approve, multi-question ask_user, live mode/approval controls,
+P5c + P5d + P5e are done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b:
+browser approvals with edit-before-approve, multi-question ask_user, live mode/approval controls,
 out-of-fence soft-fence prompts; P5c: whole-tree spend + settable cap, queued message,
 background-task kill + 30-min watchdog, two-mode global stop; P5d: tree-driven view with inline
 branch arrows + pencil edit-fork, per-turn + drawer debug-journal viewer, real lazy-loaded Mermaid
-+ inline images, TTS — all verified end-to-end in Chrome, see [`VISUAL-LOG.md`](VISUAL-LOG.md)).
-**Next up is P5e — concurrent sessions (the "bag of agents", D-36): multi-session UI, multiplexed
-per-session bus.** Stack decided in D-39; serve-mode/auth surface in D-40. **128 Tier-0/1 tests
-green.** Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
++ inline images, TTS; P5e: concurrent sessions — left rail of N live sessions, one multiplexed
+per-instance bus, close-to-stop — all verified end-to-end in Chrome, see
+[`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is P5f — serve modes & auth (D-40): the last Phase-5
+slice.** Stack decided in D-39; serve-mode/auth surface in D-40. **141 Tier-0/1 tests green.**
+Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 
@@ -220,11 +221,29 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
 - **Done when:** you navigate branches, inspect a turn's journal, see diagrams/images, hear
   replies. ✅
 
-### P5e — Concurrent sessions — the "bag of agents" (D-36)
-- Multi-session UI: hold/switch **N live sessions** in the same folder, each with its own
-  status/spend/controls; the per-session bus is **multiplexed** to the frontend. (Shared-folder;
-  worktree isolation stays deferred.)
-- **Done when:** multiple live sessions coexist and are independently drivable in the browser.
+### P5e — Concurrent sessions — the "bag of agents" (D-36) ✅ done (2026-07-24)
+- **Multi-session UI (D-43):** a **left rail** of N live session cards (model, status dot, live
+  spend, mode); click to focus, **✕ to close**. Each session keeps its own status/spend/controls;
+  the focused pane carries the full header controls + thread + composer. (Shared-folder; worktree
+  isolation stays deferred.)
+- **Multiplexed per-instance bus (D-43):** the `SessionManager` is now the instance fan-in — a new
+  `GET /events` streams every session's events tagged with `sessionId`, plus `roster` /
+  `session-added` / `session-removed` lifecycle frames (`manager.subscribe()` seam). One connection
+  per instance — the shape the future fleet aggregator (§18) subscribes to. The per-session
+  `/session/:id/events` stays for deep-link/embed. The browser folds the bus into an independent
+  **slice per session** via a pure reducer (`web/src/session-state.ts`), so a background session's
+  spend/status/streaming stay live while another is focused.
+- **Close = stop + drop (D-43):** `POST /session/:id/close` hard-stops the session (abort LLM, kill
+  tasks, clear queue) and removes it from the bag so it no longer appears/auto-opens; the
+  conversation stays on disk (recoverable from history).
+- **Verified:** 13 new Tier-0 tests (manager fan-in add/removed/tagged-events + idempotent add;
+  `/events` roster + tagged fan-in + late `session-added`; `/session/:id/close` removal +
+  `session-removed` + 404s; client slice reducer — descriptor adoption, streaming overlay, tree
+  growth/dedupe, spend/cap/tasks, awaiting states, purity). **Looked at it in Chrome** — three live
+  sessions in the rail with distinct badges (idle / needs approval / working…), focus-switch swaps
+  the pane while the siblings' badges stay live, close ✕ on each — see
+  [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5e). **Done.**
+- **Done when:** multiple live sessions coexist and are independently drivable in the browser. ✅
 
 ### P5f — Serve modes & auth (D-40, was P-01)
 - **`--serve` bind scope:** localhost-default (no password) vs **outward** (auth required; targets
