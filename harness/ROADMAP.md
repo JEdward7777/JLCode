@@ -3,15 +3,15 @@
 Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-40, no open
 items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
 resume / fork-rewind / debug-journal done). **In Phase 5 — the HTTP browser frontend (sliced
-P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b done; next is P5c.** Stack:
-**React + Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40).
+P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b + P5c done; next is P5d.**
+Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40).
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (101 Tier-0/1 tests green), and committed through P5b:
+Built, tested (122 Tier-0/1 tests green), and committed through P5c:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -48,13 +48,15 @@ built but not yet wired as the live record/replay layer (Tier-1) or the runtime 
 outside `serve`.
 
 To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
-continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a + P5b are
-done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b: browser approvals with
-edit-before-approve, multi-question ask_user, live mode/approval controls, out-of-fence soft-fence
-prompts — all verified end-to-end in Chrome, see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is
-P5c — cost & interruption control (spend/cap, queued message, background-task kill, global stop).**
-Stack decided in D-39; serve-mode/auth surface in D-40. **101 Tier-0/1 tests green.** Rendered
-surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a + P5b +
+P5c are done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b: browser
+approvals with edit-before-approve, multi-question ask_user, live mode/approval controls,
+out-of-fence soft-fence prompts; P5c: whole-tree spend + settable cap, queued message,
+background-task kill + 30-min watchdog, two-mode global stop — all verified end-to-end in Chrome,
+see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is P5d — branching, journal & rich rendering
+(fork/rewind nav, debug-journal viewer, Mermaid + inline images, TTS).** Stack decided in D-39;
+serve-mode/auth surface in D-40. **122 Tier-0/1 tests green.** Rendered surfaces get a real-browser
+peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 
@@ -162,12 +164,39 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
   **looked at it in Chrome** — approval card, ask form, soft-fence prompt, and a full
   type→Approve→file-on-disk round trip — see [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5b). **Done.**
 
-### P5c — Cost & interruption control (D-33, D-34)
-- Live **whole-tree spend** in a screen corner + settable **cap** (hard-stop on breach, offer
-  raise); **queued message** (turn-boundary, editable/cancelable); **background-task list with
-  per-task kill** (the D-34 kill carve-out lands here); **global stop**.
+### P5c — Cost & interruption control (D-33, D-34) ✅ done (2026-07-23)
+- Live **whole-tree spend** in a screen corner + settable **cap**; **queued message**
+  (turn-boundary, editable/cancelable); **background-task list with per-task kill** (the D-34 kill
+  carve-out); **global stop**.
+- **Spend (D-33):** cost per model call prefers OpenRouter's authoritative `cost`
+  (`usage:{include:true}` → `Usage.costUsd`), falls back to optional per-config `pricing` ($/Mtok,
+  cache-aware) for the fake driver/offline. Session tracks whole-tree `spendUsd` (recomputed from
+  stored usage on resume, grown per turn incl. the watchdog's out-of-band call), emitted as a
+  `spend` event. Settable cap: at/over it the loop **declines the next LLM call, kills nothing**
+  (Joshua's call), emits `cap-reached`; raising via `POST /session/:id/cap` resumes.
+- **Interruption (D-34):** global stop `POST /session/:id/stop {scope}` — **hard** aborts the
+  in-flight LLM (AbortSignal threaded through the driver → fetch), kills all tasks, clears the
+  queue; **soft** (a dropdown beside the button) lets running commands finish but takes no further
+  turn. **Background tasks:** `run_command` lost its 30s timeout (Joshua's call), spawns in its own
+  **process group** (Kill takes the whole tree), and registers in a `TaskRegistry` — listed +
+  individually killable (`POST /session/:id/task/:taskId/kill`); the tool result names how it ended
+  so a kill reads differently from a clean exit. **Watchdog:** after 30 min (injectable), an
+  out-of-band model call sees the task's output-so-far + elapsed and decides kill/keep via a
+  `decide_kill` tool — a "no" re-arms and is never appended; a "yes" kills, surfaced only via the
+  tool result (so the model knows it killed it), counts toward spend, never touches the tree.
+  **Queued message:** typed mid-turn, applied FIFO at turn boundaries (`enqueue` / `setQueue`);
+  `send()` now refuses a busy session so the queue is the only mid-turn path.
+- **Also fixed:** config-store loader dropped the new `pricing` field (round-trip restored). Fake
+  driver now emits token usage so offline spend accounting is exercisable.
+- **Verified:** 21 new Tier-0/1 tests (computeCost precedence/fallback/cache-discount; spend accrual
+  + cap breach/raise/resume + resume-recompute; hard-abort discards turn; hard clears queue; soft
+  finishes command then halts; task list + kill; watchdog yes-kills out-of-band w/o touching the
+  tree; watchdog no re-arms; queue FIFO drain; enqueue-while-idle; server cap/stop/queue/task
+  endpoints). **Looked at it in Chrome** — spend chip + cap popover, cap-reached banner, task list +
+  Kill, queued chip + Queue composer, soft-stop menu — see [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5c).
+  **Done.**
 - **Done when:** spend + cap are visible and enforced; background tasks are killable; stop halts
-  the loop and every task.
+  the loop and every task. ✅
 
 ### P5d — Branching, journal & rich rendering
 - Branch-arrow **fork/rewind navigation** over the P4 endpoints (D-10/D-17); **debug-journal

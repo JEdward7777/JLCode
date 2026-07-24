@@ -80,3 +80,49 @@ CDP. Confirmed with my own eyes:
 Not yet exercised visually (later slices): live spend/cost + cap, queued message,
 background-task kill, global stop (P5c); branch nav / journal / Mermaid / images /
 TTS (P5d); multi-session UI (P5e); auth (P5f).
+
+---
+
+## P5c — cost & interruption control · 2026-07-23 · ✅ looked good
+
+**Screenshots:** [`visual/p5c-spend-cap.png`](visual/p5c-spend-cap.png) ·
+[`visual/p5c-tasks-queue.png`](visual/p5c-tasks-queue.png) ·
+[`visual/p5c-stop-menu.png`](visual/p5c-stop-menu.png) ·
+[`visual/p5c-cap-reached.png`](visual/p5c-cap-reached.png)
+
+Drove the built server with the fake driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs, **full-auto** so `run_command` runs without a gate). The fake
+driver now emits token usage, and the peek config carries fallback **pricing**
+($3 / $60 per Mtok), so spend is real. Seeded each surface over the HTTP API and
+screenshotted via CDP. Confirmed with my own eyes:
+
+- **Whole-tree spend in the corner (D-33)** — after two turns the chip reads
+  **`$0.0127`**; clicking it opens the cap popover (input + Set / Clear). Spend
+  is priced from token usage × the config's fallback pricing (the fake driver
+  reports no API `cost`).
+- **Settable cap + breach (D-33)** — with a tiny cap set, a tool turn that
+  crosses it turns the chip **red** (`$0.0042 / $0.00`) and drops a banner:
+  "Spend cap reached … The agent stopped before the next model call; **nothing
+  was killed**," with **Double the cap** / **+$1.00** to raise-and-resume —
+  exactly Joshua's "don't kill anything, just don't make another LLM call."
+- **Background-task list + kill (D-34)** — `run: sleep 30` shows a **background
+  tasks** card ("running · killable") with the command, a live elapsed counter,
+  and a red **Kill**. The 30s timeout is gone; the child is its own process
+  group, so Kill / global Stop take the whole tree.
+- **Queued message (D-34)** — typing while a command runs flips the composer to
+  **Queue** ("Enter to queue"); the message parks as a **QUEUED** chip with an
+  **✕** to cancel, and applies at the next turn boundary (it did **not** barge
+  into the running turn — `send()` now refuses a busy session).
+- **Global stop, two-mode (D-34)** — a red **◼ Stop** (hard: abort the LLM +
+  kill tasks + clear the queue) with a **▾** caret opening **"Stop LLM loop
+  only — let running commands finish; take no further turn"** (soft), matching
+  Joshua's dropdown ask.
+
+Fixed while peeking: `pricing` was dropped by the config-store loader (spend read
+$0.0000 until `normalizeModelConfig` carried it through); and `send()` now
+refuses a running session so a mis-timed Send can't re-enter the loop (the UI
+queues instead once anything is busy).
+
+Not yet exercised visually (later slices): the watchdog's 30-min out-of-band kill
+prompt (covered by tests; impractical to screenshot); branch nav / journal /
+Mermaid / images / TTS (P5d); multi-session UI (P5e); auth (P5f).
