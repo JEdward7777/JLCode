@@ -12,6 +12,12 @@ import { AppendLog } from "../src/persist/append-log";
 // afterEach (below). 6/6 clean runs afterward. If this suite flakes AGAIN, the
 // fd-leak theory was WRONG — look instead at fsync latency or a real
 // write-ordering race in AppendLog, not test isolation.
+// 2026-07-24 (P6a): one unidentified test failed once during a `build && test`
+// run (1 of 166; the retry was green) — the failing test name was NOT captured,
+// so it is UNCONFIRMED whether it was this suite. append-log was then stress-run
+// ~12x under concurrent build-load with no reproduction. So: no confirmed
+// recurrence here; the escalation above still stands only if append-log is the
+// suite that fails next time (capture the test name before concluding).
 let dir: string;
 const opened: AppendLog[] = [];
 /** Create a log and track it so afterEach closes its fd (no leaks under load). */
