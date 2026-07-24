@@ -2,6 +2,7 @@
  * Fake LLM drivers for offline development and tests — so the walking skeleton
  * and the loop can be exercised without a live (paid) OpenRouter call.
  */
+import zlib from "node:zlib";
 import type { ChatRequest, LlmDriver, StreamEvent } from "../llm/types.js";
 
 export function scriptedDriver(
@@ -92,6 +93,7 @@ export function fakeAgentDriver(): LlmDriver {
     if (msg.startsWith("ask:")) {
       return toolCall("ask_user", { question: after("ask:") || "How should I proceed?", options: ["Yes", "No"] });
     }
+    if (msg.startsWith("demo")) return textReply(RICH_MD);
     if (msg.startsWith("form:")) {
       return toolCall("ask_user", {
         questions: [
@@ -110,6 +112,72 @@ export function fakeAgentDriver(): LlmDriver {
     return echoReply(msg);
   });
 }
+
+/** A solid-colour PNG as a data URI — a clean, offline `<img src>` for the peek
+ *  (base64, no spaces/parens, so marked parses it and DOMPurify keeps it). */
+function solidPngDataUri(w: number, h: number, [r, g, b]: [number, number, number]): string {
+  const crc32 = (buf: Buffer): number => {
+    let c = ~0;
+    for (const byte of buf) {
+      c ^= byte;
+      for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    }
+    return ~c >>> 0;
+  };
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const t = Buffer.from(type, "ascii");
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([t, data])));
+    return Buffer.concat([len, t, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type RGB
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    const off = y * (1 + w * 3);
+    for (let x = 0; x < w; x++) {
+      const p = off + 1 + x * 3;
+      raw[p] = r;
+      raw[p + 1] = g;
+      raw[p + 2] = b;
+    }
+  }
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+  return `data:image/png;base64,${png.toString("base64")}`;
+}
+
+/** A rich-markdown reply for the P5d browser peek: a heading, a list, an inline
+ *  image (data URI — no network), and a mermaid diagram, so rendering can be
+ *  eyeballed offline. Not used by tests; only the `demo` prefix reaches it. */
+const RICH_MD = [
+  "## Rich rendering check",
+  "",
+  "A few things at once:",
+  "",
+  "- **bold**, `inline code`, and a [link](https://example.com)",
+  "- an inline image below, then a diagram",
+  "",
+  `![an inline image](${solidPngDataUri(150, 48, [0xe0, 0x79, 0x6b])})`,
+  "",
+  "```mermaid",
+  "graph LR",
+  "  A[User] --> B{JLCode}",
+  "  B -->|tool| C[Sandbox]",
+  "  B -->|reply| D[Browser]",
+  "```",
+  "",
+  "That's the lot.",
+].join("\n");
 
 function echoReply(said: string): StreamEvent[] {
   const events: StreamEvent[] = [{ type: "reasoning", delta: "(considering) " }, ...textReply(`You said: ${said}`)];

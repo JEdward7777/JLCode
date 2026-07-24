@@ -85,6 +85,34 @@ describe("DebugJournal", () => {
     expect(recs.every((r) => typeof r.ts === "string")).toBe(true);
   });
 
+  it("links each record to the assistant turn that produced it (entryId, D-15)", async () => {
+    const session = new Session({
+      config,
+      driver: toolThenAnswer(),
+      tools: new ToolRegistry(fileTools()),
+      sandbox: new Sandbox([root]),
+    });
+    const convId = session.conversation.id;
+    session.onEvent((e) => {
+      if (e.type === "debug") void journal.record(convId, e.record);
+    });
+    await session.send("write a file");
+    await journal.flush();
+
+    const recs = journal.read(convId) as Array<Record<string, any>>;
+    const assistants = session.conversation.entries.filter((e) => e.type === "assistant");
+    expect(assistants.length).toBe(2);
+    const [toolTurn, finalTurn] = assistants;
+
+    const llm = recs.filter((r) => r.kind === "llm");
+    const tool = recs.filter((r) => r.kind === "tool");
+    // The llm records carry the id of the assistant entry they created…
+    expect(llm[0]!.entryId).toBe(toolTurn!.id);
+    expect(llm[1]!.entryId).toBe(finalTurn!.id);
+    // …and the tool record attributes to the assistant turn that issued the call.
+    expect(tool[0]!.entryId).toBe(toolTurn!.id);
+  });
+
   it("records the error on a failed turn", async () => {
     const failing: LlmDriver = {
       // eslint-disable-next-line require-yield

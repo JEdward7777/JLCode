@@ -225,6 +225,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (!session) return c.json({ error: "no such session" }, 404);
     return c.json({
       id: session.id,
+      conversationId: session.conversation.id, // for the debug-journal fetch (D-15)
       status: session.status,
       model: session.config.model,
       mode: session.mode,

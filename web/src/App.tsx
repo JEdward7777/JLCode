@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { renderMarkdown } from "./markdown";
+import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
+import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import {
   answer as apiAnswer,
   approve as apiApprove,
@@ -9,18 +10,22 @@ import {
   killTask as apiKillTask,
   queueMessage as apiQueue,
   setQueue as apiSetQueue,
+  rewind as apiRewind,
+  editFork as apiEditFork,
+  fetchJournal,
   createOrGetSession,
-  loadSession,
+  loadTree,
   openEvents,
   sendChat,
   type ApprovalPolicy,
   type ApprovalRequest,
   type AskUserRequest,
+  type EntryView,
+  type JournalRecord,
   type Mode,
   type QueuedMessage,
   type SessionState,
   type TaskView,
-  type UiMessage,
   type WireEvent,
 } from "./api";
 
@@ -29,20 +34,21 @@ const WORKING = ["percolating…", "pondering…", "noodling…", "whirring…",
 const MODES: Mode[] = ["ask", "plan", "code"];
 const POLICIES: ApprovalPolicy[] = ["manual", "auto-safe", "full-auto", "read-only"];
 
-/** Replace the last message matching `role`, applying `fn`. */
-function patchLast(list: UiMessage[], role: UiMessage["role"], fn: (m: UiMessage) => UiMessage): UiMessage[] {
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (list[i]!.role === role) {
-      const copy = list.slice();
-      copy[i] = fn(list[i]!);
-      return copy;
-    }
-  }
-  return list;
+/** The in-flight assistant turn, streamed token-by-token before it becomes an
+ *  entry (which only appears at turn end). Rendered as an overlay after the
+ *  active-branch entries, then dropped when the real entry arrives. */
+interface LiveAssistant {
+  text: string;
+  reasoning: string;
+  truncated?: boolean;
 }
 
 export function App() {
-  const [messages, setMessages] = useState<UiMessage[]>([]);
+  // The conversation tree (all branches) + the viewed leaf (D-17). The active
+  // branch is `pathToLeaf`; sibling entries drive the ‹i/n› branch arrows.
+  const [entries, setEntries] = useState<EntryView[]>([]);
+  const [activeLeaf, setActiveLeaf] = useState<string | null>(null);
+  const [live, setLive] = useState<LiveAssistant | null>(null);
   const [connected, setConnected] = useState(false);
   const [working, setWorking] = useState(false);
   const [input, setInput] = useState("");
@@ -56,7 +62,11 @@ export function App() {
   const [capReached, setCapReached] = useState(false);
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const [journal, setJournal] = useState<JournalRecord[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
   const sessionRef = useRef<string | null>(null);
+  const convRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [workWord, setWorkWord] = useState(WORKING[0]!);
 
@@ -74,12 +84,44 @@ export function App() {
     if (s.queue) setQueue(s.queue);
   }, []);
 
+  // Re-sync the tree from the authoritative /session/:id snapshot. Used after
+  // our own rewind/edit (which shift the active leaf server-side) so the client
+  // never renders a stale branch.
+  const refreshTree = useCallback(async () => {
+    const id = sessionRef.current;
+    if (!id) return;
+    const t = await loadTree(id);
+    convRef.current = t.conversationId;
+    setEntries(t.entries);
+    setActiveLeaf(t.activeLeaf);
+    setLive(null);
+  }, []);
+
+  const loadJournal = useCallback(async () => {
+    const conv = convRef.current;
+    if (!conv) return;
+    setJournal(await fetchJournal(conv));
+  }, []);
+
   const onEvent = useCallback(
     (e: WireEvent) => {
       switch (e.type) {
         case "ready":
           setConnected(true);
           if (e.state) applyState(e.state as SessionState);
+          break;
+        case "entry": {
+          // Live tree growth (D-37): append new nodes, advance the active leaf
+          // along the branch being built, and retire the streaming overlay once
+          // the assistant node materializes.
+          const entry = e.entry as EntryView;
+          setEntries((es) => (es.some((x) => x.id === entry.id) ? es : [...es, entry]));
+          setActiveLeaf((leaf) => (entry.parent === leaf ? entry.id : leaf));
+          if (entry.type === "assistant") setLive(null);
+          break;
+        }
+        case "active-leaf":
+          setActiveLeaf(e.leaf as string);
           break;
         case "mode":
           setModeState(e.mode as Mode);
@@ -117,24 +159,26 @@ export function App() {
           break;
         case "assistant-start":
           setWorking(true);
-          setMessages((m) => [...m, { role: "assistant", text: "", reasoning: "", streaming: true }]);
+          setLive({ text: "", reasoning: "" });
           break;
         case "reasoning":
-          setMessages((m) => patchLast(m, "assistant", (msg) => ({ ...msg, reasoning: (msg.reasoning ?? "") + (e.delta as string) })));
+          setLive((l) => ({ ...(l ?? { text: "", reasoning: "" }), reasoning: (l?.reasoning ?? "") + (e.delta as string) }));
           break;
         case "text":
-          setMessages((m) => patchLast(m, "assistant", (msg) => ({ ...msg, text: msg.text + (e.delta as string) })));
+          setLive((l) => ({ ...(l ?? { text: "", reasoning: "" }), text: (l?.text ?? "") + (e.delta as string) }));
           break;
         case "assistant-end":
           setWorking(false);
-          setMessages((m) => patchLast(m, "assistant", (msg) => ({ ...msg, streaming: false, truncated: e.truncated as boolean })));
+          setLive(null);
           break;
         case "awaiting-approval":
           setWorking(false);
+          setLive(null);
           setPendingApproval(e.request as ApprovalRequest);
           break;
         case "awaiting-input":
           setWorking(false);
+          setLive(null);
           setPendingAsk(e.question as AskUserRequest);
           break;
         case "truncation":
@@ -143,17 +187,19 @@ export function App() {
         case "error":
           setNotice(e.message as string);
           setWorking(false);
+          setLive(null);
           break;
         case "halted":
           setNotice(`halted: ${e.reason as string}`);
           setWorking(false);
+          setLive(null);
           break;
       }
     },
     [applyState],
   );
 
-  // Connect: create/resume a session, load its transcript, subscribe to events.
+  // Connect: create/resume a session, load its tree, subscribe to events.
   useEffect(() => {
     let es: EventSource | undefined;
     let cancelled = false;
@@ -165,9 +211,11 @@ export function App() {
         const url = new URL(window.location.href);
         url.searchParams.set("session", id);
         window.history.replaceState({}, "", url);
-        const history = await loadSession(id);
+        const t = await loadTree(id);
         if (cancelled) return;
-        if (history.length) setMessages(history);
+        convRef.current = t.conversationId;
+        setEntries(t.entries);
+        setActiveLeaf(t.activeLeaf);
         es = openEvents(id, onEvent);
       } catch (err) {
         if (!cancelled) setNotice((err as Error).message);
@@ -190,7 +238,12 @@ export function App() {
   // Keep the newest message / prompt in view.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, working, pendingApproval, pendingAsk]);
+  }, [entries, activeLeaf, live, working, pendingApproval, pendingAsk]);
+
+  // The active branch, filtered to the renderable turns (user + assistant with
+  // something to show). Tool/compaction nodes stay out of the bare chat view.
+  const path = pathToLeaf(entries, activeLeaf);
+  const rendered = path.filter((e) => e.type === "user" || (e.type === "assistant" && (e.text || e.reasoningText)));
 
   // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
   // background command is running, or a prompt is open. While busy, the composer
@@ -203,9 +256,8 @@ export function App() {
     if (!text || !id || blocked) return;
     setNotice(null);
     setInput("");
-    setMessages((m) => [...m, { role: "user", text }]);
     try {
-      await sendChat(id, text);
+      await sendChat(id, text); // the user entry streams back over SSE
     } catch (err) {
       setNotice((err as Error).message);
     }
@@ -310,12 +362,61 @@ export function App() {
     [queue],
   );
 
+  // Switch to a sibling branch: point the active leaf at the sibling's tip (D-10).
+  const switchBranch = useCallback(async (siblingId: string) => {
+    const id = sessionRef.current;
+    if (!id) return;
+    try {
+      await apiRewind(id, leafOf(entries, siblingId));
+      await refreshTree();
+    } catch (err) {
+      setNotice((err as Error).message);
+    }
+  }, [entries, refreshTree]);
+
+  // Pencil-edit a user message → fork a sibling and run it (D-17).
+  const editMessage = useCallback(async (entryId: string, text: string) => {
+    const id = sessionRef.current;
+    if (!id) return;
+    setNotice(null);
+    try {
+      await apiEditFork(id, entryId, text);
+      await refreshTree();
+    } catch (err) {
+      setNotice((err as Error).message);
+    }
+  }, [refreshTree]);
+
+  // Read an assistant reply aloud, or stop if it's already speaking (§11 TTS).
+  const toggleSpeak = useCallback((id: string, text: string) => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    if (speakingId === id) {
+      synth.cancel();
+      setSpeakingId(null);
+      return;
+    }
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(plainText(text));
+    u.onend = () => setSpeakingId((s) => (s === id ? null : s));
+    setSpeakingId(id);
+    synth.speak(u);
+  }, [speakingId]);
+
+  const openDrawer = useCallback(() => {
+    void loadJournal();
+    setDrawerOpen(true);
+  }, [loadJournal]);
+
   return (
     <div className="app">
       <header className="topbar">
         <span className="brand">JLCode</span>
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "connecting…"} />
         <div className="controls">
+          <button className="ghost" title="debug journal (D-15)" onClick={openDrawer}>
+            journal
+          </button>
           <SpendChip spendUsd={spendUsd} capUsd={capUsd} capReached={capReached} onSetCap={changeCap} />
           <StopControl active={working || tasks.length > 0} onStop={stop} />
           <div className="seg" role="group" aria-label="mode">
@@ -341,10 +442,30 @@ export function App() {
       </header>
 
       <div className="thread" ref={scrollRef}>
-        {messages.length === 0 && !pendingApproval && !pendingAsk && <div className="empty">Say something to get started.</div>}
-        {messages.map((m, i) => (
-          <Message key={i} m={m} />
-        ))}
+        {rendered.length === 0 && !live && !pendingApproval && !pendingAsk && (
+          <div className="empty">Say something to get started.</div>
+        )}
+        {rendered.map((entry) => {
+          const siblings = childrenOf(entries, entry.parent);
+          const branch =
+            siblings.length > 1
+              ? { index: siblings.findIndex((s) => s.id === entry.id), count: siblings.length, siblings }
+              : null;
+          return (
+            <Message
+              key={entry.id}
+              entry={entry}
+              branch={branch}
+              onSwitch={switchBranch}
+              onEdit={editMessage}
+              journal={journal.filter((r) => r.entryId === entry.id)}
+              onNeedJournal={loadJournal}
+              speaking={speakingId === entry.id}
+              onSpeak={toggleSpeak}
+            />
+          );
+        })}
+        {live && <LiveMessage live={live} />}
         {working && <div className="working">{workWord}</div>}
         {tasks.length > 0 && <TasksPanel tasks={tasks} onKill={killOne} />}
         {pendingApproval && <ApprovalCard request={pendingApproval} onResolve={resolveApproval} />}
@@ -395,8 +516,20 @@ export function App() {
           </button>
         )}
       </footer>
+
+      {drawerOpen && <JournalDrawer records={journal} entries={entries} onClose={() => setDrawerOpen(false)} onRefresh={loadJournal} />}
     </div>
   );
+}
+
+/** Strip the loudest markdown so text-to-speech doesn't read `##`/`*`/backticks. */
+function plainText(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, " code block ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[*_#>]/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .trim();
 }
 
 /** Live whole-tree spend in the corner (D-33); click to set / raise / clear the
@@ -542,31 +675,248 @@ function CapBanner({ spendUsd, capUsd, onRaise }: { spendUsd: number; capUsd: nu
   );
 }
 
-function Message({ m }: { m: UiMessage }) {
-  if (m.role === "user") {
-    return (
-      <div className="msg user">
-        <div className="bubble">{m.text}</div>
-      </div>
-    );
-  }
-  // A tool-call-only turn has no text/reasoning — don't render an empty bubble.
-  if (!m.text && !m.reasoning && !m.streaming) return null;
+/** Markdown → sanitized HTML, with mermaid diagrams rendered after mount (P5d). */
+function MarkdownView({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const html = renderMarkdown(text);
+  useEffect(() => {
+    if (ref.current && hasMermaid(html)) void renderMermaid(ref.current);
+  }, [html]);
+  return <div className="markdown" ref={ref} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+/** The streaming in-flight assistant turn (overlay before it's an entry). */
+function LiveMessage({ live }: { live: LiveAssistant }) {
+  if (!live.text && !live.reasoning) return null;
   return (
     <div className="msg assistant">
-      {m.reasoning ? (
+      {live.reasoning ? (
         <details className="reasoning">
           <summary>reasoning</summary>
-          <pre>{m.reasoning}</pre>
+          <pre>{live.reasoning}</pre>
         </details>
       ) : null}
-      {m.text || m.streaming ? (
+      {live.text ? (
         <div className="bubble">
-          <div className="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text || "…") }} />
-          {m.truncated ? <div className="truncated">⚠ output was truncated (max_tokens)</div> : null}
+          <MarkdownView text={live.text} />
         </div>
       ) : null}
     </div>
+  );
+}
+
+interface BranchNav {
+  index: number;
+  count: number;
+  siblings: EntryView[];
+}
+
+/** One rendered turn (user or assistant entry) with the P5d affordances: branch
+ *  arrows when it has siblings (D-10/D-17), a pencil to edit-fork a user message,
+ *  a per-turn journal expander (D-15), and a TTS button on assistant replies. */
+function Message({
+  entry,
+  branch,
+  onSwitch,
+  onEdit,
+  journal,
+  onNeedJournal,
+  speaking,
+  onSpeak,
+}: {
+  entry: EntryView;
+  branch: BranchNav | null;
+  onSwitch: (siblingId: string) => void;
+  onEdit: (entryId: string, text: string) => void;
+  journal: JournalRecord[];
+  onNeedJournal: () => void;
+  speaking: boolean;
+  onSpeak: (id: string, text: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(entry.text ?? "");
+  const [showJournal, setShowJournal] = useState(false);
+
+  const arrows = branch ? (
+    <span className="branch">
+      <button className="arrow" disabled={branch.index <= 0} title="previous branch" onClick={() => onSwitch(branch.siblings[branch.index - 1]!.id)}>
+        ‹
+      </button>
+      <span className="branch-idx">
+        {branch.index + 1}/{branch.count}
+      </span>
+      <button
+        className="arrow"
+        disabled={branch.index >= branch.count - 1}
+        title="next branch"
+        onClick={() => onSwitch(branch.siblings[branch.index + 1]!.id)}
+      >
+        ›
+      </button>
+    </span>
+  ) : null;
+
+  if (entry.type === "user") {
+    if (editing) {
+      return (
+        <div className="msg user">
+          <div className="edit">
+            <textarea value={draft} spellCheck={false} rows={Math.min(8, draft.split("\n").length + 1)} onChange={(e) => setDraft(e.target.value)} autoFocus />
+            <div className="edit-actions">
+              <button className="primary" disabled={!draft.trim()} onClick={() => { setEditing(false); onEdit(entry.id, draft.trim()); }}>
+                Save & fork
+              </button>
+              <button onClick={() => { setEditing(false); setDraft(entry.text ?? ""); }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="msg user">
+        <div className="msg-inner">
+          <div className="bubble">{entry.text}</div>
+          <div className="msg-tools">
+            {arrows}
+            <button className="icon" title="edit & fork" onClick={() => { setDraft(entry.text ?? ""); setEditing(true); }}>
+              ✎
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // assistant
+  return (
+    <div className="msg assistant">
+      {entry.reasoningText ? (
+        <details className="reasoning">
+          <summary>reasoning</summary>
+          <pre>{entry.reasoningText}</pre>
+        </details>
+      ) : null}
+      {entry.text ? (
+        <div className="bubble">
+          <MarkdownView text={entry.text} />
+          {entry.truncated ? <div className="truncated">⚠ output was truncated (max_tokens)</div> : null}
+        </div>
+      ) : null}
+      <div className="msg-tools">
+        {arrows}
+        <button className={`icon ${speaking ? "on" : ""}`} title={speaking ? "stop" : "read aloud"} onClick={() => onSpeak(entry.id, entry.text ?? "")}>
+          {speaking ? "◼" : "🔊"}
+        </button>
+        <button
+          className={`icon ${showJournal ? "on" : ""}`}
+          title="debug journal for this turn"
+          onClick={() => { if (!showJournal) onNeedJournal(); setShowJournal((s) => !s); }}
+        >
+          ⓘ
+        </button>
+      </div>
+      {showJournal ? <JournalRecords records={journal} /> : null}
+    </div>
+  );
+}
+
+/** Compact per-turn journal records (D-15): the llm call(s) + tools of a turn. */
+function JournalRecords({ records }: { records: JournalRecord[] }) {
+  if (records.length === 0) return <div className="journal empty-journal">no journal records for this turn</div>;
+  return (
+    <div className="journal">
+      {records.map((r, i) => (
+        <JournalRow key={i} r={r} />
+      ))}
+    </div>
+  );
+}
+
+function JournalRow({ r }: { r: JournalRecord }) {
+  if (r.kind === "llm") {
+    const u = r.usage;
+    return (
+      <div className={`jrow ${r.error ? "err" : ""}`}>
+        <div className="jrow-head">
+          <span className="jkind llm">llm</span>
+          <span className="jmodel">{r.model}</span>
+          <span className="jmeta">{r.ms}ms · {r.messages} msgs{r.finishReason ? ` · ${r.finishReason}` : ""}{r.truncated ? " · truncated" : ""}</span>
+        </div>
+        {r.tools.length > 0 ? <div className="jmeta">tools: {r.tools.join(", ")}</div> : null}
+        {u ? (
+          <div className="jmeta">
+            tokens: {u.promptTokens ?? "?"}→{u.completionTokens ?? "?"}
+            {u.cachedTokens ? ` (${u.cachedTokens} cached)` : ""}
+            {typeof u.costUsd === "number" ? ` · $${u.costUsd.toFixed(5)}` : ""}
+          </div>
+        ) : null}
+        {r.error ? <div className="jerr">{r.error}</div> : null}
+        {r.reasoningPreview ? <pre className="jprev">💭 {r.reasoningPreview}</pre> : null}
+        {r.textPreview ? <pre className="jprev">{r.textPreview}</pre> : null}
+      </div>
+    );
+  }
+  return (
+    <div className={`jrow ${r.isError ? "err" : ""}`}>
+      <div className="jrow-head">
+        <span className="jkind tool">tool</span>
+        <span className="jmodel">{r.name}</span>
+        <span className="jmeta">{r.ms}ms{r.isError ? " · error" : ""}</span>
+      </div>
+      <pre className="jprev">args: {r.argsPreview}</pre>
+      <pre className="jprev">→ {r.contentPreview}</pre>
+    </div>
+  );
+}
+
+/** The whole-conversation debug journal in a slide-over drawer (D-15). Records
+ *  are grouped by the assistant turn (entryId) they belong to. */
+function JournalDrawer({
+  records,
+  entries,
+  onClose,
+  onRefresh,
+}: {
+  records: JournalRecord[];
+  entries: EntryView[];
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  return (
+    <>
+      <div className="drawer-scrim" onClick={onClose} />
+      <aside className="drawer">
+        <div className="drawer-head">
+          <span className="drawer-title">Debug journal</span>
+          <span className="drawer-sub">{records.length} records</span>
+          <button className="ghost" onClick={onRefresh} title="reload">
+            ↻
+          </button>
+          <button className="ghost" onClick={onClose} title="close">
+            ✕
+          </button>
+        </div>
+        <div className="drawer-body">
+          {records.length === 0 ? (
+            <div className="empty">No journal records yet.</div>
+          ) : (
+            records.map((r, i) => {
+              const turn = r.entryId ? byId.get(r.entryId) : undefined;
+              const label = turn?.text ? turn.text.slice(0, 48) : r.entryId ? "(tool-only turn)" : "(untied)";
+              return (
+                <div key={i} className="drawer-item">
+                  <div className="drawer-turn" title={r.entryId ?? ""}>
+                    ↳ {label}
+                  </div>
+                  <JournalRow r={r} />
+                </div>
+              );
+            })
+          )}
+        </div>
+      </aside>
+    </>
   );
 }
 

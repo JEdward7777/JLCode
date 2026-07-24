@@ -126,3 +126,42 @@ queues instead once anything is busy).
 Not yet exercised visually (later slices): the watchdog's 30-min out-of-band kill
 prompt (covered by tests; impractical to screenshot); branch nav / journal /
 Mermaid / images / TTS (P5d); multi-session UI (P5e); auth (P5f).
+
+---
+
+## P5d — branching, journal & rich rendering · 2026-07-23 · ✅ looked good
+
+**Screenshots:** [`visual/p5d-rich.png`](visual/p5d-rich.png) ·
+[`visual/p5d-branches.png`](visual/p5d-branches.png) ·
+[`visual/p5d-journal-drawer.png`](visual/p5d-journal-drawer.png)
+
+Drove the built server with the fake driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs, full-auto). A new **`demo`** prefix in the fake driver returns
+a rich-markdown reply (heading / list / inline PNG data-URI / mermaid graph), and
+I seeded a **branch** by sending a message, edit-forking the user turn, then
+rewinding to branch A. Screenshotted via CDP (forcing the hover-only `.msg-tools`
+visible so the per-message buttons show). Confirmed with my own eyes:
+
+- **Rich rendering (§11)** — the assistant reply renders the `## heading`, the
+  bullet list with **bold** / `inline code` / a link, a real **inline image**
+  (the red PNG, rounded via `.markdown img`), and a **Mermaid** flowchart
+  (User → JLCode → Sandbox / Browser) — the *actual* mermaid library, loaded as
+  a separate lazy chunk (D-42a/b). No network; all offline.
+- **Branch arrows + pencil (D-10/D-17)** — the user message "What is a monad?"
+  shows **‹ 1/2 ›** (we're on branch A of the two siblings from the edit-fork)
+  and a **✎** to edit-and-fork again. The arrows POST `/rewind` to
+  `leafOf(sibling)`; the pencil opens an inline editor → `/edit`.
+- **Per-turn journal (D-15)** — the **ⓘ** on the assistant reply expands that
+  turn's debug record inline: `LLM fake/model · 0ms · 2 msgs · stop`, the tool
+  list, `tokens: 1000→26`, and the reasoning/text previews. It's tied to the
+  turn by the new `entryId` on each record.
+- **Journal drawer (D-15)** — the header **journal** button opens a slide-over
+  listing the **whole conversation's** records (here both branches: `↳ You said:
+  What is a monad?` and `↳ You said: Explain monoids instead`), each grouped
+  under its turn, with a reload ↻ and close ✕.
+- **TTS (§11)** — the **🔊** button sits on each assistant reply (audio can't be
+  screenshotted; it toggles `speechSynthesis` speak/stop).
+
+Not exercised visually (covered by tests / later): the actual branch *switch* and
+pencil-edit round trips (fork-rewind + server tests); multi-session UI (P5e);
+auth (P5f).

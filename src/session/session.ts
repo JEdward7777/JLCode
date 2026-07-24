@@ -166,6 +166,9 @@ export class Session {
 
   // Resumable-loop state.
   private pendingToolCalls: ToolCall[] = [];
+  /** The most-recent assistant entry id — tool debug records this turn attribute
+   *  to it for the per-turn journal viewer (D-15). */
+  private activeAssistantId: string | undefined;
   private pendingApproval: { request: ApprovalRequest; call: ToolCall; tool: Tool } | undefined;
   private pendingQuestion: { request: AskUserRequest; call: ToolCall } | undefined;
   // Global stop (D-34): "hard" aborts the in-flight LLM + kills tasks + clears
@@ -619,6 +622,19 @@ export class Session {
     }
 
     const result = accumulate(events);
+    // Create the entry first so the debug record can carry its id (per-turn
+    // journal linkage, D-15); order in the journal is otherwise immaterial.
+    const entry = this.pushEntry({
+      type: "assistant",
+      text: result.text,
+      toolCalls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
+      reasoning: result.reasoning,
+      reasoningText: result.reasoningText,
+      finishReason: result.finishReason,
+      truncated: result.finishReason === "length",
+      usage: result.usage,
+    });
+    this.activeAssistantId = entry.id; // tool records this turn attribute here
     this.emit({
       type: "debug",
       record: {
@@ -632,17 +648,8 @@ export class Session {
         usage: result.usage,
         textPreview: result.text.slice(0, 200),
         reasoningPreview: result.reasoningText?.slice(0, 200),
+        entryId: entry.id,
       },
-    });
-    const entry = this.pushEntry({
-      type: "assistant",
-      text: result.text,
-      toolCalls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
-      reasoning: result.reasoning,
-      reasoningText: result.reasoningText,
-      finishReason: result.finishReason,
-      truncated: result.finishReason === "length",
-      usage: result.usage,
     });
     this.consecutiveFailures = 0;
     const turnUsd = computeCost(result.usage, this.pricing);
@@ -755,6 +762,7 @@ export class Session {
         argsPreview: JSON.stringify(args).slice(0, 300),
         contentPreview: res.content.slice(0, 200),
         isError: res.isError ?? false,
+        ...(this.activeAssistantId ? { entryId: this.activeAssistantId } : {}),
       },
     });
   }

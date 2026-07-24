@@ -1,17 +1,18 @@
 # JLCode — Roadmap
 
-Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-40, no open
+Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-42, no open
 items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
 resume / fork-rewind / debug-journal done). **In Phase 5 — the HTTP browser frontend (sliced
-P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b + P5c done; next is P5d.**
-Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40).
+P5a…P5f below), which completes Milestone M3 "real product". P5a + P5b + P5c + P5d done; next is
+P5e (concurrent sessions).** Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode
+surface** (D-40).
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (122 Tier-0/1 tests green), and committed through P5c:
+Built, tested (128 Tier-0/1 tests green), and committed through P5d:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -49,14 +50,15 @@ outside `serve`.
 
 To resume: `npm install && npm run build && npm test`, read this file + `DECISIONS.md`, then
 continue at the next unchecked phase below. **Phase 5 is sliced P5a…P5f (see below). P5a + P5b +
-P5c are done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b: browser
+P5c + P5d are done** (P5a: React+Vite client, SSE/POST bus, streaming markdown chat; P5b: browser
 approvals with edit-before-approve, multi-question ask_user, live mode/approval controls,
 out-of-fence soft-fence prompts; P5c: whole-tree spend + settable cap, queued message,
-background-task kill + 30-min watchdog, two-mode global stop — all verified end-to-end in Chrome,
-see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is P5d — branching, journal & rich rendering
-(fork/rewind nav, debug-journal viewer, Mermaid + inline images, TTS).** Stack decided in D-39;
-serve-mode/auth surface in D-40. **122 Tier-0/1 tests green.** Rendered surfaces get a real-browser
-peek per slice, logged in `VISUAL-LOG.md`.
+background-task kill + 30-min watchdog, two-mode global stop; P5d: tree-driven view with inline
+branch arrows + pencil edit-fork, per-turn + drawer debug-journal viewer, real lazy-loaded Mermaid
++ inline images, TTS — all verified end-to-end in Chrome, see [`VISUAL-LOG.md`](VISUAL-LOG.md)).
+**Next up is P5e — concurrent sessions (the "bag of agents", D-36): multi-session UI, multiplexed
+per-session bus.** Stack decided in D-39; serve-mode/auth surface in D-40. **128 Tier-0/1 tests
+green.** Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 
@@ -198,10 +200,25 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
 - **Done when:** spend + cap are visible and enforced; background tasks are killable; stop halts
   the loop and every task. ✅
 
-### P5d — Branching, journal & rich rendering
-- Branch-arrow **fork/rewind navigation** over the P4 endpoints (D-10/D-17); **debug-journal
-  viewer** (D-15); **Mermaid** + inline images (§11); **TTS button**.
-- **Done when:** you navigate branches, inspect a turn's journal, see diagrams/images, hear replies.
+### P5d — Branching, journal & rich rendering ✅ done (2026-07-23)
+- **Tree-driven chat view:** the browser now renders the **active branch** (`pathToLeaf`) from the
+  live entry stream + `GET /session/:id`, with a streaming overlay for the in-flight turn.
+- **Branch nav (D-10/D-17):** inline **‹i/n› sibling arrows** switch the active leaf (rewind), a
+  **pencil** edit-forks a user message — over the existing `/rewind` + `/edit` endpoints (D-42c).
+- **Debug-journal viewer (D-15):** a **per-turn ⓘ expander** on each assistant reply *and* a
+  **whole-conversation drawer**, enabled by tagging each `DebugRecord` with the producing turn's
+  **`entryId`**; `GET /session/:id` now also returns `conversationId` for the fetch (D-42d).
+- **Rich rendering (§11):** real **Mermaid** (the actual library, **lazy-loaded** as a separate
+  Vite chunk — D-42a/b relaxes D-25 for build-time frontend deps), **inline images** through
+  DOMPurify (http/https/data), and a **TTS** read-aloud button via `speechSynthesis` (D-42e/f).
+- **Offline peek driver:** a `demo` prefix in `fakeAgentDriver` returns a rich-markdown reply
+  (heading/list/inline PNG data-URI/mermaid) so rendering is eyeballable with no key/spend.
+- **Verified:** 6 new Tier-0 tests (journal `entryId` linkage; `/session/:id` `conversationId`;
+  client tree helpers — path/siblings/leaf/cycle-safety). **Looked at it in Chrome** — mermaid +
+  inline image + markdown, branch arrows ‹1/2› + pencil, per-turn ⓘ journal, and the journal
+  drawer — see [`VISUAL-LOG.md`](VISUAL-LOG.md) (P5d). **Done.**
+- **Done when:** you navigate branches, inspect a turn's journal, see diagrams/images, hear
+  replies. ✅
 
 ### P5e — Concurrent sessions — the "bag of agents" (D-36)
 - Multi-session UI: hold/switch **N live sessions** in the same folder, each with its own

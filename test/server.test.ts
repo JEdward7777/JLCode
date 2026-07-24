@@ -132,6 +132,14 @@ describe("dev server", () => {
     const s3 = (await (await app.request(`/session/${id}`)).json()) as { activeLeaf: string };
     expect(s3.activeLeaf).toBe(assistant1.id);
   });
+
+  it("exposes conversationId on /session/:id for the debug-journal fetch (P5d)", async () => {
+    const app = makeApp();
+    const created = await post(app, "/chat", { text: "hi" });
+    const id = created.json.sessionId as string;
+    const s = (await (await app.request(`/session/${id}`)).json()) as { conversationId?: string };
+    expect(s.conversationId).toBe(created.json.conversationId);
+  });
 });
 
 describe("dev server — approval flow", () => {

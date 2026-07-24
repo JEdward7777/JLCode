@@ -25,8 +25,20 @@ export type DebugRecord =
       textPreview?: string;
       reasoningPreview?: string;
       error?: string;
+      /** The assistant entry this call produced — links the record to a turn for
+       *  the per-turn journal viewer (D-15). Absent when the call errored. */
+      entryId?: string;
     }
-  | { kind: "tool"; ms: number; name: string; argsPreview: string; contentPreview: string; isError: boolean };
+  | {
+      kind: "tool";
+      ms: number;
+      name: string;
+      argsPreview: string;
+      contentPreview: string;
+      isError: boolean;
+      /** The assistant entry that issued this tool call (per-turn linkage). */
+      entryId?: string;
+    };
 
 export type SessionStatus = "idle" | "running" | "awaiting-approval" | "awaiting-input" | "halted";
 

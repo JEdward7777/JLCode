@@ -5,13 +5,65 @@
  * persistence projects (D-37) — the UI is just another subscriber (§11).
  */
 
-export interface UiMessage {
-  role: "user" | "assistant";
-  text: string;
-  reasoning?: string;
-  streaming?: boolean;
+/** A conversation-tree node as the server ships it (server entryView). The
+ *  browser walks these (tree.ts) to render the active branch + sibling arrows. */
+export interface EntryView {
+  id: string;
+  parent: string | null;
+  type: "user" | "assistant" | "tool" | "compaction";
+  text?: string;
+  reasoningText?: string;
+  toolCalls?: { name: string; arguments: string }[];
   truncated?: boolean;
+  finishReason?: string;
+  name?: string; // tool
+  content?: string; // tool
+  isError?: boolean; // tool
+  summary?: string; // compaction
 }
+
+/** The tree snapshot from GET /session/:id — entries + the viewed leaf. */
+export interface LoadedTree {
+  conversationId: string | null;
+  activeLeaf: string | null;
+  entries: EntryView[];
+}
+
+/** Token/cost usage carried on a journal llm record (mirrors llm/types Usage). */
+export interface Usage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cachedTokens?: number;
+  costUsd?: number;
+}
+
+/** One verbose per-turn record from the debug journal (D-15) — mirrors the
+ *  server's DebugRecord. `entryId` links it to the assistant turn that made it. */
+export type JournalRecord =
+  | {
+      kind: "llm";
+      ms: number;
+      model: string;
+      messages: number;
+      tools: string[];
+      finishReason?: string;
+      truncated?: boolean;
+      usage?: Usage;
+      textPreview?: string;
+      reasoningPreview?: string;
+      error?: string;
+      entryId?: string;
+    }
+  | {
+      kind: "tool";
+      ms: number;
+      name: string;
+      argsPreview: string;
+      contentPreview: string;
+      isError: boolean;
+      entryId?: string;
+    };
 
 export type Mode = "ask" | "plan" | "code";
 export type ApprovalPolicy = "manual" | "auto-safe" | "full-auto" | "read-only";
@@ -85,20 +137,21 @@ export async function createOrGetSession(): Promise<string> {
   return (await res.json()).sessionId as string;
 }
 
-/** Load a live session's settled transcript so a reload/deep-link shows history. */
-export async function loadSession(id: string): Promise<UiMessage[]> {
+/** Load a live session's tree (entries + active leaf + conversation id) so a
+ *  reload/deep-link shows history and the branch arrows can be drawn (D-17). */
+export async function loadTree(id: string): Promise<LoadedTree> {
   const res = await fetch(`/session/${id}`);
-  if (!res.ok) return [];
-  const data = (await res.json()) as { entries?: Array<Record<string, any>> };
-  const out: UiMessage[] = [];
-  for (const e of data.entries ?? []) {
-    if (e.type === "user") out.push({ role: "user", text: e.text ?? "" });
-    else if (e.type === "assistant") {
-      out.push({ role: "assistant", text: e.text ?? "", reasoning: e.reasoningText, truncated: e.truncated });
-    }
-    // tool/compaction entries aren't rendered in the bare chat view.
-  }
-  return out;
+  if (!res.ok) return { conversationId: null, activeLeaf: null, entries: [] };
+  const data = (await res.json()) as {
+    conversationId?: string;
+    activeLeaf?: string | null;
+    entries?: EntryView[];
+  };
+  return {
+    conversationId: data.conversationId ?? null,
+    activeLeaf: data.activeLeaf ?? null,
+    entries: data.entries ?? [],
+  };
 }
 
 /** Subscribe to the session's live event stream. Returns the EventSource so the
@@ -179,4 +232,22 @@ export async function queueMessage(id: string, text: string): Promise<void> {
 /** Replace the whole pending queue — the edit/cancel affordance (D-34). */
 export async function setQueue(id: string, queue: { text: string }[]): Promise<void> {
   await postJson(`/session/${id}/queue`, { queue });
+}
+
+/** Switch the active branch: point the active leaf at an existing entry (D-10). */
+export async function rewind(id: string, entryId: string): Promise<void> {
+  await postJson(`/session/${id}/rewind`, { entryId });
+}
+
+/** Pencil-edit a message: fork a sibling with new text and run a turn (D-17). */
+export async function editFork(id: string, entryId: string, text: string): Promise<void> {
+  await postJson(`/session/${id}/edit`, { entryId, text });
+}
+
+/** The verbose debug journal for a conversation — the "Halp!" record (D-15). */
+export async function fetchJournal(conversationId: string): Promise<JournalRecord[]> {
+  const res = await fetch(`/conversation/${conversationId}/journal`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { records?: JournalRecord[] };
+  return data.records ?? [];
 }
