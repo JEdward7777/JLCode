@@ -119,6 +119,11 @@ export type SessionEvent =
       window: number;
       forced?: boolean;
     }
+  // A safe-harbor compaction just landed (P6b, D-28/D-38): everything on the
+  // active branch was folded into the `compaction` overlay entry `entryId`, so
+  // the next request replays only `system + summary`. `forced` marks the D-44b
+  // over-window recovery path (truncated summary input) vs a budget-triggered one.
+  | { type: "compacted"; entryId: string; forced: boolean; summaryChars: number }
   | { type: "stopped"; scope: "hard" | "soft" } // global stop: hard abort vs loop-only (D-34)
   | { type: "queue"; queue: QueuedMessage[] } // the queued-message list changed (D-34)
   | { type: "task-start"; task: TaskView } // a background command started (D-34)

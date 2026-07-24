@@ -11,7 +11,7 @@
  * estimating, never tokenizing (honors D-25). The ~20K buffer is precisely the
  * headroom that absorbs the single accepted overshoot turn.
  */
-import type { Usage } from "../llm/types.js";
+import type { ChatMessage, Usage } from "../llm/types.js";
 import type { CompactionSettings, CompactionTrigger } from "../config/types.js";
 
 /** Headroom kept below the window (D-27/D-44): the ~20K one-overshoot-turn buffer.
@@ -85,6 +85,78 @@ export function evaluateTrigger(
 export function activeTriggerMode(settings?: CompactionSettings): CompactionTrigger {
   if (settings?.auto) return "auto";
   return settings?.triggerModes?.[0] ?? DEFAULT_TRIGGER_MODE;
+}
+
+// ---------------------------------------------------------------------------
+// P6b — the safe-harbor compaction engine's pure pieces (D-28/D-29/D-38). The
+// Session drives the model call + tree overlay; the deterministic string/shape
+// work lives here so it stays Tier-0 testable with no model call.
+// ---------------------------------------------------------------------------
+
+/** The summary's output cap (~4K tokens, D-28's anchored template budget), sent
+ *  as the summary request's `max_tokens`. */
+export const COMPACTION_MAX_TOKENS = 4096;
+
+/** Per-tool-output cap (chars ≈ ~2K tokens, D-28) used only when a summary input
+ *  must be shrunk to fit — the forced over-window fallback (D-44b). The normal
+ *  budget-triggered path sends the exact live prefix for cache reuse (D-29). */
+export const SUMMARY_TOOL_OUTPUT_CAP_CHARS = 8_000;
+
+/** The fixed Markdown section headings of the anchored structured summary (D-28),
+ *  in order. Exported so a renderer/test can rely on the shape. */
+export const COMPACTION_SECTIONS = [
+  "Goal",
+  "Constraints",
+  "Progress",
+  "Key Decisions",
+  "Next Steps",
+  "Critical Context",
+  "Relevant Files",
+] as const;
+
+/** The ephemeral compaction instruction (D-28/D-29): appended as the final user
+ *  message of the summary request and **never persisted to the tree**. It asks
+ *  the model to fold the entire conversation above into one self-contained,
+ *  anchored structured summary that a fresh assistant could resume from. When a
+ *  prior summary is already in the replayed prefix (a later compaction, D-28's
+ *  "evolving" summary) the instruction tells the model to fold it in. */
+export function buildCompactionInstruction(opts: { hasPriorSummary?: boolean } = {}): string {
+  const headings = COMPACTION_SECTIONS.map((s) => `## ${s}`).join("\n");
+  const priorLine = opts.hasPriorSummary
+    ? "- A summary of the earlier conversation already appears above; treat it as authoritative " +
+      "for that earlier part and fold it into this single updated summary.\n"
+    : "";
+  return (
+    "[compaction] Summarize the ENTIRE conversation above into one self-contained summary. " +
+    "Everything above will be replaced by this summary, so a fresh assistant with no other " +
+    "memory must be able to continue the work seamlessly from it alone.\n\n" +
+    "Write it under exactly these Markdown headings, in this order (drop a heading only if it " +
+    "would be genuinely empty):\n\n" +
+    headings +
+    "\n\nRules:\n" +
+    "- Quote the user's original request and the most recent exchange near-verbatim, as prose.\n" +
+    "- Preserve exact identifiers verbatim: file paths, function/type names, shell commands, " +
+    "config keys, and concrete values.\n" +
+    priorLine +
+    "- Be faithful and specific; never invent facts. Stay concise (well under ~4000 tokens).\n" +
+    "- Output ONLY the summary Markdown — no preamble, no sign-off, no code fences around it."
+  );
+}
+
+/** Shrink a summary **input** so it fits when the live prefix itself over-windowed
+ *  (D-44b forced fallback): truncate each tool result to the tail cap, keeping a
+ *  visible marker. Only tool outputs are capped — they are the usual source of a
+ *  sudden over-window jump, and user/assistant text carries the intent we must
+ *  keep. Pure; returns a new array (inputs untouched). */
+export function truncateToolOutputsForSummary(
+  messages: ChatMessage[],
+  capChars: number = SUMMARY_TOOL_OUTPUT_CAP_CHARS,
+): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.role !== "tool" || typeof m.content !== "string" || m.content.length <= capChars) return m;
+    const kept = m.content.slice(-capChars);
+    return { ...m, content: `[…tool output truncated for summary…]\n${kept}` };
+  });
 }
 
 /** Recognize an over-window rejection (D-44b hard-wall fallback): a single turn's

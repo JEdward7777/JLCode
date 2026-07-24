@@ -13,7 +13,7 @@ import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
-import { newConversation, appendEntry, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
+import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages } from "../conversation/wire.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
@@ -27,9 +27,12 @@ import { computeCost } from "./spend.js";
 import {
   activeTriggerMode,
   applyCompactorFit,
+  buildCompactionInstruction,
   computeBudget,
   evaluateTrigger,
   isOverWindowError,
+  truncateToolOutputsForSummary,
+  COMPACTION_MAX_TOKENS,
   type CompactionBudget,
 } from "./compaction.js";
 import type { QueuedMessage } from "./types.js";
@@ -200,6 +203,9 @@ export class Session {
   // the queue; "soft" lets running work finish but takes no further LLM turn.
   private stopScope: "hard" | "soft" | null = null;
   private abortController: AbortController | undefined;
+  /** Set by a turn that hit the over-window hard wall (D-44b) so the loop can
+   *  compact-and-retry instead of failing. Cleared once handled. */
+  private overWindow = false;
   /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
   private readonly tasks: TaskRegistry;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
@@ -298,14 +304,75 @@ export class Session {
     });
   }
 
-  /** Over-window hard-wall hit (D-44b): the request was rejected because the new
-   *  content alone blew past the window. P6a latches + announces (forced); the
-   *  compact-and-retry that recovers it is filled in P6b. Not a model failure, so
-   *  it doesn't count toward the circuit breaker. */
-  private handleOverWindow(): void {
+  /** Safe-harbor compaction (P6b, D-28/D-38/D-29): fold the entire active branch
+   *  into a single `compaction` overlay entry so the next request replays only
+   *  `system + summary`. Provably Fable-safe by construction (zero thinking is
+   *  replayed across the cut). Same-model **cache-reuse** path (D-29): the exact
+   *  live prefix is resent with an **ephemeral** instruction (`tool_choice:none`,
+   *  never persisted), so the provider serves the prefix from prompt cache; only
+   *  the short instruction + summary output are billed. The `forced` variant
+   *  (D-44b over-window recovery) truncates tool outputs in the summary input so
+   *  it fits when the live prefix itself over-windowed — trading the cache hit for
+   *  a request that fits (the fuller flattened/cross-model path is P6c). Returns
+   *  true once the overlay entry lands; false if there was nothing to compact or
+   *  the summary call failed (the caller decides how to proceed). */
+  async compact(opts: { forced?: boolean } = {}): Promise<boolean> {
+    const prefix = buildWireMessages(this.conversation, { system: this.systemPrompt });
+    // Only a system prompt (or nothing) → nothing to summarize.
+    if (prefix.every((m) => m.role === "system")) return false;
+    const hasPriorSummary = pathToLeaf(this.conversation).some((e) => e.type === "compaction");
+    const input = opts.forced ? truncateToolOutputsForSummary(prefix) : prefix;
+    const req: ChatRequest = {
+      model: this.config.model,
+      messages: [...input, { role: "user", content: buildCompactionInstruction({ hasPriorSummary }) }],
+      tool_choice: "none",
+      max_tokens: COMPACTION_MAX_TOKENS,
+    };
+    const startedAt = Date.now();
+    this.abortController = new AbortController();
+    const events: StreamEvent[] = [];
+    try {
+      for await (const ev of this.driver.streamChat(req, { signal: this.abortController.signal })) {
+        events.push(ev);
+      }
+    } catch (err) {
+      // A hard stop / over-window on the summary call itself: don't crash the
+      // loop or count a failure — the caller falls back (surfaces / retries).
+      if (this.stopScope === "hard" || (err as Error).name === "AbortError") return false;
+      if (!isOverWindowError(err)) this.emit({ type: "error", message: (err as Error).message });
+      return false;
+    }
+    const result = accumulate(events);
+    const summary = result.text.trim();
+    if (!summary) return false; // model produced nothing usable — keep the tree intact
+    const turnUsd = computeCost(result.usage, this.pricing);
+    this.spendUsd += turnUsd;
+    this.emit({ type: "spend", totalUsd: this.spendUsd, turnUsd, usage: result.usage });
+    this.emit({
+      type: "debug",
+      record: {
+        kind: "llm",
+        ms: Date.now() - startedAt,
+        model: req.model,
+        messages: req.messages.length,
+        tools: [],
+        finishReason: result.finishReason,
+        usage: result.usage,
+        textPreview: `[compaction${opts.forced ? " forced" : ""}] ${summary.slice(0, 160)}`,
+      },
+    });
+    const entry = this.pushEntry({ type: "compaction", summary, replayCut: true });
+    this.needsCompaction = false;
+    this.emit({ type: "compacted", entryId: entry.id, forced: opts.forced ?? false, summaryChars: summary.length });
+    return true;
+  }
+
+  /** Announce the over-window hard wall (D-44b) before the loop compacts to
+   *  recover it. Not a model failure, so it never touches the circuit breaker. */
+  private announceOverWindow(): void {
     this.needsCompaction = true;
     const budget = this.compactionBudget();
-    this.emit({ type: "error", message: "Request exceeded the model context window." });
+    this.emit({ type: "error", message: "Request exceeded the model context window; compacting to recover." });
     this.emit({
       type: "needs-compaction",
       mode: activeTriggerMode(this.config.compaction),
@@ -314,7 +381,6 @@ export class Session {
       window: budget?.window ?? 0,
       forced: true,
     });
-    this.status = "idle";
   }
 
   /** Global stop (D-34). "hard" is the big red button: abort the in-flight LLM
@@ -615,10 +681,20 @@ export class Session {
         return;
       }
 
-      const result = await this.oneAssistantTurn();
+      // Auto-compaction (D-44/D-27): in `auto` trigger mode, once ground-truth
+      // usage from the previous turn says the next request would exceed the
+      // budget, compact *before* sending. The other four trigger modes route
+      // through the UI (P6c); the forced over-window path is handled below.
+      if (this.needsCompaction && activeTriggerMode(this.config.compaction) === "auto") {
+        const ok = await this.compact();
+        if (this.stopScope) return this.settleStopped();
+        if (!ok) this.needsCompaction = false; // nothing to do / failed — don't spin
+      }
+
+      const result = await this.assistantTurnWithCompaction();
       if (!result) {
         if (this.stopScope) this.settleStopped(); // aborted by a hard stop
-        return; // else error/halt already handled
+        return; // else error/halt/over-window already handled
       }
 
       if (result.finishReason === "length") {
@@ -662,6 +738,31 @@ export class Session {
     await this.send(next.text);
   }
 
+  /** Run one assistant turn, recovering from the over-window hard wall (D-44b):
+   *  if the request is rejected because it exceeds the window, compact (forced,
+   *  truncated summary input so it fits) and retry the turn **once**. Still too
+   *  big after that → settle idle (the pathological single-turn-exceeds-window
+   *  case, recoverable only by the P6c flattened path). Returns the turn's result
+   *  or undefined when it did not (or could not) produce one. */
+  private async assistantTurnWithCompaction(): Promise<AssistantResult | undefined> {
+    const result = await this.oneAssistantTurn();
+    if (result || !this.overWindow) return result;
+    this.overWindow = false;
+    this.announceOverWindow();
+    if (this.stopScope) return undefined;
+    const compacted = await this.compact({ forced: true });
+    if (this.stopScope || !compacted) {
+      if (!this.stopScope) this.status = "idle"; // couldn't compact — surfaced, latched
+      return undefined;
+    }
+    const retry = await this.oneAssistantTurn();
+    if (!retry && this.overWindow) {
+      this.overWindow = false; // still over-window after compaction — give up on this turn
+      this.status = "idle";
+    }
+    return retry;
+  }
+
   private async oneAssistantTurn(): Promise<AssistantResult | undefined> {
     const req = this.buildRequest();
     const events: StreamEvent[] = [];
@@ -681,9 +782,9 @@ export class Session {
       if (this.stopScope === "hard" || (err as Error).name === "AbortError") return undefined;
       // Over-window hard-wall fallback (D-44b): a single turn's new content blew
       // the whole buffer, so the provider rejected `prompt > context_length`.
-      // P6a flags it (forced); P6b turns this hook into compact-and-retry.
+      // Flag it and unwind; `assistantTurnWithCompaction` compacts and retries.
       if (isOverWindowError(err)) {
-        this.handleOverWindow();
+        this.overWindow = true;
         return undefined;
       }
       this.consecutiveFailures++;

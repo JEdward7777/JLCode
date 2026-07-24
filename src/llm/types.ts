@@ -50,6 +50,9 @@ export interface ChatRequest {
   max_tokens?: number;
   /** OpenRouter reasoning control (effort or on/off). */
   reasoning?: Record<string, unknown>;
+  /** Tool-selection control. `"none"` forbids tool calls — used by the compaction
+   *  summary request so the model only writes prose (D-29). */
+  tool_choice?: "none" | "auto" | "required";
 }
 
 export type StreamEvent =

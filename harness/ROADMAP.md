@@ -1,19 +1,20 @@
 # JLCode — Roadmap
 
-Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-44c, no open
+Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-44d, no open
 items). Phases **0–5 done** (M1 "talk to a client" + M2 "does real work" + M3 "real product"
 complete; the HTTP browser frontend P5a…P5f all shipped). **Phase 6 — compaction (M4), sliced
-P6a…P6c — is in progress: P6a done** (headless token-accounting + trigger detection). Stack:
-**React + Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40). **Current milestone:
-M4 — Phase 6 compaction; next up P6b (the safe-harbor compaction engine).**
+P6a…P6c — is in progress: P6a + P6b done** (headless trigger detection + the safe-harbor
+compaction engine). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode surface**
+(D-40). **Current milestone: M4 — Phase 6 compaction; next up P6c (trigger-mode UX + cross-model
+path + Fable validation — the one paid/live-tier slice).**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (**166 Tier-0/1 tests green**), and committed through **P6a — Phase 5 done, Phase 6
-started**:
+Built, tested (**176 Tier-0/1 tests green**), and committed through **P6b — Phase 5 done, Phase 6
+engine landed**:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -60,16 +61,23 @@ left rail of N live sessions, one multiplexed per-instance bus, close-to-stop; *
 modes & auth — outward bind requires a hashed password, three provisioning modes, httpOnly signed
 session cookie + one-hit setup URL, guard over every route** — all verified end-to-end in Chrome,
 see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Phase 6 — compaction (M4), sliced P6a…P6c** (engine →
-controls → live-validation; see the Phase 6 block below) is underway. **P6a is done:** headless
-token-accounting + trigger detection — the session emits `needs-compaction` from ground-truth
-usage one turn late, `budget = window − buffer` with an **injected** window (config
-`contextLength` fallback), compactor-fit guard, over-window hard-wall hook; compaction itself is
-still a stub. Pure logic in `src/session/compaction.ts` (**D-44/D-44c**). **Start at P6b:** the
-safe-harbor compaction engine (Tier-1) — checkpoint-overlay entry (`replayCut` + summary),
-cache-reuse same-model path (D-29), anchored evolving structured summary (D-28), filling the
-D-44b compact-and-retry hook. Stack decided in D-39; serve-mode/auth in D-40. **166 Tier-0/1
-tests green.** Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`
-(P6a is headless — no surface; trigger-mode UI arrives in P6c).
+controls → live-validation; see the Phase 6 block below) is underway. **P6a + P6b are done.** P6a:
+headless token-accounting + trigger detection — the session emits `needs-compaction` from
+ground-truth usage one turn late, `budget = window − buffer` with an **injected** window (config
+`contextLength` fallback), compactor-fit guard, over-window hard-wall hook (**D-44/D-44c**). **P6b:
+the safe-harbor compaction engine** — `Session.compact()` folds the active branch into a
+`compaction` overlay entry (`replayCut` + summary) so the wire replays only `system + summary`;
+**cache-reuse same-model path** (D-29) sends the exact live prefix + an ephemeral
+`tool_choice:"none"` instruction; **anchored evolving structured summary** with bookend quoting
+(D-28); **auto** trigger mode compacts in-loop before the next send; the **D-44b over-window
+fallback** compacts (forced, tool-output-truncated input) and retries once. Safe-harbor cuts at the
+tip because the append-only tree can't keep a tail (**D-44d**). Pure pieces in
+`src/session/compaction.ts`. **Start at P6c:** trigger-mode UX (the five modes) + the cross-model
+flattened/truncated summary path + the LLM-as-judge Fable-valid-request test — **P6c is the one
+paid/live-tier slice, so ask Joshua which tier before the live test fires** (CLAUDE.md discipline).
+Stack decided in D-39; serve-mode/auth in D-40. **176 Tier-0/1 tests green.** Rendered surfaces get
+a real-browser peek per slice, logged in `VISUAL-LOG.md` (P6a/P6b are headless — no surface;
+trigger-mode UI arrives in P6c).
 
 ---
 
@@ -314,21 +322,40 @@ tiers before the next; the one paid/live-tier spend is isolated in P6c.
 - **Done when:** the session knows *when* to compact from ground-truth usage; deterministic,
   free to test; no model call. ✅
 
-### P6b — Safe-harbor compaction engine (the core, Tier-1)
-- **Checkpoint-overlay entry (D-15/D-17):** the compaction entry carries `replayCut` + summary;
-  wire-assembly climbs from `activeLeaf`, injects the summary, and stops at the checkpoint
-  (`system + summary + items after`). Cut lands on a **whole-tool-cycle boundary** (D-28).
-- **Safe-harbor v1 (D-38):** summarize *everything* prior (zero thinking replayed) — provably
-  Fable-safe by construction. **Cache-reuse same-model path (D-29)** first: send the exact live
-  prefix + an **ephemeral** compaction instruction (`tool_choice: none`, never written to the
-  tree), provider serves the prefix from prompt cache.
-- **Anchored evolving structured summary (D-28):** fixed Markdown template (Goal / Constraints /
-  Progress / Key Decisions / Next Steps / Critical Context / Relevant Files, ~4K cap), **updated**
-  on later compactions. **Bookend quoting:** original request + latest turn quoted near-verbatim
-  as plain summary text (no signature/cycle).
-- Fills the D-44b over-window fallback (compact-and-retry).
+### P6b — Safe-harbor compaction engine (the core, Tier-1) ✅ done (2026-07-24)
+- **Checkpoint-overlay entry (D-15/D-17):** `Session.compact()` folds the active branch into a
+  `compaction` overlay entry (`replayCut` + summary); `buildWireMessages` (already P6a-ready) resets
+  at it, so the next request replays only `system + summary`. **Safe-harbor cuts at the tip**
+  (D-44d): the append-only parent-pointer tree can't insert a summary mid-chain and keep a tail
+  without re-parenting, which is exactly *why* v1 summarizes everything and keeps nothing — so the
+  cut is always the current leaf and always a whole-cycle boundary.
+- **Safe-harbor v1 (D-38):** summarize *everything* prior (zero thinking replayed) — Fable-safe by
+  construction. **Cache-reuse same-model path (D-29):** the exact live wire prefix + an **ephemeral**
+  instruction (`tool_choice:"none"`, `max_tokens`≈4K, never written to the tree); the provider serves
+  the prefix from prompt cache. `tool_choice` added to `ChatRequest` (the client already spreads
+  `...req`, so no client change).
+- **Anchored evolving structured summary (D-28):** `buildCompactionInstruction` names the fixed
+  template (Goal / Constraints / Progress / Key Decisions / Next Steps / Critical Context / Relevant
+  Files) and asks for **bookend quoting** (original request + latest turn near-verbatim). On a later
+  compaction the prior summary is already in the replayed prefix, and the instruction tells the model
+  to fold it in — the **evolving** summary. The just-sent user message is folded into the summary
+  (preserved by the bookend quote), not answered live (D-44d(b)).
+- **Auto-in-loop (D-44d(a)):** the resolved `auto` trigger mode compacts before the next send once
+  ground-truth usage latches `needsCompaction`; the other four modes route through the UI (P6c).
+- **Fills the D-44b over-window fallback:** `assistantTurnWithCompaction` catches the over-window
+  rejection → compacts (forced, tool outputs truncated in the summary input so it fits) → retries the
+  turn once; still-too-big settles idle (unrecoverable by same-model compaction — the flattened
+  cross-model path is P6c). Pure pieces (instruction, truncation) in `src/session/compaction.ts`.
+- **Verified:** 10 new Tier-1 tests (`test/compaction-engine.test.ts`: instruction sections/order +
+  bookend + evolving fold-in line; tool-output truncation keeps tail/marker & doesn't mutate/​cap
+  user text; `compact()` overlay entry + cache-reuse request shape (exact prefix + ephemeral
+  `tool_choice:none` instruction) + reset wire + ephemeral-not-persisted; nothing-to-compact no-op;
+  auto compacts-then-continues with the reset wire; non-auto stays put; evolving replays the prior
+  summary; forced compact-and-retry recovers + `forced:true`; double-over-window gives up idle).
+  **176 Tier-0/1 green.** Headless engine — no new UI surface (trigger-mode UI is P6c), so no
+  browser peek this slice.
 - **Done when:** a real conversation crosses the budget, compacts, and continues coherently
-  against the cached driver. Tier-1 tested.
+  against the cached driver. ✅
 
 ### P6c — Trigger-mode UX + cross-model path + Fable validation (browser + gated live)
 - **Browser controls for the five trigger modes** (D-27): auto · manual (on-demand button) ·
