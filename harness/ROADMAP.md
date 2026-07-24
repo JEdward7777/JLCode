@@ -344,6 +344,34 @@ tiers before the next; the one paid/live-tier spend is isolated in P6c.
 
 - *(Fast-follow, post-v1: partial-keep-lite #2 for higher recent-context fidelity — D-38.)*
 
+## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-01 — `AppendLog` write failures are silent; open fds are unbounded.** Found 2026-07-24 while
+  chasing the append-log test flake (`test/append-log.test.ts` flake note). Two coupled weaknesses
+  in `src/persist/append-log.ts` + its callers:
+  - **Silent dropped writes.** `append()` swallows write errors (`this.tail = done.catch(() => {})`)
+    and `flush()` awaits that *swallowed* tail, so a failed write never surfaces there. The
+    production caller is fire-and-forget — `server.ts:141` `void deps.store.entry(...)` — discarding
+    the one promise that still carries the error. So if a persistence write throws (**EMFILE** from
+    fd exhaustion, **ENOSPC** disk-full, **EIO**), the record is lost with *no* error event/log; the
+    in-memory session proceeds as if persisted (the read-your-writes flush resolves anyway).
+    **Symptom to watch:** after a restart/resume, a conversation is **silently missing its last
+    entries or a branch**; worst case a surviving entry's `parent` references an entry that was
+    never written → dangling/truncated tree on load. Quiet data loss, not a crash.
+  - **Unbounded open descriptors.** The stores use `new AppendLog(...)` per conversation file (not
+    the bounded `forPath` registry) and never close a log until `store.close()` — no eviction. A
+    long-uptime server touching many conversations climbs toward the fd limit → **`EMFILE`** (new
+    conversations/file tools start failing, possibly a crash). This is the real-program analog of
+    the test's fd-leak theory. Slow-building; only bites high-uptime/many-conversation servers.
+  - **Not at risk:** interleaved/garbled JSONL (single thread + one serialized queue per file
+    guarantees whole ordered lines within a process); a crash-torn *last* line is already dropped by
+    the tolerant loader parse.
+  - **Severity:** low for normal localhost/desktop use; grows with sustained write pressure and
+    server uptime. **Fix options (highest value first):** (1) stop swallowing write errors — surface
+    them as a session `error` event + ERROR log so a dropped write is visible, not silent; (2) bound
+    open fds (route through `forPath`, or LRU-close idle conversation logs); (3) optionally retry a
+    failed write once. Cleanly separable from Phase 6.
+
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-08)
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
