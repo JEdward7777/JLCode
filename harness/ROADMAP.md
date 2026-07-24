@@ -58,8 +58,11 @@ debug-journal viewer, real lazy-loaded Mermaid + inline images, TTS; P5e: concur
 left rail of N live sessions, one multiplexed per-instance bus, close-to-stop; **P5f: serve
 modes & auth — outward bind requires a hashed password, three provisioning modes, httpOnly signed
 session cookie + one-hit setup URL, guard over every route** — all verified end-to-end in Chrome,
-see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is Phase 6 — compaction (M4).** Stack decided in
-D-39; serve-mode/auth in D-40. **149 Tier-0/1 tests green.** Rendered surfaces get a real-browser
+see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is Phase 6 — compaction (M4), sliced P6a…P6c**
+(engine → controls → live-validation; see the Phase 6 block below). **Start at P6a:** token
+accounting + trigger detection, headless/Tier-0 — trigger on authoritative usage, one turn late,
+no tokenizer (**D-44**). Stack decided in D-39; serve-mode/auth in D-40. **149 Tier-0/1 tests
+green.** Rendered surfaces get a real-browser
 peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
@@ -274,16 +277,54 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
 - **Done when:** localhost serves auth-free for dev; outward serving requires auth via any of the
   three provisioning modes; nothing sensitive is served unauthenticated when bound outward. ✅
 
-## Phase 6 — Compaction
-**Goal:** long conversations stay in-window and Fable-safe.
-- Token accounting from model metadata; trigger modes (auto / manual / suggest / cancelable /
-  hard-forced) (D-27).
-- Checkpoint-overlay compaction; **full-summarize safe-harbor (the v1 regime, D-38)**; anchored
-  evolving summary + **bookend quoting**; **cache-reuse fast path** (same-model) + cross-model
-  fallback (D-28, D-29).
-- LLM-as-judge test helper; tests that normal replay round-trips reasoning (D-14) and a
-  safe-harbor compaction produces a Fable-valid request.
-- **Done when:** conversations compact automatically/optionally without breaking Fable.
+## Phase 6 — Compaction (M4)
+**Goal:** long conversations stay in-window and Fable-safe. Sliced into three cuts along the
+**engine → controls → live-validation** seam (not P5's six UI surfaces — P6 is one cohesive
+headless engine with a thin control layer, so fewer, coarser slices). Each green at the free
+tiers before the next; the one paid/live-tier spend is isolated in P6c.
+
+### P6a — Token accounting + trigger detection (headless, Tier-0)
+- **Trigger on authoritative usage, one turn late (D-44):** read `prompt_tokens` +
+  `completion_tokens` off each response (D-33 already surfaces these), compute the next request's
+  known prefix, compare to budget `window − max(reservedOutput, buffer)` (buffer ~20K, D-27), emit
+  a `needs-compaction` signal. **No tokenizer / no from-scratch counting** — accept a one-turn
+  overshoot; the buffer is exactly that headroom.
+- Budget derived from OpenRouter `context_length` metadata (greenfield — no `context_length`
+  handling in `src/` yet). **Compactor-fit guard** as a coarse cross-model proxy (D-44a).
+- Trigger-mode *plumbing* as states (auto / manual / suggest / auto-but-cancelable / hard-forced,
+  D-27) with compaction itself still a stub. Over-window **hard-wall fallback** hook (D-44b:
+  catch → compact → retry) stubbed for P6b to fill.
+- **Done when:** the session knows *when* to compact from ground-truth usage; deterministic,
+  free to test; no model call. Tier-0 tested.
+
+### P6b — Safe-harbor compaction engine (the core, Tier-1)
+- **Checkpoint-overlay entry (D-15/D-17):** the compaction entry carries `replayCut` + summary;
+  wire-assembly climbs from `activeLeaf`, injects the summary, and stops at the checkpoint
+  (`system + summary + items after`). Cut lands on a **whole-tool-cycle boundary** (D-28).
+- **Safe-harbor v1 (D-38):** summarize *everything* prior (zero thinking replayed) — provably
+  Fable-safe by construction. **Cache-reuse same-model path (D-29)** first: send the exact live
+  prefix + an **ephemeral** compaction instruction (`tool_choice: none`, never written to the
+  tree), provider serves the prefix from prompt cache.
+- **Anchored evolving structured summary (D-28):** fixed Markdown template (Goal / Constraints /
+  Progress / Key Decisions / Next Steps / Critical Context / Relevant Files, ~4K cap), **updated**
+  on later compactions. **Bookend quoting:** original request + latest turn quoted near-verbatim
+  as plain summary text (no signature/cycle).
+- Fills the D-44b over-window fallback (compact-and-retry).
+- **Done when:** a real conversation crosses the budget, compacts, and continues coherently
+  against the cached driver. Tier-1 tested.
+
+### P6c — Trigger-mode UX + cross-model path + Fable validation (browser + gated live)
+- **Browser controls for the five trigger modes** (D-27): auto · manual (on-demand button) ·
+  suggest-when-near (banner) · **auto-but-cancelable** (deniable approval card) · hard-forced.
+- **Cross-model summary path (D-29):** flattened, tool-output-truncated (~2K) summarizer request
+  when a cheaper compactor is configured — no shared cache, full input rate.
+- **LLM-as-judge test helper** + the **Fable-valid-request** test: normal replay round-trips
+  reasoning verbatim (D-14) and a safe-harbor compaction produces a request Fable accepts
+  (TESTING.md). **This is the phase's one paid/live-tier spend — ask Joshua which tier before it
+  fires** (per CLAUDE.md working discipline).
+- **Done when:** conversations compact automatically/optionally, drivable in the browser, without
+  breaking Fable. Milestone M4 (O-02 resolved by design, D-38).
+
 - *(Fast-follow, post-v1: partial-keep-lite #2 for higher recent-context fidelity — D-38.)*
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-08)
