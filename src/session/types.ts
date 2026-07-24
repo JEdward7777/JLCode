@@ -3,7 +3,7 @@ import type { ToolKind } from "../tools/types.js";
 import type { TaskView } from "../tools/task-registry.js";
 import type { Entry } from "../conversation/types.js";
 import type { Usage } from "../llm/types.js";
-import type { ApprovalPolicy, Mode } from "../config/types.js";
+import type { ApprovalPolicy, CompactionTrigger, Mode } from "../config/types.js";
 
 /** A message typed mid-turn, waiting to apply at the next turn boundary (D-34). */
 export interface QueuedMessage {
@@ -107,6 +107,18 @@ export type SessionEvent =
   | { type: "spend"; totalUsd: number; turnUsd: number; usage?: Usage } // whole-tree spend (D-33)
   | { type: "cap"; capUsd: number | null } // the spend cap was set/raised/cleared (D-33)
   | { type: "cap-reached"; spendUsd: number; capUsd: number } // breach → no further LLM call (D-33)
+  // Ground-truth usage says the next request would exceed the budget (D-44). The
+  // mode is what *would* happen (auto/manual/suggest/cancelable/hard, D-27);
+  // compaction itself is stubbed until P6b, so P6a only announces. `forced` marks
+  // an over-window hard-wall hit (D-44b) rather than a pre-emptive budget crossing.
+  | {
+      type: "needs-compaction";
+      mode: CompactionTrigger;
+      prefixTokens: number;
+      threshold: number;
+      window: number;
+      forced?: boolean;
+    }
   | { type: "stopped"; scope: "hard" | "soft" } // global stop: hard abort vs loop-only (D-34)
   | { type: "queue"; queue: QueuedMessage[] } // the queued-message list changed (D-34)
   | { type: "task-start"; task: TaskView } // a background command started (D-34)

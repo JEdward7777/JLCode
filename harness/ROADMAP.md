@@ -1,18 +1,19 @@
 # JLCode — Roadmap
 
-Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-43, no open
-items). Phases **0–4 done** (M1 "talk to a client" + M2 "does real work" complete; persistence /
-resume / fork-rewind / debug-journal done). **Phase 5 — the HTTP browser frontend (sliced P5a…P5f)
-— is COMPLETE (P5a…P5f all done), which completes Milestone M3 "real product".** Stack: **React +
-Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40). **Next milestone: M4 — Phase 6
-compaction.**
+Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-44c, no open
+items). Phases **0–5 done** (M1 "talk to a client" + M2 "does real work" + M3 "real product"
+complete; the HTTP browser frontend P5a…P5f all shipped). **Phase 6 — compaction (M4), sliced
+P6a…P6c — is in progress: P6a done** (headless token-accounting + trigger detection). Stack:
+**React + Vite** (D-39); serving/auth is a **CLI serve-mode surface** (D-40). **Current milestone:
+M4 — Phase 6 compaction; next up P6b (the safe-harbor compaction engine).**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (149 Tier-0/1 tests green), and committed through **P5f — Phase 5 is done**:
+Built, tested (**166 Tier-0/1 tests green**), and committed through **P6a — Phase 5 done, Phase 6
+started**:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -58,12 +59,17 @@ debug-journal viewer, real lazy-loaded Mermaid + inline images, TTS; P5e: concur
 left rail of N live sessions, one multiplexed per-instance bus, close-to-stop; **P5f: serve
 modes & auth — outward bind requires a hashed password, three provisioning modes, httpOnly signed
 session cookie + one-hit setup URL, guard over every route** — all verified end-to-end in Chrome,
-see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Next up is Phase 6 — compaction (M4), sliced P6a…P6c**
-(engine → controls → live-validation; see the Phase 6 block below). **Start at P6a:** token
-accounting + trigger detection, headless/Tier-0 — trigger on authoritative usage, one turn late,
-no tokenizer (**D-44**). Stack decided in D-39; serve-mode/auth in D-40. **149 Tier-0/1 tests
-green.** Rendered surfaces get a real-browser
-peek per slice, logged in `VISUAL-LOG.md`.
+see [`VISUAL-LOG.md`](VISUAL-LOG.md)). **Phase 6 — compaction (M4), sliced P6a…P6c** (engine →
+controls → live-validation; see the Phase 6 block below) is underway. **P6a is done:** headless
+token-accounting + trigger detection — the session emits `needs-compaction` from ground-truth
+usage one turn late, `budget = window − buffer` with an **injected** window (config
+`contextLength` fallback), compactor-fit guard, over-window hard-wall hook; compaction itself is
+still a stub. Pure logic in `src/session/compaction.ts` (**D-44/D-44c**). **Start at P6b:** the
+safe-harbor compaction engine (Tier-1) — checkpoint-overlay entry (`replayCut` + summary),
+cache-reuse same-model path (D-29), anchored evolving structured summary (D-28), filling the
+D-44b compact-and-retry hook. Stack decided in D-39; serve-mode/auth in D-40. **166 Tier-0/1
+tests green.** Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`
+(P6a is headless — no surface; trigger-mode UI arrives in P6c).
 
 ---
 
@@ -283,19 +289,30 @@ vertical cuts (P5a…P5f), each green at the free tiers before the next. Stack i
 headless engine with a thin control layer, so fewer, coarser slices). Each green at the free
 tiers before the next; the one paid/live-tier spend is isolated in P6c.
 
-### P6a — Token accounting + trigger detection (headless, Tier-0)
-- **Trigger on authoritative usage, one turn late (D-44):** read `prompt_tokens` +
-  `completion_tokens` off each response (D-33 already surfaces these), compute the next request's
-  known prefix, compare to budget `window − max(reservedOutput, buffer)` (buffer ~20K, D-27), emit
-  a `needs-compaction` signal. **No tokenizer / no from-scratch counting** — accept a one-turn
-  overshoot; the buffer is exactly that headroom.
-- Budget derived from OpenRouter `context_length` metadata (greenfield — no `context_length`
-  handling in `src/` yet). **Compactor-fit guard** as a coarse cross-model proxy (D-44a).
-- Trigger-mode *plumbing* as states (auto / manual / suggest / auto-but-cancelable / hard-forced,
-  D-27) with compaction itself still a stub. Over-window **hard-wall fallback** hook (D-44b:
-  catch → compact → retry) stubbed for P6b to fill.
+### P6a — Token accounting + trigger detection (headless, Tier-0) ✅ done (2026-07-24)
+- **Trigger on authoritative usage, one turn late (D-44):** after each turn the session reads the
+  just-finished response's `prompt_tokens` + `completion_tokens` (D-33 already surfaces these) — the
+  next request's known prefix — and compares it to the budget, emitting a **`needs-compaction`**
+  event (+ latching `session.needsCompaction`) when it's exceeded. Detection only: the loop still
+  proceeds (the accepted one-turn overshoot). **No tokenizer / no from-scratch counting.**
+- **Budget = `window − buffer`** (D-44c folds D-27's `reservedOutput` into the ~20K buffer). The
+  **window is injected** (`Session` `contextWindow` option; tests dial it low to force the
+  threshold) with a `compaction.contextLength` config fallback; no window known → no trigger. Live
+  OpenRouter `/models` fetch deferred to a later slice (D-44c).
+- **Compactor-fit guard (D-44a):** a smaller configured summarizer tightens the threshold
+  (`min(working, compactor)`), injected via `compactorWindow`.
+- **Trigger-mode plumbing** as resolved state (`activeTriggerMode`: auto / else first configured /
+  else auto-but-cancelable default) rides on the signal; compaction itself is still a stub (P6b).
+  **Over-window hard-wall hook (D-44b):** `oneAssistantTurn` catches an over-window rejection
+  (`isOverWindowError`) and emits a **forced** `needs-compaction` without counting a failure —
+  P6b fills the compact-and-retry.
+- Pure math + recognizers live in `src/session/compaction.ts` (Tier-0, no model call).
+- **Verified:** 17 new Tier-0 tests (`test/compaction.test.ts`: budget/threshold + floor,
+  known-prefix, strict-above trigger, compactor-fit tighten/no-op, active mode, over-window regex;
+  Session: announces one turn late, quiet under budget, no-window-no-trigger, config override,
+  auto mode, compactor-fit earlier trigger, forced over-window without halt). **166 Tier-0/1 green.**
 - **Done when:** the session knows *when* to compact from ground-truth usage; deterministic,
-  free to test; no model call. Tier-0 tested.
+  free to test; no model call. ✅
 
 ### P6b — Safe-harbor compaction engine (the core, Tier-1)
 - **Checkpoint-overlay entry (D-15/D-17):** the compaction entry carries `replayCut` + summary;

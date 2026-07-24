@@ -55,6 +55,11 @@ export interface CompactionSettings {
   /** Recent tokens kept verbatim — fast-follow (#2); v1 safe-harbor ignores it. */
   keepRecentTokens?: number;
   triggerModes?: CompactionTrigger[];
+  /** The model's context window (`context_length`), when known. An explicit
+   *  override / manual source for the compaction budget (D-27/D-44); a live
+   *  OpenRouter `/models` fetch that populates this automatically lands later.
+   *  A Session may also be handed the window directly via `contextWindow`. */
+  contextLength?: number;
 }
 
 /** A named model configuration a user works under (e.g. "Client A — Opus"). */

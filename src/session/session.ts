@@ -11,7 +11,7 @@
 import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
-import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef } from "../llm/types.js";
+import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { newConversation, appendEntry, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages } from "../conversation/wire.js";
@@ -24,6 +24,14 @@ import { ASK_USER } from "../tools/ask-user.js";
 import { TaskRegistry } from "../tools/task-registry.js";
 import type { TaskView } from "../tools/task-registry.js";
 import { computeCost } from "./spend.js";
+import {
+  activeTriggerMode,
+  applyCompactorFit,
+  computeBudget,
+  evaluateTrigger,
+  isOverWindowError,
+  type CompactionBudget,
+} from "./compaction.js";
 import type { QueuedMessage } from "./types.js";
 import type {
   ApprovalDecision,
@@ -64,6 +72,14 @@ export interface SessionOptions {
   /** How long a background command may run before the watchdog asks the model
    *  whether to kill it (D-34). Default 30 min; small values drive tests. */
   watchdogMs?: number;
+  /** The working model's context window (`context_length`) for the compaction
+   *  budget (D-27/D-44). Injected in P6a — tests dial it low to force the
+   *  threshold; live `/models` fetch lands later. Falls back to the config's
+   *  `compaction.contextLength`. When neither is known, no trigger ever fires. */
+  contextWindow?: number;
+  /** The compaction model's window, when a *smaller* summarizer is configured
+   *  (compactor-fit guard, D-44a). Defaults to the working window. */
+  compactorWindow?: number;
 }
 
 /** Default watchdog interval — 30 minutes (D-34). */
@@ -149,6 +165,10 @@ export class Session {
   /** True once a cap breach has blocked the next LLM call, until the cap is
    *  raised. Nothing is killed — the loop just declines to continue (D-33). */
   capReached = false;
+  /** True once ground-truth usage says the next request would exceed the budget
+   *  (D-44). Detection only in P6a — the loop still proceeds (accepting the one
+   *  accepted overshoot turn); the actual compaction engine is P6b. */
+  needsCompaction = false;
 
   private readonly driver: LlmDriver;
   private readonly systemPrompt: string;
@@ -162,6 +182,11 @@ export class Session {
   private consecutiveFailures = 0;
   private readonly pricing: ModelConfig["pricing"];
   private readonly watchdogMs: number;
+  /** Injected context window for the compaction budget (D-44); undefined → no
+   *  window known → no trigger fires. Falls back to the config override. */
+  private readonly contextWindow: number | undefined;
+  /** The compaction model's window for the compactor-fit guard (D-44a). */
+  private readonly compactorWindow: number | undefined;
   private readonly listeners = new Set<SessionListener>();
 
   // Resumable-loop state.
@@ -204,6 +229,8 @@ export class Session {
     this.conversation = options.conversation ?? newConversation();
     this.pricing = options.config.pricing;
     this.spendCapUsd = options.spendCapUsd;
+    this.contextWindow = options.contextWindow ?? options.config.compaction?.contextLength;
+    this.compactorWindow = options.compactorWindow;
     this.watchdogMs = options.watchdogMs ?? WATCHDOG_MS;
     this.tasks = options.tasks ?? new TaskRegistry();
     // Forward task lifecycle to subscribers (UI list) and arm/disarm the
@@ -235,6 +262,59 @@ export class Session {
   /** At/over the cap → the next LLM call is declined (D-33). */
   private capBlocked(): boolean {
     return this.spendCapUsd !== undefined && this.spendUsd >= this.spendCapUsd;
+  }
+
+  /** The compaction budget for this session (D-27/D-44), or undefined when no
+   *  context window is known (so no trigger can fire). Applies the config buffer
+   *  and the compactor-fit guard (D-44a) when a smaller summarizer is configured. */
+  compactionBudget(): CompactionBudget | undefined {
+    if (this.contextWindow === undefined) return undefined;
+    const buffer = this.config.compaction?.bufferTokens;
+    const budget = computeBudget(this.contextWindow, buffer);
+    // The guard only bites when a *different*, smaller compaction model is set;
+    // an identical/absent compactor uses the working window unchanged.
+    const compactorId = this.config.compaction?.model;
+    const compactorWindow =
+      compactorId && compactorId !== this.config.model ? this.compactorWindow : undefined;
+    return applyCompactorFit(budget, compactorWindow, buffer);
+  }
+
+  /** After a turn, decide from ground-truth usage whether the *next* request would
+   *  exceed the budget (D-44). Detection only — P6a announces via `needs-compaction`
+   *  and latches `needsCompaction`; the loop still proceeds (the accepted one-turn
+   *  overshoot). The compaction engine (summarize + overlay) is P6b. */
+  private evaluateCompaction(usage: Usage | undefined): void {
+    const budget = this.compactionBudget();
+    if (!budget) return;
+    const evaln = evaluateTrigger(usage, budget);
+    if (!evaln.needsCompaction) return;
+    this.needsCompaction = true;
+    this.emit({
+      type: "needs-compaction",
+      mode: activeTriggerMode(this.config.compaction),
+      prefixTokens: evaln.prefixTokens,
+      threshold: budget.threshold,
+      window: budget.window,
+    });
+  }
+
+  /** Over-window hard-wall hit (D-44b): the request was rejected because the new
+   *  content alone blew past the window. P6a latches + announces (forced); the
+   *  compact-and-retry that recovers it is filled in P6b. Not a model failure, so
+   *  it doesn't count toward the circuit breaker. */
+  private handleOverWindow(): void {
+    this.needsCompaction = true;
+    const budget = this.compactionBudget();
+    this.emit({ type: "error", message: "Request exceeded the model context window." });
+    this.emit({
+      type: "needs-compaction",
+      mode: activeTriggerMode(this.config.compaction),
+      prefixTokens: 0, // no authoritative count for a rejected request
+      threshold: budget?.threshold ?? 0,
+      window: budget?.window ?? 0,
+      forced: true,
+    });
+    this.status = "idle";
   }
 
   /** Global stop (D-34). "hard" is the big red button: abort the in-flight LLM
@@ -599,6 +679,13 @@ export class Session {
       // A hard stop aborts the request mid-stream (D-34): discard the turn
       // without counting it as a failure — advance() settles the loop.
       if (this.stopScope === "hard" || (err as Error).name === "AbortError") return undefined;
+      // Over-window hard-wall fallback (D-44b): a single turn's new content blew
+      // the whole buffer, so the provider rejected `prompt > context_length`.
+      // P6a flags it (forced); P6b turns this hook into compact-and-retry.
+      if (isOverWindowError(err)) {
+        this.handleOverWindow();
+        return undefined;
+      }
       this.consecutiveFailures++;
       this.emit({ type: "error", message: (err as Error).message });
       this.emit({
@@ -655,6 +742,9 @@ export class Session {
     const turnUsd = computeCost(result.usage, this.pricing);
     this.spendUsd += turnUsd;
     this.emit({ type: "spend", totalUsd: this.spendUsd, turnUsd, usage: result.usage });
+    // Ground-truth trigger check (D-44): does the next request's known prefix
+    // (this turn's prompt + completion) exceed the budget? Detection only in P6a.
+    this.evaluateCompaction(result.usage);
     this.emit({
       type: "assistant-end",
       entryId: entry.id,
