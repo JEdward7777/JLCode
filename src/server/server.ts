@@ -21,6 +21,7 @@ import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
 import type { Session } from "../session/session.js";
 import type { AuthGuard } from "./auth.js";
+import type { Logger } from "../logger.js";
 
 export interface ServerDeps {
   /** Re-read the selected config on demand, so CLI edits are picked up live. */
@@ -49,6 +50,9 @@ export interface ServerDeps {
   /** Optional: an auth guard installed ahead of every route (D-40). Present when
    *  bound outward (non-loopback); absent on a localhost bind = no auth. */
   auth?: AuthGuard;
+  /** Optional diagnostic logger (D-11). Persistence faults are logged at ERROR
+   *  here as well as surfaced in the UI, so a dropped write leaves a trace (D-46). */
+  logger?: Pick<Logger, "error" | "warn">;
 }
 
 const STATIC_TYPES: Record<string, string> = {
@@ -128,6 +132,7 @@ function stateOf(session: Session): Record<string, unknown> {
   if (session.status === "awaiting-approval") base.approvalRequest = session.awaitingApproval;
   if (session.status === "awaiting-input") base.question = session.awaitingInput;
   if (session.status === "awaiting-compaction") base.compactionRequest = session.awaitingCompaction;
+  if (session.status === "awaiting-persistence") base.persistenceFault = session.awaitingPersistence;
   return base;
 }
 
@@ -143,18 +148,82 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
    *  conversation to resume; otherwise a fresh conversation log is created. */
   function startSession(config: ModelConfig, conversation?: Conversation): Session {
     const session = deps.newSession(config, conversation);
+
+    /** A stalled write is reported by the store's fault listener, **not** by the
+     *  append promise: on failure the record stays queued at the head (so a retry
+     *  preserves order), leaving that promise pending until it lands or is
+     *  discarded. So `settled` exists only to keep an explicit discard from
+     *  surfacing as an unhandled rejection — the real signal is below (D-46). */
+    const settled = (p: Promise<void>): void => {
+      void p.catch(() => {});
+    };
+
+    // Stop this session on a write failure to its own log — or to the shared
+    // index, where a full disk means nothing can be trusted to persist (D-46).
+    const ours = (filePath: string): boolean => {
+      const base = path.basename(filePath);
+      return base === `${session.conversation.id}.jsonl` || base === "index.jsonl";
+    };
+    deps.store.onFault((fault) => {
+      if (!ours(fault.filePath)) return;
+      deps.logger?.error("persistence write failed", {
+        conversationId: session.conversation.id,
+        filePath: fault.filePath,
+        pending: fault.pending,
+        err: fault.error,
+      });
+      session.raisePersistenceFault({
+        filePath: fault.filePath,
+        message: fault.error.message,
+        pending: fault.pending,
+      });
+    });
+
     if (!conversation) {
-      void deps.store.create({ id: session.conversation.id, workingDir: deps.workingDir, configName: config.name });
+      settled(deps.store.create({ id: session.conversation.id, workingDir: deps.workingDir, configName: config.name }));
     }
     session.onEvent((e) => {
-      if (e.type === "entry") void deps.store.entry(session.conversation.id, e.entry);
-      else if (e.type === "active-leaf") void deps.store.activeLeaf(session.conversation.id, e.leaf);
+      if (e.type === "entry") settled(deps.store.entry(session.conversation.id, e.entry));
+      else if (e.type === "active-leaf") settled(deps.store.activeLeaf(session.conversation.id, e.leaf));
       else if (e.type === "debug" && deps.debugJournal) {
-        void deps.debugJournal.record(session.conversation.id, e.record);
+        // The journal is diagnostic and never replayed to a model, so a failure
+        // here is a warning — not worth stopping the session over (D-46).
+        void deps.debugJournal.record(session.conversation.id, e.record).catch((err: unknown) => {
+          deps.logger?.warn("debug journal write failed", { conversationId: session.conversation.id, err });
+        });
       }
     });
     return manager.add(session);
   }
+
+  /** Read-your-writes flush. `store.flush()` now rejects when a write is stalled
+   *  (D-46) rather than resolving green — swallow that here so the route still
+   *  answers: the session has already been put into `awaiting-persistence` by the
+   *  fault listener, and the response carries that state, which is more useful to
+   *  the client than a bare 500. */
+  async function flushDurable(): Promise<void> {
+    await deps.store.flush().catch(() => {});
+  }
+
+  /** Recover from a stalled write (D-46). `{discard: true}` gives up on the
+   *  unwritten records and accepts the loss; otherwise the writes are retried and
+   *  the session resumes only if they land. */
+  app.post("/session/:id/persistence", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (session.status !== "awaiting-persistence") return c.json({ error: "no pending persistence fault" }, 409);
+    const body = (await c.req.json().catch(() => ({}))) as { discard?: unknown };
+    if (body.discard === true) {
+      const discarded = session.discardPersistence(() => deps.store.discardPending());
+      deps.logger?.warn("persistence records discarded by the user", {
+        conversationId: session.conversation.id,
+        discarded,
+      });
+      return c.json({ ...stateOf(session), discarded });
+    }
+    const ok = await session.retryPersistence(() => deps.store.retry());
+    return c.json({ ...stateOf(session), recovered: ok });
+  });
 
   app.get("/health", (c) => {
     const config = deps.resolveConfig();
@@ -342,7 +411,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } else {
       await session.compactNow();
     }
-    await deps.store.flush();
+    await flushDurable();
     return c.json(stateOf(session));
   });
 
@@ -357,7 +426,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     else if (typeof body.capUsd === "number" && body.capUsd >= 0 && Number.isFinite(body.capUsd)) cap = body.capUsd;
     else return c.json({ error: "body must include 'capUsd' as a non-negative number or null" }, 400);
     await session.setSpendCap(cap);
-    await deps.store.flush();
+    await flushDurable();
     return c.json(stateOf(session));
   });
 
@@ -381,7 +450,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (!session) return c.json({ error: "no such session" }, 404);
     session.stop("hard");
     manager.remove(session.id);
-    await deps.store.flush();
+    await flushDurable();
     return c.json({ closed: true });
   });
 
@@ -411,7 +480,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } else {
       return c.json({ error: "body must include a non-empty 'text' or a 'queue' array" }, 400);
     }
-    await deps.store.flush();
+    await flushDurable();
     return c.json(stateOf(session));
   });
 
@@ -426,7 +495,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }
-    await deps.store.flush();
+    await flushDurable();
     return c.json(stateOf(session));
   });
 
@@ -443,7 +512,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }
-    await deps.store.flush();
+    await flushDurable();
     return c.json(stateOf(session));
   });
 
@@ -476,7 +545,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
 
     try {
       await session.send(body.text);
-      await deps.store.flush(); // read-your-writes: entries durable before we respond
+      await flushDurable(); // read-your-writes: entries durable before we respond
     } catch (err) {
       return c.json({ error: (err as Error).message }, 409);
     }
@@ -524,7 +593,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       addRoot:
         typeof body.addRoot === "string" || typeof body.addRoot === "boolean" ? body.addRoot : undefined,
     });
-    await deps.store.flush();
+    await flushDurable();
     return c.json(stateOf(session));
   });
 
@@ -552,7 +621,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       return c.json({ error: "body must include 'text' or 'answers'" }, 400);
     }
     await session.answer(payload);
-    await deps.store.flush();
+    await flushDurable();
     return c.json(stateOf(session));
   });
 

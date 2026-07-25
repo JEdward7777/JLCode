@@ -11,6 +11,7 @@ import type {
   ApprovalRequest,
   AskUserRequest,
   CompactionRequest,
+  PersistenceFault,
   EntryView,
   Mode,
   QueuedMessage,
@@ -57,6 +58,9 @@ export interface SessionSlice {
   triggerMode: TriggerMode;
   needsCompaction: boolean;
   pendingCompaction: CompactionRequest | null;
+  /** A stalled persistence write the session is stopped on (D-46). Blocks the
+   *  composer: nothing may proceed until it is retried or explicitly discarded. */
+  persistenceFault: PersistenceFault | null;
   notice: string | null;
   input: string;
 }
@@ -85,6 +89,7 @@ export function newSlice(id: string, model = ""): SessionSlice {
     triggerMode: "cancelable",
     needsCompaction: false,
     pendingCompaction: null,
+    persistenceFault: null,
     notice: null,
     input: "",
   };
@@ -113,6 +118,7 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (state.triggerMode) next.triggerMode = state.triggerMode;
   if (typeof state.needsCompaction === "boolean") next.needsCompaction = state.needsCompaction;
   next.pendingCompaction = state.compactionRequest ?? null;
+  next.persistenceFault = state.persistenceFault ?? null;
   return next;
 }
 
@@ -184,6 +190,13 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       // A compaction landed — clear the crossed flag + any pending pause. The
       // fresh compaction entry arrives via the normal `entry` event.
       return { ...s, needsCompaction: false, pendingCompaction: null };
+    case "awaiting-persistence":
+      // A record could not be written (D-46) — stop everything and show the
+      // blocking banner. The turn was aborted via the hard-stop path, so clear
+      // any in-flight live view too.
+      return { ...s, working: false, live: null, persistenceFault: e.fault as PersistenceFault };
+    case "persistence-recovered":
+      return { ...s, persistenceFault: null };
     case "awaiting-approval":
       return { ...s, working: false, live: null, pendingApproval: e.request as ApprovalRequest };
     case "awaiting-input":

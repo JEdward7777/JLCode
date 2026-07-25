@@ -7,6 +7,7 @@ import {
   setMode as apiSetMode,
   setTriggerMode as apiSetTriggerMode,
   compact as apiCompact,
+  resolvePersistence as apiResolvePersistence,
   setCap as apiSetCap,
   stopSession as apiStop,
   killTask as apiKillTask,
@@ -29,6 +30,7 @@ import {
   type Mode,
   type QueuedMessage,
   type CompactionRequest,
+  type PersistenceFault,
   type SessionDescriptor,
   type TaskView,
   type TriggerMode,
@@ -258,6 +260,31 @@ export function App() {
     [],
   );
 
+  // Persistence recovery (D-46): retry the stalled writes, or discard them. The
+  // session only leaves `awaiting-persistence` if the retry actually lands, so a
+  // still-full disk keeps the banner up (with `retryFailed` set) rather than
+  // pretending the records were saved.
+  const [retryingPersistence, setRetryingPersistence] = useState(false);
+  const resolvePersistence = useCallback(
+    async (id: string, opts: { discard?: boolean } = {}) => {
+      setRetryingPersistence(true);
+      try {
+        const state = await apiResolvePersistence(id, opts);
+        if (state.recovered !== false || opts.discard) {
+          dispatch({ t: "patch", id, patch: { persistenceFault: null } });
+        }
+        if (opts.discard && state.discarded) {
+          dispatch({ t: "patch", id, patch: { notice: `Discarded ${state.discarded} unsaved record(s).` } });
+        }
+      } catch (err) {
+        dispatch({ t: "patch", id, patch: { notice: (err as Error).message } });
+      } finally {
+        setRetryingPersistence(false);
+      }
+    },
+    [],
+  );
+
   const resolveApproval = useCallback(
     async (id: string, decision: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => {
       dispatch({ t: "patch", id, patch: { pendingApproval: null, working: true } });
@@ -423,6 +450,8 @@ export function App() {
           onChangeMode={changeMode}
           onChangeTriggerMode={changeTriggerMode}
           onCompact={doCompact}
+          onResolvePersistence={resolvePersistence}
+          retryingPersistence={retryingPersistence}
           onResolveApproval={resolveApproval}
           onSubmitAnswer={submitAnswer}
           onChangeCap={changeCap}
@@ -466,6 +495,7 @@ function SessionRail({
   onClose: (id: string) => void;
 }) {
   const statusLabel = (s: SessionSlice): string => {
+    if (s.persistenceFault) return "can’t save"; // outranks everything (D-46)
     if (s.pendingApproval) return "needs approval";
     if (s.pendingAsk) return "needs answer";
     if (s.capReached) return "cap reached";
@@ -475,6 +505,7 @@ function SessionRail({
     return "idle";
   };
   const dotClass = (s: SessionSlice): string => {
+    if (s.persistenceFault) return "halt"; // a stalled write stops the session (D-46)
     if (s.pendingApproval || s.pendingAsk || s.capReached) return "attn";
     if (s.working || s.status === "running" || s.tasks.length > 0) return "busy";
     if (s.status === "halted") return "halt";
@@ -541,6 +572,8 @@ function ChatPane({
   onChangeMode,
   onChangeTriggerMode,
   onCompact,
+  onResolvePersistence,
+  retryingPersistence,
   onResolveApproval,
   onSubmitAnswer,
   onChangeCap,
@@ -564,6 +597,8 @@ function ChatPane({
   onChangeMode: (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
   onChangeTriggerMode: (id: string, mode: TriggerMode) => void;
   onCompact: (id: string, opts?: { skip?: boolean }) => void;
+  onResolvePersistence: (id: string, opts?: { discard?: boolean }) => void;
+  retryingPersistence: boolean;
   onResolveApproval: (id: string, d: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => void;
   onSubmitAnswer: (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => void;
   onChangeCap: (id: string, v: number | null) => void;
@@ -605,7 +640,9 @@ function ChatPane({
     slice.tasks.length > 0 ||
     slice.pendingApproval !== null ||
     slice.pendingAsk !== null ||
-    slice.pendingCompaction !== null;
+    slice.pendingCompaction !== null ||
+    // A stalled write stops everything until it is retried or discarded (D-46).
+    slice.persistenceFault !== null;
 
   return (
     <div className="pane">
@@ -689,6 +726,16 @@ function ChatPane({
         {slice.tasks.length > 0 && <TasksPanel tasks={slice.tasks} onKill={(taskId) => onKillTask(id, taskId)} />}
         {slice.pendingApproval && <ApprovalCard request={slice.pendingApproval} onResolve={(d) => onResolveApproval(id, d)} />}
         {slice.pendingAsk && <AskForm request={slice.pendingAsk} onSubmit={(answers) => onSubmitAnswer(id, answers)} />}
+        {/* Persistence fault outranks the other cards: nothing else can proceed
+            until the disk problem is resolved (D-46). */}
+        {slice.persistenceFault && (
+          <PersistenceCard
+            fault={slice.persistenceFault}
+            busy={retryingPersistence}
+            onRetry={() => onResolvePersistence(id)}
+            onDiscard={() => onResolvePersistence(id, { discard: true })}
+          />
+        )}
         {slice.pendingCompaction && (
           <CompactionCard
             request={slice.pendingCompaction}
@@ -907,6 +954,61 @@ function CapBanner({ spendUsd, capUsd, onRaise }: { spendUsd: number; capUsd: nu
 
 /** Pre-send compaction pause (D-27, P6c): `cancelable` offers Compact + Skip;
  *  `hard` offers Compact only ("can't proceed without acting"). */
+/** The blocking persistence-fault banner (D-46). A record could not be written,
+ *  so everything stopped: this is the recoverable case — free the disk, hit
+ *  Retry, and the stalled records land in order. Discarding is offered too, but
+ *  never as the quiet default: it is the only path that loses data. */
+function PersistenceCard({
+  fault,
+  busy,
+  onRetry,
+  onDiscard,
+}: {
+  fault: PersistenceFault;
+  busy: boolean;
+  onRetry: () => void;
+  onDiscard: () => void;
+}) {
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const file = fault.filePath.split("/").pop() ?? fault.filePath;
+  // Node errors carry the full path ("EACCES: permission denied, open '/very/long/…'"),
+  // which we already show as the filename above — drop it so the banner stays legible.
+  const reason = fault.message.replace(/,\s*(open|write|mkdir)\s+'.*'\s*$/, "");
+  return (
+    <div className="card persistence-card">
+      <div className="card-head">
+        <span className="tool">⚠ can’t save this conversation</span>
+        <span className="reason">{fault.retryFailed ? "retry failed" : "stopped"}</span>
+      </div>
+      <div className="fence-note">
+        Writing to <code title={fault.filePath}>{file}</code> failed: <strong>{reason}</strong>
+        {". "}
+        {fault.pending === 1 ? "1 record is" : `${fault.pending} records are`} queued and unwritten, so the agent
+        stopped rather than carry on with a conversation that wouldn’t survive a restart. Free up disk space (or fix
+        the permissions), then retry — the queued records are written in order.
+      </div>
+      <div className="actions">
+        <button className="primary" onClick={onRetry} disabled={busy}>
+          {busy ? "Retrying…" : "Retry save"}
+        </button>
+        {confirmDiscard ? (
+          <button className="danger" onClick={onDiscard} disabled={busy} title="permanently drop the unwritten records">
+            Really discard {fault.pending}?
+          </button>
+        ) : (
+          <button
+            onClick={() => setConfirmDiscard(true)}
+            disabled={busy}
+            title="give up on the unwritten records and continue"
+          >
+            Continue without saving…
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CompactionCard({
   request,
   onCompact,

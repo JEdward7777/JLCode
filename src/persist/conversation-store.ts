@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Conversation, Entry } from "../conversation/types.js";
-import { AppendLog } from "./append-log.js";
+import { AppendLog, type AppendFault, type FaultListener } from "./append-log.js";
 
 export interface ConversationMeta {
   id: string;
@@ -27,9 +27,49 @@ export interface IndexRow {
 export class ConversationStore {
   private readonly logs = new Map<string, AppendLog>();
   private readonly index: AppendLog;
+  /** Fault subscribers, applied to every log — including ones opened later (D-46). */
+  private readonly faultListeners = new Set<FaultListener>();
 
   constructor(private readonly dir: string) {
-    this.index = new AppendLog(path.join(dir, "index.jsonl"));
+    this.index = this.watch(new AppendLog(path.join(dir, "index.jsonl")));
+  }
+
+  /** Route a log's write failures to this store's subscribers (D-46). */
+  private watch(log: AppendLog): AppendLog {
+    log.onFault((fault) => {
+      for (const listener of this.faultListeners) listener(fault);
+    });
+    return log;
+  }
+
+  /** Subscribe to persistence failures anywhere in this store. Returns an
+   *  unsubscribe fn. The server turns these into an `awaiting-persistence`
+   *  session pause rather than letting the write vanish (D-46). */
+  onFault(listener: FaultListener): () => void {
+    this.faultListeners.add(listener);
+    return () => this.faultListeners.delete(listener);
+  }
+
+  /** Every currently-stalled log (D-46). */
+  private get stalled(): AppendLog[] {
+    return [this.index, ...this.logs.values()].filter((l) => l.fault !== null);
+  }
+
+  /** The first outstanding fault, if any — what the UI banner reports. */
+  get fault(): AppendFault | null {
+    return this.stalled[0]?.fault ?? null;
+  }
+
+  /** Retry every stalled write (the disk-full recovery path, D-46). Rejects if
+   *  any of them fails again, leaving those logs stalled. */
+  async retry(): Promise<void> {
+    await Promise.all(this.stalled.map((l) => l.retry()));
+  }
+
+  /** Give up on the stalled records, accepting the loss, so the store can keep
+   *  taking writes. Returns how many records were dropped (D-46). */
+  discardPending(): number {
+    return this.stalled.reduce((n, l) => n + l.discardPending(), 0);
   }
 
   private file(convId: string): string {
@@ -39,7 +79,7 @@ export class ConversationStore {
   private log(convId: string): AppendLog {
     let log = this.logs.get(convId);
     if (!log) {
-      log = new AppendLog(this.file(convId));
+      log = this.watch(new AppendLog(this.file(convId)));
       this.logs.set(convId, log);
     }
     return log;

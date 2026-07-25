@@ -137,3 +137,27 @@ describe("reduceEvent folds live events", () => {
     expect(next.spendUsd).toBe(3);
   });
 });
+
+describe("persistence-fault events fold into the slice (D-46)", () => {
+  const fault = { id: "p1", filePath: "/data/conv-1.jsonl", message: "ENOSPC: no space left", pending: 3 };
+
+  it("awaiting-persistence stops the live view and raises the blocking banner", () => {
+    const s = { ...newSlice("s1"), working: true, live: { text: "partial", reasoning: "" } };
+    const next = reduceEvent(s, { type: "awaiting-persistence", fault } as unknown as WireEvent);
+    expect(next.persistenceFault).toEqual(fault);
+    // The turn was aborted via the hard-stop path, so the in-flight view clears.
+    expect(next.working).toBe(false);
+    expect(next.live).toBeNull();
+  });
+
+  it("persistence-recovered clears it", () => {
+    const s = { ...newSlice("s1"), persistenceFault: fault };
+    const next = reduceEvent(s, { type: "persistence-recovered", discarded: 0 } as unknown as WireEvent);
+    expect(next.persistenceFault).toBeNull();
+  });
+
+  it("a settled state carrying a fault restores it (e.g. reconnect mid-fault)", () => {
+    const next = applyState(newSlice("s1"), { status: "awaiting-persistence", persistenceFault: fault });
+    expect(next.persistenceFault).toEqual(fault);
+  });
+});

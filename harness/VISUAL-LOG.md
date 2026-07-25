@@ -267,3 +267,47 @@ Not exercised visually (covered by tests / headless): `auto` (silent, P6b),
 `hard` (Compact-only card — same component, `cancelable:false`), `manual` (the
 header **compact** button), the actual compact round-trip, and the cross-model
 summary path (`test/compaction-p6c.test.ts`, `test/server-p6c.test.ts`).
+
+---
+
+## D-46 — persistence-fault banner (closes H-01) · 2026-07-25 · ✅ looked good
+
+**Screenshot:** [`visual/d46-persistence-fault.png`](visual/d46-persistence-fault.png)
+
+Drove the built server with the fake driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs), sent one turn that saved normally, then **made that
+conversation's log read-only** (`chmod 400 cv_….jsonl`) — a real EACCES on
+`open(…, "a")`, the stand-in for a full disk — and sent a second turn. Confirmed
+with my own eyes:
+
+- **The session stops instead of drifting** — `/chat` returned
+  `status: "awaiting-persistence"` with `pending: 2`, and the blocking
+  **"⚠ can't save this conversation / stopped"** card rendered: the filename, the
+  errno reason, "2 records are queued and unwritten", and what to do about it.
+- **The composer is gated** — it flipped to **"Queue a message for the next turn…"**
+  with a **Queue** button, exactly like an approval/ask pause. No fresh Send while
+  records are unwritten.
+- **The rail agrees** — the session card shows **`can't save`** with the red
+  (halt) dot rather than a stale "idle".
+- **Retry while still broken fails honestly** — clicking **Retry save** with the
+  file still read-only kept the banner up and flipped its header to
+  **`retry failed`**. It does not pretend to have saved.
+- **Retry after fixing it recovers fully** — `chmod 600` (the "freed up disk
+  space" moment) then **Retry save**: banner gone, rail back to **idle**, composer
+  back to **"Message JLCode…"** with **Send**.
+- **The records actually landed, in order** — read the JSONL back afterwards:
+  header → user → assistant → user → assistant, **no dangling `parent`**. This is
+  the point of stalling at the head rather than draining past a failure.
+
+**Two defects this peek caught that the tests had not:** (1) the banner dumped the
+full absolute path (already shown as the filename) and wrapped three lines — now
+trimmed to the errno reason, with the path on a `title` tooltip; (2) the rail
+badge read **`idle`** during a fault, because `statusLabel`/`dotClass` didn't know
+about it. Also corrected the *tests*: they jammed the **directory**, which only
+blocks *creating* a file — so they were passing on a timing accident (the header
+not yet flushed). Jamming the **file** is deterministic, and that is what the
+suite does now.
+
+Not exercised visually (covered by tests): the discard path's confirm step
+("Continue without saving…" → "Really discard N?"), a fault on the shared
+`index.jsonl`, and journal-write failures (warn-only, they never stop a session).

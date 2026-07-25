@@ -103,3 +103,129 @@ describe("AppendLog", () => {
     expect(good).toEqual([{ ok: true }]); // the good record survives; torn line dropped
   });
 });
+
+// ---- Write failures stall, they do not vanish (D-46, closes H-01) ----
+//
+// The failure is injected for real (a read-only directory → EACCES on open)
+// rather than by mocking fs, so these exercise the actual recovery path: the
+// disk problem is fixed and the stalled records land. Skipped as root, which
+// bypasses the permission bits that make the injection work.
+const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
+const describeFaults = asRoot ? describe.skip : describe;
+
+describeFaults("AppendLog write failures (D-46)", () => {
+  /** Make `dir` unwritable so the next open("a") fails, and hand back the undo.
+   *  This works here only because each case writes to a log that does **not yet
+   *  exist**: a read-only directory blocks *creating* an entry, not appending to
+   *  one already created. To jam an existing log (as `persistence-fault.test.ts`
+   *  does), chmod the file itself. */
+  function jamDisk(): () => void {
+    fs.chmodSync(dir, 0o500);
+    return () => fs.chmodSync(dir, 0o700);
+  }
+
+  /** True if `p` is still pending after a tick — a stalled write must not settle. */
+  async function isPending(p: Promise<unknown>): Promise<boolean> {
+    const marker = Symbol("pending");
+    p.catch(() => {}); // don't trip unhandled-rejection on the discard path
+    return (await Promise.race([p, Promise.resolve(marker)])) === marker;
+  }
+
+  it("raises a fault instead of swallowing the error", async () => {
+    const log = mk(path.join(dir, "fault.jsonl"));
+    const seen: string[] = [];
+    log.onFault((f) => seen.push(f.error.message));
+    const undo = jamDisk();
+    try {
+      const write = log.append({ n: 1 });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(seen).toHaveLength(1);
+      expect(log.fault).not.toBeNull();
+      expect(log.fault?.pending).toBe(1);
+      // The record is still queued, so its promise has NOT resolved (and has not
+      // rejected either — it is waiting for a retry).
+      expect(await isPending(write)).toBe(true);
+    } finally {
+      undo();
+    }
+  });
+
+  it("flush() rejects while stalled instead of resolving green (the H-01 bug)", async () => {
+    const log = mk(path.join(dir, "flush.jsonl"));
+    const undo = jamDisk();
+    try {
+      void log.append({ n: 1 }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 50));
+      await expect(log.flush()).rejects.toThrow();
+    } finally {
+      undo();
+    }
+  });
+
+  it("stalls later appends behind the failed one and preserves order on retry", async () => {
+    const file = path.join(dir, "order.jsonl");
+    const log = mk(file);
+    const undo = jamDisk();
+    const writes = [log.append({ n: 1 }), log.append({ n: 2 }), log.append({ n: 3 })];
+    for (const w of writes) w.catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+    expect(log.fault?.pending).toBe(3); // all three waiting, none written
+    expect(fs.existsSync(file)).toBe(false);
+
+    undo(); // the "user freed up disk space" moment
+    await log.retry();
+    await Promise.all(writes);
+    expect(log.fault).toBeNull();
+    // Order preserved — this is why a failure stalls rather than draining past:
+    // record 2 must never land before record 1 (its tree parent).
+    expect(read(file)).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
+  });
+
+  it("a retry that fails again leaves the log stalled", async () => {
+    const log = mk(path.join(dir, "again.jsonl"));
+    const undo = jamDisk();
+    try {
+      void log.append({ n: 1 }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 50));
+      await expect(log.retry()).rejects.toThrow(); // still unwritable
+      expect(log.fault).not.toBeNull();
+    } finally {
+      undo();
+    }
+    await log.retry(); // now it works
+    expect(log.fault).toBeNull();
+  });
+
+  it("discardPending drops the backlog and rejects its promises", async () => {
+    const log = mk(path.join(dir, "discard.jsonl"));
+    const undo = jamDisk();
+    const write = log.append({ n: 1 });
+    await new Promise((r) => setTimeout(r, 50));
+    const dropped = log.discardPending();
+    undo();
+    expect(dropped).toBe(1);
+    expect(log.fault).toBeNull();
+    await expect(write).rejects.toThrow(/Discarded/);
+    // The log still works afterward — discarding recovers, it doesn't wedge.
+    await log.append({ n: 2 });
+    expect(read(path.join(dir, "discard.jsonl"))).toEqual([{ n: 2 }]);
+  });
+});
+
+// ---- Descriptors are not retained between writes (D-46, closes H-01) ----
+describe("AppendLog descriptor use", () => {
+  const canCountFds = process.platform === "linux" && fs.existsSync("/proc/self/fd");
+  const itFds = canCountFds ? it : it.skip;
+
+  itFds("does not accumulate open descriptors across many logs", async () => {
+    const before = fs.readdirSync("/proc/self/fd").length;
+    // The H-01 shape: one log per conversation, none ever closed.
+    for (let i = 0; i < 60; i++) {
+      const log = mk(path.join(dir, `conv-${i}.jsonl`));
+      await log.append({ i });
+    }
+    const after = fs.readdirSync("/proc/self/fd").length;
+    // Previously each live log held its own fd (~60 more); now none are retained.
+    expect(after - before).toBeLessThan(10);
+  }, 30_000);
+});

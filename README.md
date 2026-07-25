@@ -12,7 +12,7 @@ The design lives in [`harness/`](harness/) — start with
 
 ## Requirements
 
-- Node.js **≥ 20** (developed on 24). No native-binary dependencies (D-25).
+- Node.js **≥ 20** (developed on 24).
 
 ## Develop
 

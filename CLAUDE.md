@@ -19,9 +19,12 @@ deliberately and record it in `DECISIONS.md` — don't let them silently drift.
 ## Conventions
 
 - **Runtime:** Node.js + TypeScript.
-- **Minimize dependencies; no native binaries** (D-25). Prefer pure-JS/bundled packages so
-  `npx jlcode` stays friction-free. Avoid native-binary deps (e.g. `better-sqlite3`); if a
-  query store is ever needed, use `node:sqlite` (built-in) or `sql.js` (WASM).
+- **Use libraries (D-45).** Reach for the well-maintained mainline package when one fits —
+  runtime deps included, native binaries included. **Do not hand-roll a substitute to avoid a
+  dependency**; that is more code to maintain, not less. Judge a dep on whether it is maintained
+  and carries its weight; prefer pure-JS/WASM only when the choice is otherwise a coin flip
+  (install friction is real). *The old minimize-deps rule (D-25) is retired — ignore it and its
+  citations in older code comments.*
 - **Use `python3`, never `python`** when invoking Python (e.g. the `file_utils` MCP server).
 - **Secrets never get committed.** OpenRouter keys live in the OS-level config
   store (see SPEC), not in the repo. `.gitignore` guards against stray `.env`s.

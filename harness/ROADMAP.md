@@ -81,8 +81,12 @@ dropped, tool outputs truncated); and the **Fable tier ran live** — the D-14 v
 round-trip and the safe-harbor-compaction-accepted-by-Fable tests are recorded into the committed
 cache (`test/helpers/{live,judge}.ts`) and replay free. **Phase 6 / Milestone M4 complete.** Stack
 decided in D-39; serve-mode/auth in D-40. **194 Tier-0/1 tests green** (+ 2 replayed Fable tests).
-**To resume: pick from the post-v1 "Later" backlog or the H-01 hardening item.** Rendered surfaces
-get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P6c).
+**H-01 is now FIXED (D-46)** — persistence failures stop the session with a recoverable Retry
+banner, and append logs retain no file descriptors. **D-25 (minimize-deps) is RETIRED by D-45:**
+use the mainline library when one fits; treat surviving `D-25` citations in code comments as
+historical, not a live constraint. **206 Tier-0/1 green** (+2 replayed Fable).
+**To resume: pick from the post-v1 "Later" backlog.** Rendered surfaces
+get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P6c + the D-46 banner).
 
 ---
 
@@ -395,34 +399,29 @@ tiers before the next; the one paid/live-tier spend is isolated in P6c.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
-- **H-01 — `AppendLog` write failures are silent; open fds are unbounded.** Found 2026-07-24 while
-  chasing the append-log test flake (`test/append-log.test.ts` flake note). **Note (P6c):** the test
-  *flake* itself was separately root-caused to **fsync latency** — the "concurrent appends" case does
-  50 serialized durable fsyncs (~4.4s isolated, over the 5s default under full-suite load) — and
-  fixed with a realistic per-test timeout; that is *not* the fd/silent-write weakness below, which
-  remains worth doing. Two coupled weaknesses in `src/persist/append-log.ts` + its callers:
-  - **Silent dropped writes.** `append()` swallows write errors (`this.tail = done.catch(() => {})`)
-    and `flush()` awaits that *swallowed* tail, so a failed write never surfaces there. The
-    production caller is fire-and-forget — `server.ts:141` `void deps.store.entry(...)` — discarding
-    the one promise that still carries the error. So if a persistence write throws (**EMFILE** from
-    fd exhaustion, **ENOSPC** disk-full, **EIO**), the record is lost with *no* error event/log; the
-    in-memory session proceeds as if persisted (the read-your-writes flush resolves anyway).
-    **Symptom to watch:** after a restart/resume, a conversation is **silently missing its last
-    entries or a branch**; worst case a surviving entry's `parent` references an entry that was
-    never written → dangling/truncated tree on load. Quiet data loss, not a crash.
-  - **Unbounded open descriptors.** The stores use `new AppendLog(...)` per conversation file (not
-    the bounded `forPath` registry) and never close a log until `store.close()` — no eviction. A
-    long-uptime server touching many conversations climbs toward the fd limit → **`EMFILE`** (new
-    conversations/file tools start failing, possibly a crash). This is the real-program analog of
-    the test's fd-leak theory. Slow-building; only bites high-uptime/many-conversation servers.
-  - **Not at risk:** interleaved/garbled JSONL (single thread + one serialized queue per file
-    guarantees whole ordered lines within a process); a crash-torn *last* line is already dropped by
-    the tolerant loader parse.
-  - **Severity:** low for normal localhost/desktop use; grows with sustained write pressure and
-    server uptime. **Fix options (highest value first):** (1) stop swallowing write errors — surface
-    them as a session `error` event + ERROR log so a dropped write is visible, not silent; (2) bound
-    open fds (route through `forPath`, or LRU-close idle conversation logs); (3) optionally retry a
-    failed write once. Cleanly separable from Phase 6.
+- **H-01 — `AppendLog` write failures are silent; open fds are unbounded.** Found 2026-07-24;
+  **FIXED 2026-07-24 (D-46).** Both weaknesses in `src/persist/append-log.ts` are closed:
+  - **Silent dropped writes → a blocking, recoverable pause.** `append()` no longer swallows
+    write errors, and `flush()` no longer awaits a *swallowed* tail (it now **rejects** while a
+    write is stalled, so read-your-writes can't report success after a failure). A failed record
+    stays at the **head** of the queue with later appends stalled behind it — draining past a
+    failure was the real corruption risk (record N+1 landing with a `parent` that never wrote →
+    dangling tree on load). The store raises a fault, `server.ts` stops discarding the promise,
+    and the session enters **`awaiting-persistence`**, reusing the hard-stop unwind so a running
+    turn settles at its existing safe points. The browser shows a blocking banner with **Retry**
+    (fix the disk → the queued records land in order) plus an explicit, confirm-gated discard.
+  - **Unbounded open descriptors → none retained.** Each record now opens/writes/fsyncs/closes
+    under `await using` (`Symbol.asyncDispose`), so no fd outlives its write. Measured: the extra
+    open/close is within run-to-run noise of the ~140ms fsync that dominates. Verified the test
+    discriminates — the old shape leaks +60 fds across 60 conversation logs, the new one +0.
+  - **Not at risk (unchanged):** interleaved/garbled JSONL (one serialized queue per file);
+    a crash-torn *last* line is still dropped by the tolerant loader parse.
+  - **Verified:** +13 Tier-0 tests — `append-log` fault/stall/retry/discard/fd-growth (failure
+    injected for real via a read-only dir → EACCES, not an fs mock), `persistence-fault`
+    store→session→HTTP round trip incl. refusing new work while stopped and a coherent tree
+    after recovery, and the `web-session-state` fold. **206 Tier-0/1 green.**
+  - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
+    latency and fixed with a realistic timeout — unrelated to the defects above.*
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-08)
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·

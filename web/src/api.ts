@@ -81,6 +81,16 @@ export interface CompactionRequest {
   window: number;
 }
 
+/** A stalled persistence write the session is stopped on (D-46). Recoverable:
+ *  free the disk, then Retry and the queued records land in order. */
+export interface PersistenceFault {
+  id: string;
+  filePath: string;
+  message: string;
+  pending: number;
+  retryFailed?: boolean;
+}
+
 /** A tool call paused for approval (D-16). Args are editable before running. */
 export interface ApprovalRequest {
   id: string;
@@ -136,6 +146,7 @@ export interface SessionState {
   triggerMode?: TriggerMode; // live compaction trigger mode (D-27, P6c)
   needsCompaction?: boolean; // budget crossed — drives the suggest banner (D-44)
   compactionRequest?: CompactionRequest; // pending pre-send compaction pause (D-27)
+  persistenceFault?: PersistenceFault; // a write failed; session stopped on it (D-46)
 }
 
 /** A session event as it arrives over SSE (subset the UI acts on; see session/types.ts). */
@@ -268,6 +279,19 @@ export async function setTriggerMode(id: string, mode: TriggerMode): Promise<voi
  *  skips a cancelable pause), or compact on demand (manual/suggest "Compact now"). */
 export async function compact(id: string, opts: { skip?: boolean } = {}): Promise<void> {
   await postJson(`/session/${id}/compact`, opts);
+}
+
+/** Recover from a stalled persistence write (D-46): retry the queued records, or
+ *  `discard: true` to give up on them and accept the loss. Returns the settled
+ *  state — `recovered: false` means it failed again and the session stays paused. */
+export async function resolvePersistence(
+  id: string,
+  opts: { discard?: boolean } = {},
+): Promise<SessionState & { recovered?: boolean; discarded?: number }> {
+  return (await postJson(`/session/${id}/persistence`, opts)) as SessionState & {
+    recovered?: boolean;
+    discarded?: number;
+  };
 }
 
 /** Set / raise / clear the whole-tree spend cap in USD (D-33); null clears it. */

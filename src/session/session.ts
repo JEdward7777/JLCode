@@ -45,6 +45,7 @@ import type {
   AskUserQuestion,
   AskUserRequest,
   CompactionRequest,
+  PersistenceFault,
   SessionEvent,
   SessionListener,
   SessionStatus,
@@ -209,6 +210,9 @@ export class Session {
   /** A pre-send compaction decision the loop is paused on (P6c, D-27) — set in
    *  the `cancelable` / `hard` trigger modes. Resolved via resolveCompaction. */
   private pendingCompaction: CompactionRequest | undefined;
+  /** A stalled persistence write the session is stopped on (D-46). Raised from
+   *  outside the loop by the store's fault listener; cleared by retry/discard. */
+  private pendingPersistence: PersistenceFault | undefined;
   // Global stop (D-34): "hard" aborts the in-flight LLM + kills tasks + clears
   // the queue; "soft" lets running work finish but takes no further LLM turn.
   private stopScope: "hard" | "soft" | null = null;
@@ -486,10 +490,65 @@ export class Session {
     // else: the running advance() loop notices stopScope and settles at a safe point.
   }
 
-  /** Clear the stop flag and return to idle — called once the loop unwinds. */
+  /** Clear the stop flag and settle — called once the loop unwinds. A stalled
+   *  persistence write settles into its own pause instead of idle (D-46), so the
+   *  session can't quietly accept new work while records are unwritten. */
   private settleStopped(): void {
     this.stopScope = null;
+    this.status = this.pendingPersistence ? "awaiting-persistence" : "idle";
+  }
+
+  get awaitingPersistence(): PersistenceFault | undefined {
+    return this.pendingPersistence;
+  }
+
+  /** Raise a persistence fault (D-46): a record could not be written, so stop
+   *  everything and wait for the user. Called by the server's store listener,
+   *  i.e. **asynchronously, from outside the turn loop** — so it reuses the
+   *  hard-stop path to unwind a running turn at its existing safe points, and
+   *  `settleStopped` lands on `awaiting-persistence`. Idempotent: a second
+   *  failing file while already paused just updates the reported fault. */
+  raisePersistenceFault(fault: Omit<PersistenceFault, "id">): void {
+    const first = !this.pendingPersistence;
+    this.pendingPersistence = { id: this.pendingPersistence?.id ?? newId("persist"), ...fault };
+    this.emit({ type: "awaiting-persistence", fault: this.pendingPersistence });
+    if (!first) return; // already stopped for this; don't re-abort the unwind
+    if (this.status === "running") {
+      this.stop("hard"); // abort the in-flight call; the loop settles into the pause
+    } else {
+      this.status = "awaiting-persistence";
+    }
+  }
+
+  /** Retry the stalled writes — the disk-full recovery path (D-46). On success
+   *  the backlog lands and the session returns to idle; on repeat failure it
+   *  stays paused with `retryFailed` set so the banner can say so. `retryWrites`
+   *  is injected by the server (it owns the store). */
+  async retryPersistence(retryWrites: () => Promise<void>): Promise<boolean> {
+    if (!this.pendingPersistence) throw new Error("No pending persistence fault");
+    try {
+      await retryWrites();
+    } catch (err) {
+      this.pendingPersistence = { ...this.pendingPersistence, message: (err as Error).message, retryFailed: true };
+      this.emit({ type: "awaiting-persistence", fault: this.pendingPersistence });
+      return false;
+    }
+    this.pendingPersistence = undefined;
     this.status = "idle";
+    this.emit({ type: "persistence-recovered", discarded: 0 });
+    return true;
+  }
+
+  /** Give up on the stalled records and carry on, accepting the loss (D-46).
+   *  The explicit escape hatch — the conversation on disk will be missing these
+   *  entries after a restart, which is why it is never done automatically. */
+  discardPersistence(discardWrites: () => number): number {
+    if (!this.pendingPersistence) throw new Error("No pending persistence fault");
+    const discarded = discardWrites();
+    this.pendingPersistence = undefined;
+    this.status = "idle";
+    this.emit({ type: "persistence-recovered", discarded });
+    return discarded;
   }
 
   /** The background tasks currently running (D-34), for the UI list. */
@@ -674,6 +733,9 @@ export class Session {
   /** Send a user message and run until the session settles or needs the user. */
   async send(text: string): Promise<void> {
     if (this.status === "halted") throw new Error("Session is halted (too many consecutive failures).");
+    if (this.status === "awaiting-persistence") {
+      throw new Error("Session is stopped: a conversation record could not be saved. Retry or discard it first.");
+    }
     if (
       this.status === "awaiting-approval" ||
       this.status === "awaiting-input" ||

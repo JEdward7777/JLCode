@@ -4,6 +4,7 @@
  * config, or the fake echo driver when JLCODE_FAKE_LLM=1 (offline, no spend).
  */
 import { resolvePaths } from "../paths.js";
+import { createLogger } from "../logger.js";
 import { getVersion } from "../version.js";
 import { loadConfig, saveConfig } from "../config/store.js";
 import { resolveForCwd, findModelConfig } from "../config/operations.js";
@@ -99,6 +100,7 @@ export async function runServe(args: string[]): Promise<number> {
 
   const store = new ConversationStore(paths.conversationsDir);
   const debugJournal = new DebugJournal(paths.logsDir);
+  const log = createLogger({ dir: paths.logsDir });
 
   const config = resolveConfig();
   if (!config) {
@@ -172,6 +174,7 @@ export async function runServe(args: string[]): Promise<number> {
     onShutdown: () => setTimeout(() => closeServer(), 100),
     staticDir: staticDir(),
     auth,
+    logger: log,
     // Persist a live mode/approval switch as the config's new default (Joshua's
     // call: the header controls both re-gate now and stick for next launch).
     persistDefaults: (configName, patch) => {
@@ -201,9 +204,17 @@ export async function runServe(args: string[]): Promise<number> {
     },
   });
   const server = await startNodeServer((req) => app.fetch(req), { host, port });
-  // Flush pending persistence writes before exiting.
+  // Flush pending persistence writes before exiting. flush() now *rejects* on a
+  // stalled write (D-46) rather than resolving green, so report the loss on the
+  // way out instead of exiting silently — and still exit, since a shutdown that
+  // can't complete because the disk is full would be worse than a loud one.
   closeServer = () =>
-    void Promise.all([store.flush(), debugJournal.flush()]).finally(() => server.close(() => process.exit(0)));
+    void Promise.all([store.flush(), debugJournal.flush()])
+      .catch((err: unknown) => {
+        log.error("shutdown: unwritten records were lost", { err });
+        process.exitCode = 1;
+      })
+      .finally(() => server.close(() => process.exit(process.exitCode ?? 0)));
 
   const base = `http://${host}:${port}`;
   const client = staticDir() ? `open ${base}/  in your browser` : `browser client not built — run \`npm run build\``;

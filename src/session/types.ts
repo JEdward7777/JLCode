@@ -46,7 +46,24 @@ export type SessionStatus =
   | "awaiting-approval"
   | "awaiting-input"
   | "awaiting-compaction"
+  | "awaiting-persistence"
   | "halted";
+
+/** A stalled persistence write the session is paused on (D-46). Unlike the other
+ *  pauses this one is raised **from outside the turn loop** — the store writes
+ *  asynchronously off `entry` events — so it unwinds the loop via the hard-stop
+ *  path and settles here instead of idle. Recoverable: fix the disk, then Retry. */
+export interface PersistenceFault {
+  id: string;
+  /** The file whose write failed. */
+  filePath: string;
+  /** The underlying error message (ENOSPC, EIO, EMFILE, …). */
+  message: string;
+  /** Records queued and unwritten, including the one that failed. */
+  pending: number;
+  /** Set when a retry was attempted and failed again. */
+  retryFailed?: boolean;
+}
 
 /** A pre-send compaction decision the loop is paused on (P6c, D-27). Raised in
  *  the `cancelable` and `hard` trigger modes when ground-truth usage says the
@@ -153,6 +170,13 @@ export type SessionEvent =
   // The live compaction trigger mode changed (P6c, D-27) — the header selector,
   // persisted as the config default (like mode/approval).
   | { type: "trigger-mode"; mode: CompactionTrigger }
+  // A persistence write failed and the session stopped on it (D-46). Everything
+  // halts until the user retries (disk fixed → the stalled record lands) or
+  // explicitly discards. Never auto-resolved: proceeding unpersisted is exactly
+  // the silent divergence this pause exists to prevent.
+  | { type: "awaiting-persistence"; fault: PersistenceFault }
+  // The stalled writes drained after a retry — back to idle (D-46).
+  | { type: "persistence-recovered"; discarded: number }
   | { type: "stopped"; scope: "hard" | "soft" } // global stop: hard abort vs loop-only (D-34)
   | { type: "queue"; queue: QueuedMessage[] } // the queued-message list changed (D-34)
   | { type: "task-start"; task: TaskView } // a background command started (D-34)

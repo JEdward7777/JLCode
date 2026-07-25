@@ -8,12 +8,37 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DebugRecord } from "../session/types.js";
-import { AppendLog } from "./append-log.js";
+import { AppendLog, type AppendFault, type FaultListener } from "./append-log.js";
 
 export class DebugJournal {
   private readonly logs = new Map<string, AppendLog>();
+  private readonly faultListeners = new Set<FaultListener>();
 
   constructor(private readonly dir: string) {}
+
+  /** Subscribe to journal write failures (D-46). Returns an unsubscribe fn.
+   *  The journal is diagnostic, never replayed to a model, so the server treats
+   *  a fault here as a warning — it does not pause the session over it. */
+  onFault(listener: FaultListener): () => void {
+    this.faultListeners.add(listener);
+    return () => this.faultListeners.delete(listener);
+  }
+
+  private get stalled(): AppendLog[] {
+    return [...this.logs.values()].filter((l) => l.fault !== null);
+  }
+
+  get fault(): AppendFault | null {
+    return this.stalled[0]?.fault ?? null;
+  }
+
+  async retry(): Promise<void> {
+    await Promise.all(this.stalled.map((l) => l.retry()));
+  }
+
+  discardPending(): number {
+    return this.stalled.reduce((n, l) => n + l.discardPending(), 0);
+  }
 
   private file(convId: string): string {
     return path.join(this.dir, `${convId}.journal.jsonl`);
@@ -23,6 +48,9 @@ export class DebugJournal {
     let log = this.logs.get(convId);
     if (!log) {
       log = new AppendLog(this.file(convId));
+      log.onFault((fault) => {
+        for (const listener of this.faultListeners) listener(fault);
+      });
       this.logs.set(convId, log);
     }
     return log;
