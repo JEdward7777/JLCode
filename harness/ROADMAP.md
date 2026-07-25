@@ -396,8 +396,11 @@ tiers before the next; the one paid/live-tier spend is isolated in P6c.
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
 - **H-01 — `AppendLog` write failures are silent; open fds are unbounded.** Found 2026-07-24 while
-  chasing the append-log test flake (`test/append-log.test.ts` flake note). Two coupled weaknesses
-  in `src/persist/append-log.ts` + its callers:
+  chasing the append-log test flake (`test/append-log.test.ts` flake note). **Note (P6c):** the test
+  *flake* itself was separately root-caused to **fsync latency** — the "concurrent appends" case does
+  50 serialized durable fsyncs (~4.4s isolated, over the 5s default under full-suite load) — and
+  fixed with a realistic per-test timeout; that is *not* the fd/silent-write weakness below, which
+  remains worth doing. Two coupled weaknesses in `src/persist/append-log.ts` + its callers:
   - **Silent dropped writes.** `append()` swallows write errors (`this.tail = done.catch(() => {})`)
     and `flush()` awaits that *swallowed* tail, so a failed write never surfaces there. The
     production caller is fire-and-forget — `server.ts:141` `void deps.store.entry(...)` — discarding

@@ -193,9 +193,13 @@ export function buildCrossModelSummaryInput(
         body.push({ role: "user", content: entry.text });
         break;
       case "assistant": {
-        // Fold the readable planning into visible content; drop the opaque signed
-        // reasoning (non-portable across models) and the structured tool_calls
-        // (the summarizer only needs to read what happened, not re-issue calls).
+        // Fold the readable planning into visible content; drop the opaque
+        // reasoning blob — signed OR encrypted/redacted — which is non-portable
+        // across models, plus the structured tool_calls (the summarizer only reads
+        // what happened, it doesn't re-issue calls). Keying off the SDK's split
+        // (readable `reasoningText` vs opaque `reasoning`) is exactly "keep the
+        // planning, redact only the redacted": a redacted turn has no readable text,
+        // so nothing of its thinking survives — correct, and by construction.
         const planning = entry.reasoningText?.trim();
         const said = entry.text?.trim() ?? "";
         const content = [planning ? `[reasoning] ${planning}` : "", said].filter(Boolean).join("\n\n");

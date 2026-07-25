@@ -18,6 +18,16 @@ import { AppendLog } from "../src/persist/append-log";
 // ~12x under concurrent build-load with no reproduction. So: no confirmed
 // recurrence here; the escalation above still stands only if append-log is the
 // suite that fails next time (capture the test name before concluding).
+// 2026-07-24 (P6c): CONFIRMED and ROOT-CAUSED. The "concurrent appends" case below
+// reproduced reliably once P6c added test files (more parallel suites → more fsync
+// contention): it does 50 *serialized durable fsyncs* and already takes ~4.4s in
+// isolation, right at Vitest's 5s default; under full-suite load it crossed it and
+// timed out. So the earlier fd-leak theory was the wrong lens — the flake is
+// **fsync latency** on a legitimately IO-heavy test, not a hang, a write-ordering
+// race, or a descriptor leak (the ordering assertion still completes correctly).
+// Fix: a realistic timeout for this one durable-IO test (it is not a perf
+// assertion). The H-01 fd-bounding work is still worth doing, but it is NOT what
+// makes this test flake.
 let dir: string;
 const opened: AppendLog[] = [];
 /** Create a log and track it so afterEach closes its fd (no leaks under load). */
@@ -53,7 +63,10 @@ describe("AppendLog", () => {
     expect(read(file)).toEqual([{ n: 1 }, { n: 2 }]);
   });
 
-  it("serializes concurrent appends in enqueue order (no interleave)", async () => {
+  // 50 serialized durable fsyncs is legitimately slow (~4.4s isolated) and slower
+  // under full-suite fsync contention, so this one gets a realistic timeout — it
+  // asserts ordering, not speed (see the fsync-latency note at the top).
+  it("serializes concurrent appends in enqueue order (no interleave)", { timeout: 30_000 }, async () => {
     const file = path.join(dir, "b.jsonl");
     const log = mk(file);
     // Fire many appends without awaiting each — the queue must keep order.

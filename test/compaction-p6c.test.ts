@@ -7,6 +7,8 @@
  */
 import { describe, it, expect } from "vitest";
 import { buildCrossModelSummaryInput, SUMMARY_TOOL_OUTPUT_CAP_CHARS } from "../src/session/compaction";
+import { buildWireMessages } from "../src/conversation/wire";
+import type { Conversation } from "../src/conversation/types";
 import { Session } from "../src/session/session";
 import type { ModelConfig, CompactionSettings } from "../src/config/types";
 import type { ChatRequest, LlmDriver, StreamEvent, Usage } from "../src/llm/types";
@@ -108,6 +110,49 @@ describe("cross-model summary input (D-29 refined — keep planning, drop signed
     expect(toolMsg).toBeTruthy();
     expect((toolMsg!.content as string).length).toBeLessThan(long.length);
     expect(toolMsg!.content as string).toContain("y".repeat(100)); // tail kept
+  });
+});
+
+describe("redacted vs readable thinking (D-14/D-28/D-29)", () => {
+  // The SDK splits reasoning into readable text (`reasoningText`) and the opaque
+  // signed/encrypted blob (`reasoning`). "Redacted thinking" is the case with an
+  // encrypted blob and NO readable text. The cross-model builder keys off that
+  // split, so "only redact the redacted thinking" holds by construction: readable
+  // planning survives, the opaque blob (signed OR encrypted) never crosses models.
+  const redactedConv: Conversation = {
+    id: "c",
+    entries: [
+      { id: "u1", parent: null, type: "user", text: "do the risky thing" },
+      {
+        id: "a1",
+        parent: "u1",
+        type: "assistant",
+        text: "I can't help with that.",
+        // Encrypted/redacted thinking: opaque data, no readable text.
+        reasoning: [{ type: "reasoning.encrypted", data: "REDACTED-OPAQUE-BLOB" }],
+        // reasoningText intentionally absent — nothing readable was returned.
+      },
+    ],
+    activeLeaf: "a1",
+  };
+
+  it("cross-model: a redacted turn keeps no thinking and never leaks the opaque blob", () => {
+    const input = buildCrossModelSummaryInput(redactedConv, { system: SYS });
+    const asst = input.find((m) => m.role === "assistant")!;
+    expect(asst.content).toBe("I can't help with that."); // answer text only, no [reasoning]
+    expect(String(asst.content)).not.toContain("[reasoning]");
+    expect(JSON.stringify(input)).not.toContain("REDACTED-OPAQUE-BLOB");
+  });
+
+  it("same-model wire round-trips an encrypted reasoning array byte-identical (D-14)", () => {
+    const a1 = redactedConv.entries[1] as { reasoning: unknown };
+    const wire = buildWireMessages(redactedConv, { system: SYS });
+    const asst = wire.find((m) => m.role === "assistant")!;
+    // Opaque passthrough: the encrypted blob replays by the same reference (===),
+    // so a same-model replay is Fable-safe for the redacted variety exactly as for
+    // the signed one — no editing, no reconstruction.
+    expect(asst.reasoning_details).toBe(a1.reasoning);
+    expect(asst.reasoning_details).toEqual([{ type: "reasoning.encrypted", data: "REDACTED-OPAQUE-BLOB" }]);
   });
 });
 
