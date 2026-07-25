@@ -13,6 +13,8 @@
  */
 import type { ChatMessage, Usage } from "../llm/types.js";
 import type { CompactionSettings, CompactionTrigger } from "../config/types.js";
+import type { Conversation } from "../conversation/types.js";
+import { pathToLeaf } from "../conversation/tree.js";
 
 /** Headroom kept below the window (D-27/D-44): the ~20K one-overshoot-turn buffer.
  *  Per D-44 this buffer subsumes the output reserve for v1 (`budget = window − buffer`);
@@ -156,6 +158,68 @@ export function truncateToolOutputsForSummary(
     if (m.role !== "tool" || typeof m.content !== "string" || m.content.length <= capChars) return m;
     const kept = m.content.slice(-capChars);
     return { ...m, content: `[…tool output truncated for summary…]\n${kept}` };
+  });
+}
+
+/** Build the summary **input** for the cross-model path (D-29, refined per
+ *  Joshua): when a *different*, cheaper compactor is configured we can't reuse
+ *  the working model's prompt cache, and — the one genuinely non-portable field —
+ *  the working model's **signed/encrypted `reasoning_details`** must not cross to
+ *  another model (the same tamper hazard as D-28, pointed the other way). So we
+ *  send the branch as ordinary structured messages "as if we'd talked to the
+ *  cheaper model all along": keep the **readable** reasoning text (the planning —
+ *  the substantial part, which is just text and fully portable) folded into the
+ *  assistant content, **drop** the opaque `reasoning_details` blob, and truncate
+ *  tool outputs so the request fits. Pure (walks the active branch); the caller
+ *  appends the compaction instruction and sets `model` to the compactor.
+ *
+ *  Note we keep only the readable `reasoningText` and never inspect the opaque
+ *  `reasoning_details` — honoring "we never interpret reasoning" (D-14) while
+ *  still preserving the planning Joshua wants carried into the summary. */
+export function buildCrossModelSummaryInput(
+  conv: Conversation,
+  opts: { system?: string; capChars?: number } = {},
+): ChatMessage[] {
+  const system = opts.system?.trim();
+  const messages: ChatMessage[] = system ? [{ role: "system", content: system }] : [];
+  let body: ChatMessage[] = [];
+  for (const entry of pathToLeaf(conv)) {
+    switch (entry.type) {
+      case "compaction":
+        // A prior summary resets the replay, same as the wire builder.
+        body = [{ role: "user", content: `[Summary of the earlier conversation]\n${entry.summary}` }];
+        break;
+      case "user":
+        body.push({ role: "user", content: entry.text });
+        break;
+      case "assistant": {
+        // Fold the readable planning into visible content; drop the opaque signed
+        // reasoning (non-portable across models) and the structured tool_calls
+        // (the summarizer only needs to read what happened, not re-issue calls).
+        const planning = entry.reasoningText?.trim();
+        const said = entry.text?.trim() ?? "";
+        const content = [planning ? `[reasoning] ${planning}` : "", said].filter(Boolean).join("\n\n");
+        body.push({ role: "assistant", content: content || null });
+        break;
+      }
+      case "tool":
+        body.push({ role: "user", content: `[tool ${entry.name} result]\n${entry.content}` });
+        break;
+    }
+  }
+  const merged = [...messages, ...body];
+  // Truncate oversized tool-derived content so the whole request fits the
+  // (often smaller) compactor window — the cross-model analog of the forced
+  // same-model truncation.
+  return truncateCrossModelToolOutputs(merged, opts.capChars);
+}
+
+/** Cap oversized `[tool …]` user messages produced by {@link buildCrossModelSummaryInput}. */
+function truncateCrossModelToolOutputs(messages: ChatMessage[], capChars = SUMMARY_TOOL_OUTPUT_CAP_CHARS): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.role !== "user" || typeof m.content !== "string") return m;
+    if (!m.content.startsWith("[tool ") || m.content.length <= capChars) return m;
+    return { ...m, content: `[…tool output truncated for summary…]\n${m.content.slice(-capChars)}` };
   });
 }
 

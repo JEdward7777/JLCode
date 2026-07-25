@@ -180,10 +180,21 @@ export async function runServe(args: string[]): Promise<number> {
       if (idx < 0) return;
       const mc = current.modelConfigs[idx]!;
       const configs = current.modelConfigs.slice();
+      // A trigger-mode switch persists into compaction settings: `auto` sets the
+      // auto flag; the other four are recorded as the first (active) trigger mode.
+      const compaction =
+        patch.triggerMode === undefined
+          ? mc.compaction
+          : {
+              ...(mc.compaction ?? { auto: false }),
+              auto: patch.triggerMode === "auto",
+              triggerModes: [patch.triggerMode],
+            };
       configs[idx] = {
         ...mc,
         defaultMode: patch.mode ?? mc.defaultMode,
         defaultApproval: patch.approval ?? mc.defaultApproval,
+        ...(compaction ? { compaction } : {}),
         updatedAt: new Date().toISOString(),
       };
       saveConfig({ ...current, modelConfigs: configs }, paths);

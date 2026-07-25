@@ -28,6 +28,7 @@ import {
   activeTriggerMode,
   applyCompactorFit,
   buildCompactionInstruction,
+  buildCrossModelSummaryInput,
   computeBudget,
   evaluateTrigger,
   isOverWindowError,
@@ -35,6 +36,7 @@ import {
   COMPACTION_MAX_TOKENS,
   type CompactionBudget,
 } from "./compaction.js";
+import type { CompactionTrigger } from "../config/types.js";
 import type { QueuedMessage } from "./types.js";
 import type {
   ApprovalDecision,
@@ -42,6 +44,7 @@ import type {
   AskUserAnswer,
   AskUserQuestion,
   AskUserRequest,
+  CompactionRequest,
   SessionEvent,
   SessionListener,
   SessionStatus,
@@ -172,6 +175,10 @@ export class Session {
    *  (D-44). Detection only in P6a — the loop still proceeds (accepting the one
    *  accepted overshoot turn); the actual compaction engine is P6b. */
   needsCompaction = false;
+  /** Live compaction trigger mode (D-27), switchable at runtime like mode/approval
+   *  (P6c). Resolved from the config at construction; the header selector changes
+   *  it and the server persists it as the config default. */
+  triggerMode: CompactionTrigger;
 
   private readonly driver: LlmDriver;
   private readonly systemPrompt: string;
@@ -199,6 +206,9 @@ export class Session {
   private activeAssistantId: string | undefined;
   private pendingApproval: { request: ApprovalRequest; call: ToolCall; tool: Tool } | undefined;
   private pendingQuestion: { request: AskUserRequest; call: ToolCall } | undefined;
+  /** A pre-send compaction decision the loop is paused on (P6c, D-27) — set in
+   *  the `cancelable` / `hard` trigger modes. Resolved via resolveCompaction. */
+  private pendingCompaction: CompactionRequest | undefined;
   // Global stop (D-34): "hard" aborts the in-flight LLM + kills tasks + clears
   // the queue; "soft" lets running work finish but takes no further LLM turn.
   private stopScope: "hard" | "soft" | null = null;
@@ -206,6 +216,9 @@ export class Session {
   /** Set by a turn that hit the over-window hard wall (D-44b) so the loop can
    *  compact-and-retry instead of failing. Cleared once handled. */
   private overWindow = false;
+  /** The known-prefix size from the last budget-crossing evaluation (D-44), shown
+   *  on the pre-send compaction pause card (P6c). Informational only. */
+  private lastPrefixTokens = 0;
   /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
   private readonly tasks: TaskRegistry;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
@@ -237,6 +250,7 @@ export class Session {
     this.spendCapUsd = options.spendCapUsd;
     this.contextWindow = options.contextWindow ?? options.config.compaction?.contextLength;
     this.compactorWindow = options.compactorWindow;
+    this.triggerMode = activeTriggerMode(options.config.compaction);
     this.watchdogMs = options.watchdogMs ?? WATCHDOG_MS;
     this.tasks = options.tasks ?? new TaskRegistry();
     // Forward task lifecycle to subscribers (UI list) and arm/disarm the
@@ -295,9 +309,10 @@ export class Session {
     const evaln = evaluateTrigger(usage, budget);
     if (!evaln.needsCompaction) return;
     this.needsCompaction = true;
+    this.lastPrefixTokens = evaln.prefixTokens;
     this.emit({
       type: "needs-compaction",
-      mode: activeTriggerMode(this.config.compaction),
+      mode: this.triggerMode,
       prefixTokens: evaln.prefixTokens,
       threshold: budget.threshold,
       window: budget.window,
@@ -321,9 +336,22 @@ export class Session {
     // Only a system prompt (or nothing) → nothing to summarize.
     if (prefix.every((m) => m.role === "system")) return false;
     const hasPriorSummary = pathToLeaf(this.conversation).some((e) => e.type === "compaction");
-    const input = opts.forced ? truncateToolOutputsForSummary(prefix) : prefix;
+    // Cross-model path (D-29, refined): a *different*, cheaper compactor can't
+    // reuse the working model's prompt cache and must not receive its signed
+    // reasoning, so send flattened structured messages (readable planning kept,
+    // opaque reasoning dropped, tool outputs truncated) to the compactor id.
+    // Same-model → the cache-reuse path: the exact live prefix (only the forced
+    // over-window fallback truncates it so it fits).
+    const compactorId = this.config.compaction?.model;
+    const crossModel = Boolean(compactorId && compactorId !== this.config.model);
+    const model = crossModel ? compactorId! : this.config.model;
+    const input = crossModel
+      ? buildCrossModelSummaryInput(this.conversation, { system: this.systemPrompt })
+      : opts.forced
+        ? truncateToolOutputsForSummary(prefix)
+        : prefix;
     const req: ChatRequest = {
-      model: this.config.model,
+      model,
       messages: [...input, { role: "user", content: buildCompactionInstruction({ hasPriorSummary }) }],
       tool_choice: "none",
       max_tokens: COMPACTION_MAX_TOKENS,
@@ -367,6 +395,60 @@ export class Session {
     return true;
   }
 
+  /** Switch the live compaction trigger mode (P6c, D-27) — the header selector.
+   *  Persisting the config default is the caller's concern; the session just
+   *  re-resolves + announces (mirrors setModeApproval). */
+  setTriggerMode(mode: CompactionTrigger): void {
+    this.triggerMode = mode;
+    this.emit({ type: "trigger-mode", mode });
+  }
+
+  get awaitingCompaction(): CompactionRequest | undefined {
+    return this.pendingCompaction;
+  }
+
+  /** Raise a pre-send compaction pause (P6c, D-27): `cancelable` offers Compact/
+   *  Skip, `hard` offers Compact only. The loop holds here until resolveCompaction. */
+  private raiseCompactionPause(mode: "cancelable" | "hard"): void {
+    const budget = this.compactionBudget();
+    const request: CompactionRequest = {
+      id: newId("comp"),
+      mode,
+      cancelable: mode === "cancelable",
+      prefixTokens: this.lastPrefixTokens,
+      threshold: budget?.threshold ?? 0,
+      window: budget?.window ?? 0,
+    };
+    this.pendingCompaction = request;
+    this.status = "awaiting-compaction";
+    this.emit({ type: "awaiting-compaction", request });
+  }
+
+  /** Resolve a pending pre-send compaction decision (P6c, D-27) and continue the
+   *  held turn. `skip` is honored only in `cancelable` mode (accept the one-turn
+   *  overshoot, D-44); `hard` always compacts. */
+  async resolveCompaction(skip: boolean): Promise<void> {
+    const pending = this.pendingCompaction;
+    if (!pending) throw new Error("No pending compaction");
+    this.pendingCompaction = undefined;
+    if (skip && pending.cancelable) {
+      this.needsCompaction = false; // proceed uncompacted this turn (accepted overshoot)
+    } else {
+      const ok = await this.compact();
+      if (this.stopScope) return this.settleStopped();
+      if (!ok) this.needsCompaction = false;
+    }
+    await this.advance();
+  }
+
+  /** Compact on demand from the UI (P6c) — the `manual`/`suggest` "Compact now"
+   *  button. Only runs from a settled (idle) session; a no-op otherwise (so it
+   *  can't race a live turn). compact() clears needsCompaction on success. */
+  async compactNow(): Promise<boolean> {
+    if (this.status !== "idle") return false;
+    return this.compact();
+  }
+
   /** Announce the over-window hard wall (D-44b) before the loop compacts to
    *  recover it. Not a model failure, so it never touches the circuit breaker. */
   private announceOverWindow(): void {
@@ -375,7 +457,7 @@ export class Session {
     this.emit({ type: "error", message: "Request exceeded the model context window; compacting to recover." });
     this.emit({
       type: "needs-compaction",
-      mode: activeTriggerMode(this.config.compaction),
+      mode: this.triggerMode,
       prefixTokens: 0, // no authoritative count for a rejected request
       threshold: budget?.threshold ?? 0,
       window: budget?.window ?? 0,
@@ -396,6 +478,7 @@ export class Session {
       this.pendingToolCalls = [];
       this.pendingApproval = undefined;
       this.pendingQuestion = undefined;
+      this.pendingCompaction = undefined;
       this.emit({ type: "queue", queue: [] });
     }
     this.emit({ type: "stopped", scope });
@@ -591,7 +674,11 @@ export class Session {
   /** Send a user message and run until the session settles or needs the user. */
   async send(text: string): Promise<void> {
     if (this.status === "halted") throw new Error("Session is halted (too many consecutive failures).");
-    if (this.status === "awaiting-approval" || this.status === "awaiting-input") {
+    if (
+      this.status === "awaiting-approval" ||
+      this.status === "awaiting-input" ||
+      this.status === "awaiting-compaction"
+    ) {
       throw new Error("Session is waiting for input; resolve it before sending.");
     }
     if (this.status === "running") {
@@ -681,14 +768,21 @@ export class Session {
         return;
       }
 
-      // Auto-compaction (D-44/D-27): in `auto` trigger mode, once ground-truth
-      // usage from the previous turn says the next request would exceed the
-      // budget, compact *before* sending. The other four trigger modes route
-      // through the UI (P6c); the forced over-window path is handled below.
-      if (this.needsCompaction && activeTriggerMode(this.config.compaction) === "auto") {
-        const ok = await this.compact();
-        if (this.stopScope) return this.settleStopped();
-        if (!ok) this.needsCompaction = false; // nothing to do / failed — don't spin
+      // Pre-send compaction (D-44/D-27): once ground-truth usage from a previous
+      // turn latched needsCompaction, act *before* the next send per the live
+      // trigger mode. `auto` compacts silently; `cancelable`/`hard` pause for a
+      // decision; `suggest`/`manual` don't gate the loop (the UI offers a button).
+      // The forced over-window path is handled by the turn wrapper below.
+      if (this.needsCompaction) {
+        if (this.triggerMode === "auto") {
+          const ok = await this.compact();
+          if (this.stopScope) return this.settleStopped();
+          if (!ok) this.needsCompaction = false; // nothing to do / failed — don't spin
+        } else if (this.triggerMode === "cancelable" || this.triggerMode === "hard") {
+          this.raiseCompactionPause(this.triggerMode);
+          return; // paused awaiting-compaction; resolveCompaction resumes the turn
+        }
+        // suggest / manual: proceed uncompacted — compaction is UI-driven out-of-band.
       }
 
       const result = await this.assistantTurnWithCompaction();

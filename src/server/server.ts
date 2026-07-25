@@ -9,8 +9,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
+import type { ApprovalPolicy, CompactionTrigger, Mode, ModelConfig } from "../config/types.js";
 import { APPROVAL_POLICIES, MODES } from "../config/types.js";
+
+/** The five compaction trigger modes (D-27). Validated on the mode-switch route. */
+const TRIGGER_MODES: readonly CompactionTrigger[] = ["auto", "manual", "suggest", "cancelable", "hard"];
 import type { AskUserAnswer } from "../session/types.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
@@ -36,7 +39,10 @@ export interface ServerDeps {
   onShutdown?: () => void;
   /** Optional: persist a mode/approval change as the config's new default, so a
    *  live switch (D-07/D-08) sticks for the next session in this folder. */
-  persistDefaults?: (configName: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
+  persistDefaults?: (
+    configName: string,
+    patch: { mode?: Mode; approval?: ApprovalPolicy; triggerMode?: CompactionTrigger },
+  ) => void;
   /** Optional: directory of the built browser client (dist/web). When set, a
    *  catch-all serves it (SPA fallback to index.html). Omitted in tests. */
   staticDir?: string;
@@ -113,12 +119,15 @@ function stateOf(session: Session): Record<string, unknown> {
     capReached: session.capReached,
     tasks: session.taskList,
     queue: session.queuedMessages,
+    triggerMode: session.triggerMode, // live compaction trigger mode (D-27, P6c)
+    needsCompaction: session.needsCompaction, // budget crossed (drives the suggest banner)
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };
   // `approval` is the policy (above); the pending request rides separately so the
   // two don't collide.
   if (session.status === "awaiting-approval") base.approvalRequest = session.awaitingApproval;
   if (session.status === "awaiting-input") base.question = session.awaitingInput;
+  if (session.status === "awaiting-compaction") base.compactionRequest = session.awaitingCompaction;
   return base;
 }
 
@@ -303,6 +312,37 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (mode === undefined && approval === undefined) return c.json({ error: "nothing to change" }, 400);
     session.setModeApproval(mode, approval);
     deps.persistDefaults?.(session.config.name, { mode, approval });
+    return c.json(stateOf(session));
+  });
+
+  // Switch the live compaction trigger mode (D-27, P6c): {mode}. Re-resolves the
+  // session's mode immediately and persists it as the config default (like
+  // mode/approval). Body must name one of the five modes.
+  app.post("/session/:id/trigger-mode", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { mode?: unknown };
+    const mode = body.mode as CompactionTrigger;
+    if (!TRIGGER_MODES.includes(mode)) return c.json({ error: `invalid trigger mode: ${String(body.mode)}` }, 400);
+    session.setTriggerMode(mode);
+    deps.persistDefaults?.(session.config.name, { triggerMode: mode });
+    return c.json(stateOf(session));
+  });
+
+  // Compaction control (D-27, P6c): resolve a pending pre-send pause, or compact
+  // on demand. Body {skip:true} skips a `cancelable` pause; otherwise it compacts
+  // (a pause resolution, or an out-of-band manual/suggest "Compact now").
+  app.post("/session/:id/compact", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { skip?: unknown };
+    const skip = body.skip === true;
+    if (session.status === "awaiting-compaction") {
+      await session.resolveCompaction(skip);
+    } else {
+      await session.compactNow();
+    }
+    await deps.store.flush();
     return c.json(stateOf(session));
   });
 

@@ -40,7 +40,29 @@ export type DebugRecord =
       entryId?: string;
     };
 
-export type SessionStatus = "idle" | "running" | "awaiting-approval" | "awaiting-input" | "halted";
+export type SessionStatus =
+  | "idle"
+  | "running"
+  | "awaiting-approval"
+  | "awaiting-input"
+  | "awaiting-compaction"
+  | "halted";
+
+/** A pre-send compaction decision the loop is paused on (P6c, D-27). Raised in
+ *  the `cancelable` and `hard` trigger modes when ground-truth usage says the
+ *  next request would exceed the budget: the loop holds the just-sent turn until
+ *  the user decides. `cancelable` → Compact **or** Skip; `hard` → Compact only. */
+export interface CompactionRequest {
+  id: string;
+  /** The active trigger mode that raised this (`cancelable` | `hard`). */
+  mode: CompactionTrigger;
+  /** True when Skip is offered (`cancelable`); false when compaction is required
+   *  to proceed (`hard`). */
+  cancelable: boolean;
+  prefixTokens: number;
+  threshold: number;
+  window: number;
+}
 
 /** A tool call paused for approval (D-16 — args are editable before running). */
 export interface ApprovalRequest {
@@ -124,6 +146,13 @@ export type SessionEvent =
   // the next request replays only `system + summary`. `forced` marks the D-44b
   // over-window recovery path (truncated summary input) vs a budget-triggered one.
   | { type: "compacted"; entryId: string; forced: boolean; summaryChars: number }
+  // The loop paused before the next send for a compaction decision (P6c, D-27):
+  // `cancelable` mode offers Compact/Skip, `hard` offers Compact only. Resolved
+  // via Session.resolveCompaction (server /session/:id/compact).
+  | { type: "awaiting-compaction"; request: CompactionRequest }
+  // The live compaction trigger mode changed (P6c, D-27) — the header selector,
+  // persisted as the config default (like mode/approval).
+  | { type: "trigger-mode"; mode: CompactionTrigger }
   | { type: "stopped"; scope: "hard" | "soft" } // global stop: hard abort vs loop-only (D-34)
   | { type: "queue"; queue: QueuedMessage[] } // the queued-message list changed (D-34)
   | { type: "task-start"; task: TaskView } // a background command started (D-34)
