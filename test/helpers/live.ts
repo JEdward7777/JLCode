@@ -11,7 +11,6 @@
  * environment, falling back to the local config store's first stored key and the
  * known OpenRouter slugs so a developer with JLCode already configured can run it.
  */
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CachingDriver } from "../../src/llm/caching-driver.js";
 import { LlmCache } from "../../src/llm/cache.js";
@@ -69,4 +68,3 @@ export const FABLE_RUNNABLE = LIVE && Boolean(liveKey());
 
 /** The fixture cache directory (exported for a has-fixture probe). */
 export const CACHE_DIR = FIXTURE_DIR;
-export { path };

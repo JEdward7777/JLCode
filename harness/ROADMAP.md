@@ -1,20 +1,21 @@
 # JLCode — Roadmap
 
-Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-44d, no open
-items). Phases **0–5 done** (M1 "talk to a client" + M2 "does real work" + M3 "real product"
-complete; the HTTP browser frontend P5a…P5f all shipped). **Phase 6 — compaction (M4), sliced
-P6a…P6c — is in progress: P6a + P6b done** (headless trigger detection + the safe-harbor
-compaction engine). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode surface**
-(D-40). **Current milestone: M4 — Phase 6 compaction; next up P6c (trigger-mode UX + cross-model
-path + Fable validation — the one paid/live-tier slice).**
+Status: **building.** Architecture settled ([`DECISIONS.md`](DECISIONS.md) D-01…D-44e, no open
+items). Phases **0–6 done** (M1 "talk to a client" + M2 "does real work" + M3 "real product" + **M4
+"Fable-proof at scale"** all complete; the HTTP browser frontend P5a…P5f and the compaction slices
+P6a…P6c all shipped). **Phase 6 — compaction (M4) — is DONE:** headless trigger detection (P6a) +
+the safe-harbor engine (P6b) + trigger-mode UX, the cross-model summary path, and the live Fable
+validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode surface**
+(D-40). **Milestone M4 reached (O-02 resolved by design, D-38). Next: post-v1 backlog** (see
+"Later" + the H-01 hardening item).
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
-Built, tested (**176 Tier-0/1 tests green**), and committed through **P6b — Phase 5 done, Phase 6
-engine landed**:
+Built, tested (**194 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
+cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
@@ -72,12 +73,16 @@ the safe-harbor compaction engine** — `Session.compact()` folds the active bra
 (D-28); **auto** trigger mode compacts in-loop before the next send; the **D-44b over-window
 fallback** compacts (forced, tool-output-truncated input) and retries once. Safe-harbor cuts at the
 tip because the append-only tree can't keep a tail (**D-44d**). Pure pieces in
-`src/session/compaction.ts`. **Start at P6c:** trigger-mode UX (the five modes) + the cross-model
-flattened/truncated summary path + the LLM-as-judge Fable-valid-request test — **P6c is the one
-paid/live-tier slice, so ask Joshua which tier before the live test fires** (CLAUDE.md discipline).
-Stack decided in D-39; serve-mode/auth in D-40. **176 Tier-0/1 tests green.** Rendered surfaces get
-a real-browser peek per slice, logged in `VISUAL-LOG.md` (P6a/P6b are headless — no surface;
-trigger-mode UI arrives in P6c).
+`src/session/compaction.ts`. **P6c is DONE** (D-44e): the five trigger modes are drivable in the
+browser (header selector + `auto`/`manual`/`suggest`/`cancelable`/`hard`, with a real
+`awaiting-compaction` pre-send pause for the blocking two); the **cross-model summary path** sends
+structured messages to a cheaper compactor id (readable planning kept, signed `reasoning_details`
+dropped, tool outputs truncated); and the **Fable tier ran live** — the D-14 verbatim reasoning
+round-trip and the safe-harbor-compaction-accepted-by-Fable tests are recorded into the committed
+cache (`test/helpers/{live,judge}.ts`) and replay free. **Phase 6 / Milestone M4 complete.** Stack
+decided in D-39; serve-mode/auth in D-40. **194 Tier-0/1 tests green** (+ 2 replayed Fable tests).
+**To resume: pick from the post-v1 "Later" backlog or the H-01 hardening item.** Rendered surfaces
+get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P6c).
 
 ---
 
@@ -357,17 +362,34 @@ tiers before the next; the one paid/live-tier spend is isolated in P6c.
 - **Done when:** a real conversation crosses the budget, compacts, and continues coherently
   against the cached driver. ✅
 
-### P6c — Trigger-mode UX + cross-model path + Fable validation (browser + gated live)
-- **Browser controls for the five trigger modes** (D-27): auto · manual (on-demand button) ·
-  suggest-when-near (banner) · **auto-but-cancelable** (deniable approval card) · hard-forced.
-- **Cross-model summary path (D-29):** flattened, tool-output-truncated (~2K) summarizer request
-  when a cheaper compactor is configured — no shared cache, full input rate.
-- **LLM-as-judge test helper** + the **Fable-valid-request** test: normal replay round-trips
-  reasoning verbatim (D-14) and a safe-harbor compaction produces a request Fable accepts
-  (TESTING.md). **This is the phase's one paid/live-tier spend — ask Joshua which tier before it
-  fires** (per CLAUDE.md working discipline).
+### P6c — Trigger-mode UX + cross-model path + Fable validation ✅ done (2026-07-24)
+- **Browser controls for the five trigger modes** (D-27, D-44e): a header selector (persisted like
+  mode/approval) + `auto` (silent) · `manual` (anytime **compact** button) · `suggest`
+  (non-blocking banner + **Compact now**) · `cancelable` (a real pre-send pause — **Compact / Skip
+  once**) · `hard` (pre-send pause, **Compact only**). The blocking modes use a new
+  `awaiting-compaction` status that mirrors `awaiting-approval`: once ground-truth usage latches
+  `needsCompaction`, the next `send()` holds the turn for a decision (`POST /session/:id/compact
+  {skip?}` resolves it; `POST /session/:id/trigger-mode` switches mode). Skip accepts the one-turn
+  overshoot (D-44); hard can't skip.
+- **Cross-model summary path (D-29, refined per Joshua in D-44e):** a cheaper compactor gets the
+  ordinary structured `ChatMessage[]` via the same OpenRouter driver (just a different `req.model`)
+  — **readable `reasoningText` kept** (the planning), the **signed `reasoning_details` dropped**
+  (the one non-portable field), tool outputs truncated (~2K). No plain-text flatten; no cache reuse
+  (different model). `buildCrossModelSummaryInput` is pure (Tier-0).
+- **LLM-as-judge helper + the Fable-valid-request test (Tier 3, ran live):** (a) normal replay
+  round-trips `reasoning_details` **verbatim** and Fable accepts it (D-14); (b) a safe-harbor
+  `compact()` produces a **Fable-accepted, coherent** request (D-28/D-38). Recorded against
+  `anthropic/claude-fable-5`, judged by `anthropic/claude-haiku-4.5`, into the committed
+  request-keyed cache (replays free — verified 292ms, no key). Helpers in `test/helpers/{live,judge}.ts`.
+- **Verified:** +19 Tier-0/1 tests (`compaction-p6c`: cross-model shaping/request, cancelable/hard/
+  skip pause, suggest/manual no-gate, manual compact-now, trigger-mode switch; `server-p6c`: state
+  exposure, switch+persist+validate, HTTP pause→resolve/skip; `web-session-state`: the compaction
+  events fold) + 2 live Fable tests (replayed free). **Looked at it in Chrome** — the header
+  trigger-mode selector, the cancelable pause card (token detail, Compact/Skip, composer blocks),
+  and the non-blocking suggest banner — see [`VISUAL-LOG.md`](VISUAL-LOG.md) (P6c). **194 Tier-0/1
+  green.**
 - **Done when:** conversations compact automatically/optionally, drivable in the browser, without
-  breaking Fable. Milestone M4 (O-02 resolved by design, D-38).
+  breaking Fable. Milestone M4 (O-02 resolved by design, D-38). ✅
 
 - *(Fast-follow, post-v1: partial-keep-lite #2 for higher recent-context fidelity — D-38.)*
 
@@ -412,4 +434,6 @@ file viewer & upload/download chrome.
 - **M1 — "Talk to a client":** Phases 0–2 (selected config → real conversation, headless).
 - **M2 — "Does real work":** Phase 3 (sandboxed tools under mode/approval).
 - **M3 — "Real product":** Phases 4–5 (persistent, forkable, in the browser).
-- **M4 — "Fable-proof at scale":** Phase 6 (compaction, O-02 resolved).
+- **M4 — "Fable-proof at scale":** Phase 6 (compaction, O-02 resolved). ✅ **done (2026-07-24)** —
+  P6a trigger detection + P6b safe-harbor engine + P6c trigger-mode UX / cross-model path / live
+  Fable validation.
