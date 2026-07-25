@@ -10,12 +10,14 @@ import type {
   ApprovalPolicy,
   ApprovalRequest,
   AskUserRequest,
+  CompactionRequest,
   EntryView,
   Mode,
   QueuedMessage,
   SessionDescriptor,
   SessionState,
   TaskView,
+  TriggerMode,
   WireEvent,
 } from "./api";
 
@@ -50,6 +52,11 @@ export interface SessionSlice {
   working: boolean;
   pendingApproval: ApprovalRequest | null;
   pendingAsk: AskUserRequest | null;
+  // Compaction (D-27, P6c): the live trigger mode, whether the budget is crossed
+  // (drives the suggest banner + manual hint), and any pending pre-send pause.
+  triggerMode: TriggerMode;
+  needsCompaction: boolean;
+  pendingCompaction: CompactionRequest | null;
   notice: string | null;
   input: string;
 }
@@ -75,6 +82,9 @@ export function newSlice(id: string, model = ""): SessionSlice {
     working: false,
     pendingApproval: null,
     pendingAsk: null,
+    triggerMode: "cancelable",
+    needsCompaction: false,
+    pendingCompaction: null,
     notice: null,
     input: "",
   };
@@ -100,6 +110,9 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (typeof state.capReached === "boolean") next.capReached = state.capReached;
   if (state.tasks) next.tasks = state.tasks;
   if (state.queue) next.queue = state.queue;
+  if (state.triggerMode) next.triggerMode = state.triggerMode;
+  if (typeof state.needsCompaction === "boolean") next.needsCompaction = state.needsCompaction;
+  next.pendingCompaction = state.compactionRequest ?? null;
   return next;
 }
 
@@ -150,13 +163,27 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
     case "task-end":
       return { ...s, tasks: s.tasks.filter((x) => x.id !== (e.task as TaskView).id) };
     case "assistant-start":
-      return { ...s, working: true, live: { text: "", reasoning: "" } };
+      // The held turn begins → any pre-send compaction pause is resolved (a Skip
+      // emits no `compacted`, so clear it here too).
+      return { ...s, working: true, live: { text: "", reasoning: "" }, pendingCompaction: null };
     case "reasoning":
       return { ...s, live: { ...(s.live ?? { text: "", reasoning: "" }), reasoning: (s.live?.reasoning ?? "") + (e.delta as string) } };
     case "text":
       return { ...s, live: { ...(s.live ?? { text: "", reasoning: "" }), text: (s.live?.text ?? "") + (e.delta as string) } };
     case "assistant-end":
       return { ...s, working: false, live: null };
+    case "trigger-mode":
+      return { ...s, triggerMode: e.mode as TriggerMode };
+    case "needs-compaction":
+      // Budget crossed (D-44) — light up the suggest banner / manual hint. The
+      // pre-send pause (cancelable/hard) arrives as its own awaiting event.
+      return { ...s, needsCompaction: true };
+    case "awaiting-compaction":
+      return { ...s, working: false, live: null, pendingCompaction: e.request as CompactionRequest };
+    case "compacted":
+      // A compaction landed — clear the crossed flag + any pending pause. The
+      // fresh compaction entry arrives via the normal `entry` event.
+      return { ...s, needsCompaction: false, pendingCompaction: null };
     case "awaiting-approval":
       return { ...s, working: false, live: null, pendingApproval: e.request as ApprovalRequest };
     case "awaiting-input":

@@ -5,6 +5,8 @@ import {
   answer as apiAnswer,
   approve as apiApprove,
   setMode as apiSetMode,
+  setTriggerMode as apiSetTriggerMode,
+  compact as apiCompact,
   setCap as apiSetCap,
   stopSession as apiStop,
   killTask as apiKillTask,
@@ -26,8 +28,10 @@ import {
   type JournalRecord,
   type Mode,
   type QueuedMessage,
+  type CompactionRequest,
   type SessionDescriptor,
   type TaskView,
+  type TriggerMode,
 } from "./api";
 import {
   newSlice,
@@ -42,6 +46,7 @@ import {
 const WORKING = ["percolating…", "pondering…", "noodling…", "whirring…", "cogitating…", "ruminating…"];
 const MODES: Mode[] = ["ask", "plan", "code"];
 const POLICIES: ApprovalPolicy[] = ["manual", "auto-safe", "full-auto", "read-only"];
+const TRIGGER_MODES: TriggerMode[] = ["auto", "manual", "suggest", "cancelable", "hard"];
 
 /** The bag of live sessions, keyed by id (D-43). One multiplexed bus feeds every
  *  slice, so background sessions stay current while another is focused. */
@@ -227,6 +232,32 @@ export function App() {
     [notify],
   );
 
+  const changeTriggerMode = useCallback(
+    async (id: string, mode: TriggerMode) => {
+      dispatch({ t: "patch", id, patch: { triggerMode: mode } }); // optimistic; the event re-syncs
+      try {
+        await apiSetTriggerMode(id, mode);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
+
+  // Compaction control (D-27, P6c): resolve a pending pre-send pause (Compact /
+  // Skip), or compact on demand (the manual/suggest "Compact now" button).
+  const doCompact = useCallback(
+    async (id: string, opts: { skip?: boolean } = {}) => {
+      dispatch({ t: "patch", id, patch: { pendingCompaction: null, working: !opts.skip } });
+      try {
+        await apiCompact(id, opts);
+      } catch (err) {
+        dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
+      }
+    },
+    [],
+  );
+
   const resolveApproval = useCallback(
     async (id: string, decision: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => {
       dispatch({ t: "patch", id, patch: { pendingApproval: null, working: true } });
@@ -390,6 +421,8 @@ export function App() {
           onSubmit={submit}
           onQueue={queueMsg}
           onChangeMode={changeMode}
+          onChangeTriggerMode={changeTriggerMode}
+          onCompact={doCompact}
           onResolveApproval={resolveApproval}
           onSubmitAnswer={submitAnswer}
           onChangeCap={changeCap}
@@ -506,6 +539,8 @@ function ChatPane({
   onSubmit,
   onQueue,
   onChangeMode,
+  onChangeTriggerMode,
+  onCompact,
   onResolveApproval,
   onSubmitAnswer,
   onChangeCap,
@@ -527,6 +562,8 @@ function ChatPane({
   onSubmit: (id: string) => void;
   onQueue: (id: string) => void;
   onChangeMode: (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
+  onChangeTriggerMode: (id: string, mode: TriggerMode) => void;
+  onCompact: (id: string, opts?: { skip?: boolean }) => void;
   onResolveApproval: (id: string, d: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => void;
   onSubmitAnswer: (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => void;
   onChangeCap: (id: string, v: number | null) => void;
@@ -555,7 +592,7 @@ function ChatPane({
   // Keep the newest message / prompt in view.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [slice.entries, slice.activeLeaf, slice.live, slice.working, slice.pendingApproval, slice.pendingAsk]);
+  }, [slice.entries, slice.activeLeaf, slice.live, slice.working, slice.pendingApproval, slice.pendingAsk, slice.pendingCompaction]);
 
   const path = pathToLeaf(slice.entries, slice.activeLeaf);
   const rendered = path.filter((e) => e.type === "user" || (e.type === "assistant" && (e.text || e.reasoningText)));
@@ -563,7 +600,12 @@ function ChatPane({
   // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
   // background command is running, or a prompt is open. While busy, the composer
   // queues (D-34) instead of sending.
-  const blocked = slice.working || slice.tasks.length > 0 || slice.pendingApproval !== null || slice.pendingAsk !== null;
+  const blocked =
+    slice.working ||
+    slice.tasks.length > 0 ||
+    slice.pendingApproval !== null ||
+    slice.pendingAsk !== null ||
+    slice.pendingCompaction !== null;
 
   return (
     <div className="pane">
@@ -596,6 +638,25 @@ function ChatPane({
               </option>
             ))}
           </select>
+          <select
+            className="policy compaction-mode"
+            value={slice.triggerMode}
+            aria-label="compaction trigger mode"
+            title="when to compact the context (D-27)"
+            onChange={(e) => onChangeTriggerMode(id, e.target.value as TriggerMode)}
+          >
+            {TRIGGER_MODES.map((m) => (
+              <option key={m} value={m}>
+                compact: {m}
+              </option>
+            ))}
+          </select>
+          {/* Manual mode gets an always-available compact button (D-27). */}
+          {slice.triggerMode === "manual" && (
+            <button className="ghost" title="compact the context now" onClick={() => onCompact(id)}>
+              compact
+            </button>
+          )}
         </div>
       </header>
 
@@ -628,6 +689,17 @@ function ChatPane({
         {slice.tasks.length > 0 && <TasksPanel tasks={slice.tasks} onKill={(taskId) => onKillTask(id, taskId)} />}
         {slice.pendingApproval && <ApprovalCard request={slice.pendingApproval} onResolve={(d) => onResolveApproval(id, d)} />}
         {slice.pendingAsk && <AskForm request={slice.pendingAsk} onSubmit={(answers) => onSubmitAnswer(id, answers)} />}
+        {slice.pendingCompaction && (
+          <CompactionCard
+            request={slice.pendingCompaction}
+            onCompact={() => onCompact(id)}
+            onSkip={() => onCompact(id, { skip: true })}
+          />
+        )}
+        {/* suggest mode: non-blocking nudge once the budget is crossed (D-27). */}
+        {slice.triggerMode === "suggest" && slice.needsCompaction && !slice.pendingCompaction && (
+          <CompactionBanner onCompact={() => onCompact(id)} />
+        )}
         {slice.capReached && <CapBanner spendUsd={slice.spendUsd} capUsd={slice.capUsd} onRaise={(v) => onChangeCap(id, v)} />}
         {slice.notice && <div className="notice">{slice.notice}</div>}
       </div>
@@ -828,6 +900,57 @@ function CapBanner({ spendUsd, capUsd, onRaise }: { spendUsd: number; capUsd: nu
             <button onClick={() => onRaise(capUsd + 1)}>+ $1.00</button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Pre-send compaction pause (D-27, P6c): `cancelable` offers Compact + Skip;
+ *  `hard` offers Compact only ("can't proceed without acting"). */
+function CompactionCard({
+  request,
+  onCompact,
+  onSkip,
+}: {
+  request: CompactionRequest;
+  onCompact: () => void;
+  onSkip: () => void;
+}) {
+  const pct = request.window > 0 ? Math.round((request.prefixTokens / request.window) * 100) : 0;
+  return (
+    <div className="card compaction-card">
+      <div className="card-head">
+        <span className="tool">context nearly full</span>
+        <span className="reason">{request.cancelable ? "compact to continue?" : "compaction required"}</span>
+      </div>
+      <div className="fence-note">
+        The next request (~{request.prefixTokens.toLocaleString()} tokens{pct ? `, ${pct}% of the window` : ""}) would
+        exceed the budget. Compacting folds the conversation so far into a summary and continues.
+      </div>
+      <div className="actions">
+        <button className="primary" onClick={onCompact}>
+          Compact &amp; continue
+        </button>
+        {request.cancelable && (
+          <button onClick={onSkip} title="send this turn without compacting (accepts a one-turn overshoot)">
+            Skip once
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Non-blocking "suggest" nudge (D-27): the budget is crossed but the loop keeps
+ *  going; the user may compact whenever. */
+function CompactionBanner({ onCompact }: { onCompact: () => void }) {
+  return (
+    <div className="card compaction-banner">
+      <div className="fence-note">◆ Context is getting large — compacting will keep replies fast and in-window.</div>
+      <div className="actions">
+        <button className="primary" onClick={onCompact}>
+          Compact now
+        </button>
       </div>
     </div>
   );

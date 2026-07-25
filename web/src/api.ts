@@ -67,6 +67,19 @@ export type JournalRecord =
 
 export type Mode = "ask" | "plan" | "code";
 export type ApprovalPolicy = "manual" | "auto-safe" | "full-auto" | "read-only";
+/** Compaction trigger modes (D-27, P6c). */
+export type TriggerMode = "auto" | "manual" | "suggest" | "cancelable" | "hard";
+
+/** A pre-send compaction decision the loop is paused on (D-27, P6c): `cancelable`
+ *  offers Compact/Skip, `hard` offers Compact only. */
+export interface CompactionRequest {
+  id: string;
+  mode: TriggerMode;
+  cancelable: boolean;
+  prefixTokens: number;
+  threshold: number;
+  window: number;
+}
 
 /** A tool call paused for approval (D-16). Args are editable before running. */
 export interface ApprovalRequest {
@@ -120,6 +133,9 @@ export interface SessionState {
   capReached?: boolean; // breach → the loop declined the next LLM call (D-33)
   tasks?: TaskView[]; // running background commands (D-34)
   queue?: QueuedMessage[]; // pending queued messages (D-34)
+  triggerMode?: TriggerMode; // live compaction trigger mode (D-27, P6c)
+  needsCompaction?: boolean; // budget crossed — drives the suggest banner (D-44)
+  compactionRequest?: CompactionRequest; // pending pre-send compaction pause (D-27)
 }
 
 /** A session event as it arrives over SSE (subset the UI acts on; see session/types.ts). */
@@ -240,6 +256,18 @@ export async function answer(
 /** Switch capability mode and/or approval policy for the session (D-07/D-08). */
 export async function setMode(id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }): Promise<void> {
   await postJson(`/session/${id}/mode`, patch);
+}
+
+/** Switch the live compaction trigger mode (D-27, P6c); persisted as the config
+ *  default like mode/approval. */
+export async function setTriggerMode(id: string, mode: TriggerMode): Promise<void> {
+  await postJson(`/session/${id}/trigger-mode`, { mode });
+}
+
+/** Compaction control (D-27, P6c): resolve a pending pre-send pause (`skip:true`
+ *  skips a cancelable pause), or compact on demand (manual/suggest "Compact now"). */
+export async function compact(id: string, opts: { skip?: boolean } = {}): Promise<void> {
+  await postJson(`/session/${id}/compact`, opts);
 }
 
 /** Set / raise / clear the whole-tree spend cap in USD (D-33); null clears it. */

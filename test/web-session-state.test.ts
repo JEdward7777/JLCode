@@ -33,6 +33,44 @@ describe("session slice from a roster descriptor", () => {
     expect(s.pendingApproval?.tool).toBe("run_command");
     expect(s.working).toBe(false);
   });
+
+  it("applyState carries the live trigger mode + a pending compaction pause (D-27)", () => {
+    const s = applyState(newSlice("s1"), {
+      status: "awaiting-compaction",
+      triggerMode: "hard",
+      needsCompaction: true,
+      compactionRequest: { id: "comp1", mode: "hard", cancelable: false, prefixTokens: 900, threshold: 800, window: 1000 },
+    });
+    expect(s.triggerMode).toBe("hard");
+    expect(s.needsCompaction).toBe(true);
+    expect(s.pendingCompaction?.cancelable).toBe(false);
+  });
+});
+
+describe("compaction events fold into the slice (D-27, P6c)", () => {
+  it("trigger-mode switches, needs-compaction lights up, compacted clears", () => {
+    let s = newSlice("s1");
+    s = reduceEvent(s, { type: "trigger-mode", mode: "suggest" } as WireEvent);
+    expect(s.triggerMode).toBe("suggest");
+    s = reduceEvent(s, { type: "needs-compaction", mode: "suggest", prefixTokens: 1, threshold: 0, window: 2 } as WireEvent);
+    expect(s.needsCompaction).toBe(true);
+    s = reduceEvent(s, { type: "compacted", entryId: "c1", forced: false, summaryChars: 100 } as WireEvent);
+    expect(s.needsCompaction).toBe(false);
+    expect(s.pendingCompaction).toBeNull();
+  });
+
+  it("awaiting-compaction sets the pause; the held turn starting clears it (Skip path)", () => {
+    let s = newSlice("s1");
+    s = reduceEvent(s, {
+      type: "awaiting-compaction",
+      request: { id: "comp1", mode: "cancelable", cancelable: true, prefixTokens: 900, threshold: 800, window: 1000 },
+    } as unknown as WireEvent);
+    expect(s.pendingCompaction?.cancelable).toBe(true);
+    expect(s.working).toBe(false);
+    s = reduceEvent(s, { type: "assistant-start" } as WireEvent);
+    expect(s.pendingCompaction).toBeNull(); // Skip emits no `compacted`; assistant-start clears it
+    expect(s.working).toBe(true);
+  });
 });
 
 describe("reduceEvent folds live events", () => {

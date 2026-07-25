@@ -583,6 +583,15 @@ body {
   border-color: var(--danger);
 }
 
+/* Compaction pause (cancelable/hard) + suggest banner (D-27, P6c) */
+.card.compaction-card,
+.card.compaction-banner {
+  border-color: var(--accent);
+}
+.compaction-mode {
+  max-width: 12em;
+}
+
 /* Queued messages (D-34) */
 .queue {
   display: flex;

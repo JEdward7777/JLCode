@@ -234,3 +234,36 @@ my own eyes:
 Not exercised visually (covered by `test/auth.test.ts`): the one-hit token being
 **single-use** (a second exchange 401s), cookie **tamper/expiry** rejection, scrypt
 hash verify, and that a **localhost bind serves auth-free** (no guard installed).
+
+---
+
+## P6c — compaction trigger-mode UX · 2026-07-24 · ✅ looked good
+
+**Screenshots:** [`visual/p6c-cancelable-pause.png`](visual/p6c-cancelable-pause.png) ·
+[`visual/p6c-suggest-banner.png`](visual/p6c-suggest-banner.png)
+
+Drove the built server with the fake driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs) and a **tiny context window** (`compaction.contextLength: 1500`,
+`bufferTokens: 1000` → threshold 500) so any turn crosses the budget without a
+key/spend. Seeded the two blocking/non-blocking surfaces over the HTTP API and
+screenshotted via CDP. Confirmed with my own eyes:
+
+- **Header trigger-mode selector (D-27)** — a new dropdown sits after the approval
+  policy: **`compact: cancelable`** in the first shot, **`compact: suggest`** in the
+  second. Switching it POSTs `/session/:id/trigger-mode`; the session re-resolves
+  live and it's persisted as the config default (like mode/approval).
+- **`cancelable` pre-send pause** — after the budget crossed on turn 1, sending a
+  second message **held the turn** and raised the **"context nearly full — compact to
+  continue?"** card: the token detail ("~1,052 tokens, 70% of the window"),
+  **Compact & continue** (primary) + **Skip once**. The composer correctly flipped to
+  **"Queue a message for the next turn…"** with a **Queue** button — the pause blocks
+  a fresh Send, exactly like an approval/ask pause.
+- **`suggest` banner (non-blocking)** — the same budget crossing in suggest mode
+  showed the **"◆ Context is getting large — compacting will keep replies fast and
+  in-window."** banner with **Compact now**, but the reply still came through and the
+  composer stayed in normal **Send** mode — confirming suggest never gates the loop.
+
+Not exercised visually (covered by tests / headless): `auto` (silent, P6b),
+`hard` (Compact-only card — same component, `cancelable:false`), `manual` (the
+header **compact** button), the actual compact round-trip, and the cross-model
+summary path (`test/compaction-p6c.test.ts`, `test/server-p6c.test.ts`).
