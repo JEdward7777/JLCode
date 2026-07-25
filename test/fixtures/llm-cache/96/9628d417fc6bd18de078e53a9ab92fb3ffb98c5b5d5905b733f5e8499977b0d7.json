@@ -1,0 +1,1 @@
+{"text":"PASS The candidate explicitly states both that the codename is BLUEJAY and the datastore is SQLite, satisfying all criteria.","toolCalls":[],"finishReason":"stop","usage":{"promptTokens":96,"completionTokens":32,"totalTokens":128,"cachedTokens":0,"costUsd":0.000256}}
