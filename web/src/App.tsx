@@ -319,14 +319,17 @@ export function App() {
         learned?: LearnAnswers;
       },
     ) => {
-      dispatch({ t: "patch", id, patch: { pendingApproval: null, working: true } });
+      // Anything sitting in the composer rides along with the decision (D-51):
+      // the pause is an opening to say something, without the queue's wait.
+      const note = (slices[id]?.input ?? "").trim();
+      dispatch({ t: "patch", id, patch: { pendingApproval: null, working: true, ...(note ? { input: "" } : {}) } });
       try {
-        await apiApprove(id, decision);
+        await apiApprove(id, { ...decision, ...(note ? { note } : {}) });
       } catch (err) {
         dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
       }
     },
-    [],
+    [slices],
   );
 
   const submitAnswer = useCallback(async (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => {
@@ -904,11 +907,13 @@ function ChatPane({
         <textarea
           value={slice.input}
           placeholder={
-            slice.pendingApproval || slice.pendingAsk
-              ? "Respond to the agent above…"
-              : blocked
-                ? "Queue a message for the next turn…  (Enter to queue)"
-                : "Message JLCode…  (Enter to send, Shift+Enter for newline)"
+            slice.pendingApproval
+              ? "Say something with your decision — it goes in with Approve/Deny…  (Enter queues it for later instead)"
+              : slice.pendingAsk
+                ? "Respond to the agent above…"
+                  : blocked
+                    ? "Queue a message for the next turn…  (Enter to queue)"
+                    : "Message JLCode…  (Enter to send, Shift+Enter for newline)"
           }
           onChange={(e) => onInput(id, e.target.value)}
           onKeyDown={(e) => {

@@ -450,3 +450,35 @@ into the text still places the caret for an edit.
 
 Not exercised visually (covered by tests): Escape-to-cancel, the empty-rename
 rejection, and the auto-title's one-attempt-per-session guard.
+
+---
+
+## D-51 — a remark rides along with the approval decision · 2026-07-28 · ✅ looked good
+
+**Screenshots:** [`visual/d51-note-typed.png`](visual/d51-note-typed.png) ·
+[`visual/d51-note-landed.png`](visual/d51-note-landed.png)
+
+Drove the built server with the fake agent driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs, `manual` approval), seeded a `write:` turn so a real
+`write_file` approval card came up, then typed into the composer and clicked
+**Approve** — via CDP, reading the page back afterwards. Confirmed with my own
+eyes:
+
+- **The composer is open while the card is up**, and its placeholder now says what
+  the text will do: *"Say something with your decision — it goes in with
+  Approve/Deny…  (Enter queues it for later instead)"*. Both outlets are named, so
+  the queue doesn't silently lose its meaning.
+- **Typed "Yes, but call it deploy-notes.txt and tell me what you find."** with the
+  approval card still showing `write_file` / **WRITE** / editable `path` /
+  Approve · Deny — the two coexist, nothing is disabled or greyed.
+- **Clicking Approve landed the remark in the transcript** as an ordinary
+  right-aligned user bubble, *below* the `write_file` tool result — the order the
+  wire requires — and the composer cleared itself back to the normal
+  "Message JLCode…" placeholder.
+- **The agent actually saw it**: the fake driver's next turn echoed
+  "You said: Yes, but call it deploy-notes.txt and tell me what you find." So the
+  note is in the replayed window on the *very next* call, not a turn boundary later
+  the way a queued message would have been.
+
+Not exercised visually (covered by tests): the deny path, the trimming, and the
+hold-until-the-batch-drains ordering with two tool calls in one assistant message.

@@ -299,6 +299,9 @@ export async function approve(
     editedArgs?: Record<string, unknown>;
     addRoot?: boolean | string;
     reason?: string;
+    /** Composer text typed while the card was up (D-51) — appended to the
+     *  transcript as a user message once the tool batch settles. */
+    note?: string;
     /** Answers to the questions the pause carried (D-48) — kept even on a deny. */
     learned?: LearnAnswers;
   },

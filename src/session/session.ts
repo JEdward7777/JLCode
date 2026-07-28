@@ -240,6 +240,11 @@ export class Session {
   private readonly tasks: TaskRegistry;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
   private queue: QueuedMessage[] = [];
+  /** A remark carried in on an approval decision (D-51), waiting for the tool
+   *  batch to drain. It cannot land the moment it arrives: tool results must
+   *  follow their assistant message unbroken, so a user message wedged between
+   *  two of them would be malformed on the wire. */
+  private pendingNote?: string;
   /** Per-task watchdog timers (30-min out-of-band kill prompt, D-34). */
   private readonly watchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -778,6 +783,10 @@ export class Session {
     const pending = this.pendingApproval;
     if (!pending) throw new Error("No pending approval");
     this.pendingApproval = undefined;
+    // Whatever they typed alongside the decision (D-51) — held until the batch
+    // drains, then appended as an ordinary user message.
+    const note = decision.note?.trim();
+    if (note) this.pendingNote = note;
     // Answers first (D-48): they are facts about the tool, kept whether or not
     // this call runs, and the fence check below must see them. A field the user
     // just called prose is no longer an escape, so it widens nothing.
@@ -831,8 +840,19 @@ export class Session {
     await this.advance();
   }
 
+  /** Append a remark that rode in on an approval decision (D-51). Only safe with
+   *  no tool call outstanding, so every call site is guarded by a drained queue. */
+  private flushNote(): void {
+    const text = this.pendingNote;
+    if (!text) return;
+    this.pendingNote = undefined;
+    const entry = this.pushEntry({ type: "user", text });
+    this.emit({ type: "user", entryId: entry.id, text });
+  }
+
   private async advance(): Promise<void> {
     this.status = "running";
+    if (this.pendingToolCalls.length === 0) this.flushNote();
     for (let iter = 0; iter < this.maxToolIterations; iter++) {
       // Global stop observed at a turn boundary (D-34): soft or hard both settle
       // here; a hard stop has already aborted/killed/cleared.
@@ -852,6 +872,7 @@ export class Session {
         }
         this.pendingToolCalls.shift(); // "done" → dequeue
       }
+      this.flushNote(); // batch drained — a held remark can land now (D-51)
 
       // A stop requested *during* this iteration's tool run (soft or hard): take
       // no further LLM turn. Running commands were allowed to finish above.

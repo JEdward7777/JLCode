@@ -643,7 +643,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json({ records: deps.debugJournal.read(c.req.param("id")) });
   });
 
-  // Resolve a pending approval: {approve: bool, editedArgs?, reason?} (D-16).
+  // Resolve a pending approval: {approve: bool, editedArgs?, reason?, note?} (D-16/D-51).
   app.post("/session/:id/approve", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -652,11 +652,13 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       approve?: unknown;
       editedArgs?: unknown;
       reason?: unknown;
+      note?: unknown;
       addRoot?: unknown;
       learned?: unknown;
     };
     await session.approve({
       approve: body.approve !== false,
+      note: typeof body.note === "string" ? body.note : undefined,
       learned: parseLearned(body.learned),
       editedArgs:
         body.editedArgs && typeof body.editedArgs === "object"

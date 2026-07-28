@@ -74,7 +74,10 @@ spend with a settable cap, branch/rewind arrows with pencil edit-fork, a
 per-turn debug-journal drawer, lazy-loaded Mermaid diagrams, and an MCP status
 drawer. Every tool call leaves its result in the transcript — collapsed to the
 tool, its arguments and a size hint, expandable to the full output — so you can
-check the model's work instead of taking its summary on faith. Each thread names
+check the model's work instead of taking its summary on faith. An approval card
+is also a chance to talk: anything you type in the composer while one is up rides
+along with **Approve**/**Deny** and joins the transcript, so you can redirect the
+run without waiting for the queue to drain at the next turn boundary. Each thread names
 itself after the first exchange (rename it with the ✎ on its rail card), and the
 tab title reads `<thread> — <project folder>`, so two instances in two projects
 stay tellable apart. Screenshots of each slice are in

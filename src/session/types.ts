@@ -157,6 +157,10 @@ export interface ApprovalDecision {
   editedArgs?: Record<string, unknown>;
   /** Reason, when denying. */
   reason?: string;
+  /** A remark the user typed in the composer while the pause was up (D-51).
+   *  Appended to the transcript as a plain user message once the tool batch
+   *  settles — the same thing they'd have said in the next turn, said now. */
+  note?: string;
   /** For out-of-fence access (D-19): true → remember the containing root(s);
    *  a string → remember that specific root; omitted → allow just this once. */
   addRoot?: boolean | string;

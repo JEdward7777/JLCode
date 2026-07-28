@@ -145,6 +145,17 @@ transcript. Push discipline changed the same day — **push after every green co
 because `npx github:…` is how JLCode is launched; note npx caches by *spec string*, so a push
 alone doesn't reach the user.
 
+**D-51 shipped 2026-07-28 — a pause is an opening to speak.** Whatever is sitting in the composer
+when you click **Approve** or **Deny** rides along with the decision (`note` on `ApprovalDecision`)
+and lands in the transcript as an ordinary **user** entry, so it is in the replayed window on the
+*very next* call. Before this the queue was the only outlet, and a queued message applies at the
+next **turn boundary** — after the whole tool loop finishes — far too late to steer the call you are
+looking at. Two mechanics to preserve: the note is **held until the tool batch drains**
+(`flushNote()` only runs with `pendingToolCalls` empty — a user turn wedged between two tool results
+of one assistant message is malformed on the wire), and **Enter still queues** while a card is up so
+"after this finishes, do X" keeps working; the placeholder names both. Approvals only — `ask_user`
+already has its own free-text field. Peeked in Chrome (VISUAL-LOG "D-51").
+
 **X-11 shipped 2026-07-28 — tool output now stays in the transcript.** A `tool` block renders
 **inline, in flow** (Joshua's call): collapsed to tool name + argument gist + a size hint
 (`2 lines · 40 B`), expanded to the pretty-printed args and the **full** output — the journal's
