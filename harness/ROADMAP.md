@@ -14,6 +14,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 ## Current status — resume here
 
+> **When you update this block, check [`../README.md`](../README.md) too.** The README is the
+> public face of the repo and deliberately carries **no status of its own** — it points here — but
+> a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
+> front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
+> looks like.
+
 Built, tested (**194 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
 

@@ -50,7 +50,9 @@ These are automatic — don't wait to be reminded:
    model/feature. See [`harness/TESTING.md`](harness/TESTING.md).
 4. **Keep the harness current.** Update `ROADMAP.md`'s "Current status — resume here" block at
    each milestone so a lost session resumes cleanly. Record deliberate design changes in
-   `DECISIONS.md`; don't let code and spec drift.
+   `DECISIONS.md`; don't let code and spec drift. **In the same breath, check `README.md`** —
+   it carries no status of its own (it points at ROADMAP by design), but if the milestone changed
+   *how a user runs or drives JLCode*, the README's run/drive sections must follow.
 5. **Look at rendered surfaces in a real browser — at least once per UI slice.** Tests with more
    mocks than target code can pass while the real thing is broken or ugly. Chrome is installed;
    drive the built server with the fake driver and screenshot via CDP (recipe in `VISUAL-LOG.md`).

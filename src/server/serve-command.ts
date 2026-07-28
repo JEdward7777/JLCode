@@ -68,7 +68,7 @@ export async function runServe(args: string[]): Promise<number> {
       ? fakeAgentDriver()
       : new OpenRouterClient({
           apiKey: config.openRouterKey,
-          referer: "https://github.com/JEL-LL/JLCode",
+          referer: "https://github.com/JEdward7777/JLCode",
           title: "JLCode",
         });
 
