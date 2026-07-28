@@ -27,6 +27,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "hono": "^4.6.0"
   },
   "devDependencies": {

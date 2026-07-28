@@ -22,6 +22,18 @@ export interface ToolContext {
   tasks?: TaskRegistry;
 }
 
+/** A flattened argument field and its value (jq-style name — D-47d). */
+export interface PathCandidate {
+  field: string;
+  value: string;
+}
+
+/** Which args of a call to fence, and which the user has never classified. */
+export interface ClassifiedPaths {
+  paths: PathCandidate[];
+  unknown: PathCandidate[];
+}
+
 export interface Tool {
   name: string;
   kind: ToolKind;
@@ -31,6 +43,18 @@ export interface Tool {
   pathArgs?: string[];
   /** The function schema advertised to the model. */
   def: ToolDef;
+  /**
+   * Tools whose args are arbitrary JSON (MCP — D-47d) find their path args this
+   * way instead of by `pathArgs`: string leaves are flattened to jq-style field
+   * names and looked up in the server's learned lists. Unclassified slashy
+   * values come back as `unknown` — fenced anyway, and asked about once.
+   */
+  classifyPaths?(args: Record<string, unknown>): ClassifiedPaths;
+  /** Persist the user's answer to that question, so it is asked only once. */
+  rememberPathField?(field: string, isPath: boolean): void;
+  /** Pre-approved by the user in config (MCP `alwaysAllow`, D-47b) — skips the
+   *  approval prompt, but never the mode gate or the `read-only` policy. */
+  autoApprove?: boolean;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }
 

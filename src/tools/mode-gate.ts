@@ -57,8 +57,10 @@ export class ModeApprovalGate implements ToolGate {
       case "full-auto":
         return { kind: "allow" };
       case "manual":
-        return { kind: "prompt" };
+        // A tool the user pre-approved in config (MCP `alwaysAllow`, D-47b).
+        return tool.autoApprove ? { kind: "allow" } : { kind: "prompt" };
       case "auto-safe":
+        if (tool.autoApprove) return { kind: "allow" };
         if (tool.kind === "command" && typeof args.command === "string" && this.allowlisted(args.command)) {
           return { kind: "allow" };
         }

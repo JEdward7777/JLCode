@@ -14,6 +14,7 @@ import type { ModelConfig } from "../config/types.js";
 import { fakeAgentDriver } from "../session/fake.js";
 import { Session } from "../session/session.js";
 import { ToolRegistry, defaultTools } from "../tools/registry.js";
+import { McpManager } from "../mcp/client.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { Sandbox } from "../tools/sandbox.js";
 import { ModeApprovalGate } from "../tools/mode-gate.js";
@@ -74,13 +75,22 @@ export async function runServe(args: string[]): Promise<number> {
   // A fully-wired session: driver + native tools + sandbox (fenced to cwd plus
   // any remembered roots) + the mode∩approval gate from the config
   // (D-07/D-08/D-19). "Remember this root" persists to folderRoots[cwd].
+  // MCP servers (D-47): one child per enabled server for the whole instance,
+  // started before we listen so every session sees the same tool set. A server
+  // that fails is reported here and simply contributes no tools.
+  const mcp = await McpManager.start({ workspace: cwd });
+  for (const problem of mcp.problems) process.stderr.write(`mcp: warning: ${problem}\n`);
+  for (const status of mcp.statuses()) {
+    if (status.state === "failed") process.stderr.write(`mcp: ${status.name} failed to start — ${status.error ?? ""}\n`);
+  }
+
   const newSession = (config: ModelConfig, conversation?: Conversation): Session => {
     const cfg = loadConfig(paths);
     const roots = [cwd, ...(cfg.folderRoots?.[cwd] ?? [])];
     return new Session({
       config,
       driver: makeDriver(config),
-      tools: new ToolRegistry([...defaultTools(), askUserTool()]),
+      tools: new ToolRegistry([...defaultTools(), askUserTool(), ...mcp.tools()]),
       sandbox: new Sandbox(roots),
       // Live-switchable gate (D-07/D-08): rebuilt when the user changes
       // mode/approval from the browser. Starts from the config defaults.
@@ -209,7 +219,7 @@ export async function runServe(args: string[]): Promise<number> {
   // way out instead of exiting silently — and still exit, since a shutdown that
   // can't complete because the disk is full would be worse than a loud one.
   closeServer = () =>
-    void Promise.all([store.flush(), debugJournal.flush()])
+    void Promise.all([store.flush(), debugJournal.flush(), mcp.close()])
       .catch((err: unknown) => {
         log.error("shutdown: unwritten records were lost", { err });
         process.exitCode = 1;

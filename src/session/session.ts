@@ -1075,16 +1075,20 @@ export class Session {
     return "done";
   }
 
-  /** Path args of a tool call that fall outside the fence (D-19). */
+  /** Path args of a tool call that fall outside the fence (D-19). Native tools
+   *  declare `pathArgs`; MCP tools classify their arbitrary JSON args instead
+   *  (D-47d) — an unclassified path-looking value is fenced until answered. */
   private fenceEscapes(tool: Tool, args: Record<string, unknown>): { arg: string; escapedPath: string }[] {
     if (!this.sandbox) return [];
+    const candidates: { arg: string; value: string }[] = tool.classifyPaths
+      ? tool.classifyPaths(args).paths.map((p) => ({ arg: p.field, value: p.value }))
+      : (tool.pathArgs ?? [])
+          .map((argName) => ({ arg: argName, value: args[argName] }))
+          .filter((c): c is { arg: string; value: string } => typeof c.value === "string");
     const escapes: { arg: string; escapedPath: string }[] = [];
-    for (const argName of tool.pathArgs ?? []) {
-      const value = args[argName];
-      if (typeof value === "string") {
-        const r = this.sandbox.resolve(value);
-        if (!r.ok && r.kind === "escape") escapes.push({ arg: argName, escapedPath: r.escapedPath });
-      }
+    for (const { arg, value } of candidates) {
+      const r = this.sandbox.resolve(value);
+      if (!r.ok && r.kind === "escape") escapes.push({ arg, escapedPath: r.escapedPath });
     }
     return escapes;
   }

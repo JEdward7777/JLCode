@@ -84,9 +84,20 @@ decided in D-39; serve-mode/auth in D-40. **194 Tier-0/1 tests green** (+ 2 repl
 **H-01 is now FIXED (D-46)** — persistence failures stop the session with a recoverable Retry
 banner, and append logs retain no file descriptors. **D-25 (minimize-deps) is RETIRED by D-45:**
 use the mainline library when one fits; treat surviving `D-25` citations in code comments as
-historical, not a live constraint. **206 Tier-0/1 green** (+2 replayed Fable).
-**To resume: pick from the post-v1 "Later" backlog.** Rendered surfaces
-get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P6c + the D-46 banner).
+historical, not a live constraint.
+
+**Post-v1 work started: Phase 7 — the MCP client (X-01), design in D-47.** **P7a is done**
+(2026-07-28): `src/mcp/` holds settings loading (KiloCode's `mcp_settings.json` shape, global +
+per-workspace override), a stdio client manager over `@modelcontextprotocol/sdk` (one child per
+server per instance, failures reported not fatal), and the bridge that turns each discovered MCP
+tool into a native `Tool` — namespaced `<server>__<tool>`, classified conservatively unless
+`readOnlyHint`, `alwaysAllow` honored as pre-approval, and args flattened to jq-style field names
+for the learned `pathFields`/`notPathFields` fence lists. `jlcode mcp list|import|path` ships with
+it, and `serve` starts the servers. **237 Tier-0/1 green** (+2 replayed Fable). **Next: P7b** —
+the *is this a path?* pause in the browser (the one piece of D-47d not yet wired: unclassified
+fields are currently fenced fail-closed but never asked about), plus the MCP status surface.
+Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P6c +
+the D-46 banner).
 
 ---
 
@@ -396,6 +407,47 @@ tiers before the next; the one paid/live-tier spend is isolated in P6c.
   breaking Fable. Milestone M4 (O-02 resolved by design, D-38). ✅
 
 - *(Fast-follow, post-v1: partial-keep-lite #2 for higher recent-context fidelity — D-38.)*
+
+## Phase 7 — MCP client (X-01), post-v1
+
+**Goal:** JLCode consumes MCP servers configured in KiloCode's `mcp_settings.json` format —
+starting with [`../file_utils`](../../file_utils) — with every call still passing the same
+mode∩approval gate and workspace fence as a native tool. Design calls in **D-47**.
+
+### P7a — Config, stdio client & tool bridge (headless, Tier-0/1) ✅ done (2026-07-28)
+- **Config (D-47a):** `mcp_settings.json` in the config store + optional per-workspace
+  `.jlcode/mcp_settings.json` (same server name → workspace entry replaces global);
+  `jlcode mcp import` copies KiloCode's file over; `jlcode mcp list` shows servers/status.
+- **Client (D-47c):** `@modelcontextprotocol/sdk` stdio transport, one child per enabled server;
+  connect → `tools/list` → bridge. A server that fails to start or times out is **reported, not
+  fatal** — the session runs with the tools it has.
+- **Bridge (D-47b/d):** each MCP tool becomes a `Tool` (`<server>__<tool>`, schema forwarded
+  verbatim), classified conservatively unless `readOnlyHint`; args flattened to jq-style dot paths
+  for the learned path-field lists (unknown slashy field ⇒ treated as a path until P7b can ask).
+- **Lifecycle (D-47e):** one child per server per **instance**, started in `serve` before the
+  listen and closed on shutdown; every session gets the same bridged tools. Flagged: a server with
+  per-session memory (file_utils' `project_root`) then shares it across sessions.
+- **Verified:** +28 tests (`mcp-config` Tier-0: merge/override, bad entries incl. a `url` remote,
+  torn JSON, `env` as name-list or object, write-back preserving the rest of the file, and the
+  whole flatten/classify/remember path — `edits[].file` asked once for N elements; `mcp-client`
+  Tier-1 against a **real spawned stdio server**: discovery, conservative-vs-`readOnlyHint`
+  classing, calls, tool errors, a dead server that doesn't take the others down, `alwaysAllow`
+  pre-approval that still can't beat Ask mode or `read-only`, learned fields landing in the owning
+  file; `mcp-session` Tier-1: an MCP write through the approval pause, an out-of-fence MCP path
+  caught **even under full-auto**, a prose-classified slashy arg passing free, an unclassified one
+  fenced fail-closed). **237 Tier-0/1 green.** Also driven for real: `jlcode mcp import` off
+  Joshua's actual KiloCode `mcp_settings.json`, then `mcp list --probe` → **`file_utils`
+  connected over `uvx`, all 6 tools discovered and namespaced**.
+- **Done when:** a real stdio MCP server (spawned in-test) is discovered, listed, and callable
+  through the gate, headless. ✅
+
+### P7b — Session/UI integration: the path-field question + always-allow
+- The *is this a path?* pause (D-47d), answered in the browser, persisted back into the owning
+  `mcp_settings.json`; `alwaysAllow` honored as pre-approval; MCP server status/tools surfaced
+  in the browser (a real Chrome peek, logged in `VISUAL-LOG.md`).
+
+### P7c — Live validation against `file_utils`
+- Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 

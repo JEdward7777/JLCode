@@ -12,6 +12,7 @@ import { loadConfig } from "./config/store.js";
 import { resolveForCwd } from "./config/operations.js";
 import { runChat } from "./session/chat-command.js";
 import { runServe } from "./server/serve-command.js";
+import { runMcp } from "./mcp/commands.js";
 
 const HELP = `jlcode ${getVersion()} — a from-scratch coding agent
 
@@ -21,6 +22,7 @@ Usage:
 Commands:
   info, paths     Resolve and create the config/data dirs, then print them
   config …        Manage model configurations (list/which/use/clone/add/remove)
+  mcp …           MCP servers (list/import/path) — KiloCode mcp_settings format
   chat            Start a terminal conversation with the selected config
   serve           Start the dev HTTP endpoint (curl /chat, retains threads)
   version         Print the version
@@ -72,6 +74,8 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     case "config":
       return runConfig(argv.slice(1));
+    case "mcp":
+      return runMcp(argv.slice(1));
     case "chat":
       return runChat(argv.slice(1));
     case "serve":
