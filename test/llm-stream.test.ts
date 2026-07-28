@@ -88,3 +88,82 @@ describe("provider capture", () => {
     expect(accumulate([{ type: "text", delta: "hi" }]).provider).toBeUndefined();
   });
 });
+
+/**
+ * H-04: OpenRouter streams `reasoning_details` as deltas keyed by `index` — the
+ * text arrives in pieces and the signature lands in a final fragment with no
+ * text. Appending them stores N partial thinking blocks plus an orphan
+ * signature, and the provider rejects the replay with
+ * `Invalid signature in thinking block`. Shapes below are taken verbatim from a
+ * real failing conversation (anthropic/claude-opus-5 via Amazon Bedrock).
+ */
+describe("reasoning_details assembly", () => {
+  const fragments = [
+    { type: "reasoning.text", text: "I", format: "anthropic-claude-v1", index: 0 },
+    { type: "reasoning.text", text: " should just confirm", format: "anthropic-claude-v1", index: 0 },
+    { type: "reasoning.text", text: " being asked.", format: "anthropic-claude-v1", index: 0 },
+    { type: "reasoning.text", signature: "CAISlQIKhwEIEBgC", format: "anthropic-claude-v1", index: 0 },
+  ];
+
+  it("merges fragments sharing an index into one signed block", () => {
+    const result = accumulate(fragments.map((f) => ({ type: "reasoning_details", value: [f] }) as StreamEvent));
+    expect(result.reasoning).toEqual([
+      {
+        type: "reasoning.text",
+        text: "I should just confirm being asked.",
+        signature: "CAISlQIKhwEIEBgC",
+        format: "anthropic-claude-v1",
+        index: 0,
+      },
+    ]);
+  });
+
+  it("keeps distinct indices as separate blocks, in first-seen order", () => {
+    const result = accumulate([
+      { type: "reasoning_details", value: [{ type: "reasoning.text", text: "a", index: 0 }] },
+      { type: "reasoning_details", value: [{ type: "reasoning.text", text: "x", index: 1 }] },
+      { type: "reasoning_details", value: [{ type: "reasoning.text", text: "b", index: 0 }] },
+      { type: "reasoning_details", value: [{ type: "reasoning.text", signature: "s1", index: 1 }] },
+    ] as StreamEvent[]);
+    expect(result.reasoning).toEqual([
+      { type: "reasoning.text", text: "ab", index: 0 },
+      { type: "reasoning.text", text: "x", signature: "s1", index: 1 },
+    ]);
+  });
+
+  it("concatenates encrypted payloads too, not just text", () => {
+    const result = accumulate([
+      { type: "reasoning_details", value: [{ type: "reasoning.encrypted", data: "AAA", index: 0 }] },
+      { type: "reasoning_details", value: [{ type: "reasoning.encrypted", data: "BBB", index: 0 }] },
+    ] as StreamEvent[]);
+    expect(result.reasoning).toEqual([{ type: "reasoning.encrypted", data: "AAABBB", index: 0 }]);
+  });
+
+  it("leaves un-indexed details appended, one entry each (other providers)", () => {
+    const result = accumulate([
+      { type: "reasoning_details", value: [{ type: "reasoning.text", text: "one" }] },
+      { type: "reasoning_details", value: [{ type: "reasoning.text", text: "two" }] },
+    ] as StreamEvent[]);
+    expect(result.reasoning).toEqual([
+      { type: "reasoning.text", text: "one" },
+      { type: "reasoning.text", text: "two" },
+    ]);
+  });
+
+  it("passes non-object details through untouched (stays opaque)", () => {
+    const result = accumulate([
+      { type: "reasoning_details", value: "opaque-blob" },
+      { type: "reasoning_details", value: "another" },
+    ] as StreamEvent[]);
+    expect(result.reasoning).toEqual(["opaque-blob", "another"]);
+  });
+
+  it("does not merge across a whole-array delta either", () => {
+    // Some chunks carry several fragments at once; they must still fold by index.
+    const result = accumulate([
+      { type: "reasoning_details", value: fragments },
+    ] as StreamEvent[]);
+    expect(result.reasoning).toHaveLength(1);
+    expect((result.reasoning as Record<string, unknown>[])[0]!.signature).toBe("CAISlQIKhwEIEBgC");
+  });
+});

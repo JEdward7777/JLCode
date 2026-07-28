@@ -117,7 +117,14 @@ compaction releases it.
 **H-03 fixed (2026-07-28)** — Ctrl-C couldn't stop `serve` while a browser tab was open (the
 never-ending SSE bus kept `server.close()` waiting), and that handler also skipped the durability
 flush. Both paths now share one teardown that flushes, then force-closes the sockets; a second
-Ctrl-C exits immediately. **269 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
+Ctrl-C exits immediately.
+
+**H-04 fixed (2026-07-28)** — the real cause of the `Invalid signature in thinking block`
+failures. Streamed `reasoning_details` arrive as deltas keyed by `index` (text in pieces, the
+signature in a final fragment); we appended them instead of merging, so every signed thinking
+block was stored as several partial ones plus an orphan signature. Found *because* D-49's journal
+fields showed the provider pin working while the call still failed — which ruled out routing and
+pointed at the payload. **275 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
 validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
 slice, logged in `VISUAL-LOG.md` (through P7b).
 
@@ -491,6 +498,36 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 - Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-04 — streamed `reasoning_details` were appended, not merged; every signed thinking block
+  was stored malformed.** Found 2026-07-28 (the *second* `Invalid signature` report, after H-02's
+  provider pin was already working); **FIXED 2026-07-28.**
+  - **Cause.** OpenRouter streams `reasoning_details` as **deltas keyed by `index`**: the text
+    arrives in pieces and the `signature` lands in a final fragment carrying no text.
+    `accumulate()` did `reasoningDetails.push(...ev.value)` — appending fragments. One real turn
+    was stored as four blocks, all `index: 0`: `text:"I"`, `text:" should just confirm…"`,
+    `text:" being asked."`, and a fourth holding only a 380-char `signature`. Replaying that
+    sends four partial thinking blocks plus an orphan signature covering content that was never
+    reassembled, so the provider rejects it.
+  - **Why the H-02 pin didn't save it.** The journal (added by D-49) showed the pin *working* —
+    call 1 Bedrock, call 2 pinned to Bedrock and honored — and call 3 still failing. Same
+    provider, same block, accepted then rejected. That ruled routing out and pointed at the
+    payload. **Both defects were real and independent**: H-02 is a genuine cross-provider hazard,
+    H-04 was corrupting the blocks regardless of where they were sent.
+  - **Fix.** `ReasoningAssembler` in `src/llm/stream.ts` folds fragments by `index` —
+    content fields (`text`/`data`/`summary`) concatenate, envelope fields
+    (`type`/`format`/`signature`/`id`) take the latest. Details with **no** `index` keep the old
+    one-entry-each behaviour (other providers don't fragment), and non-object details pass
+    through untouched. Still opaque per D-14: reassembling a stream the way the protocol defines
+    is not interpreting it.
+  - **Verified.** +6 Tier-0 tests using the fragment shapes taken verbatim from the failing
+    conversation — merge-into-one-signed-block, distinct indices stay separate in first-seen
+    order, encrypted `data` concatenation, un-indexed passthrough, opaque non-objects, and
+    fragments delivered as one whole-array delta. Both replayed Fable tests (the D-14 verbatim
+    round-trip) still pass. **275 Tier-0/1 green.**
+  - **Known limitation:** conversations recorded *before* this fix still hold fragmented
+    reasoning on disk and will keep failing on resume — the log is append-only and is not
+    rewritten. Start a new conversation.
 
 - **H-03 — Ctrl-C didn't stop `serve` while a browser tab was open; and it skipped the flush.**
   Found 2026-07-28 (Joshua: *"control c doesn't kill the server, it just appends ^C"*);
