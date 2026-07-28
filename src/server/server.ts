@@ -14,7 +14,8 @@ import { APPROVAL_POLICIES, MODES } from "../config/types.js";
 
 /** The five compaction trigger modes (D-27). Validated on the mode-switch route. */
 const TRIGGER_MODES: readonly CompactionTrigger[] = ["auto", "manual", "suggest", "cancelable", "hard"];
-import type { AskUserAnswer } from "../session/types.js";
+import type { AskUserAnswer, LearnAnswers } from "../session/types.js";
+import type { McpServerStatus } from "../mcp/client.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
@@ -53,6 +54,9 @@ export interface ServerDeps {
   /** Optional diagnostic logger (D-11). Persistence faults are logged at ERROR
    *  here as well as surfaced in the UI, so a dropped write leaves a trace (D-46). */
   logger?: Pick<Logger, "error" | "warn">;
+  /** Optional: live MCP server status for `GET /mcp` (P7b). Read-only — the
+   *  settings files stay the source of truth, edited by hand or by `jlcode mcp`. */
+  mcpStatus?: () => { servers: McpServerStatus[]; problems: string[]; files: { global: string; workspace: string } };
 }
 
 const STATIC_TYPES: Record<string, string> = {
@@ -106,6 +110,22 @@ function entryView(entry: Entry): Record<string, unknown> {
  *  current settled state, so the rail can draw a badge without loading the tree. */
 function sessionDescriptor(session: Session): Record<string, unknown> {
   return { id: session.id, model: session.config.model, state: stateOf(session) };
+}
+
+/** Answers to the questions an approval pause carried (D-48), off the wire. */
+function parseLearned(raw: unknown): LearnAnswers | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const body = raw as { writes?: unknown; fields?: unknown };
+  const out: LearnAnswers = {};
+  if (typeof body.writes === "boolean") out.writes = body.writes;
+  if (typeof body.fields === "object" && body.fields !== null) {
+    const fields: Record<string, boolean> = {};
+    for (const [field, value] of Object.entries(body.fields as Record<string, unknown>)) {
+      if (typeof value === "boolean") fields[field] = value;
+    }
+    if (Object.keys(fields).length > 0) out.fields = fields;
+  }
+  return out.writes === undefined && out.fields === undefined ? undefined : out;
 }
 
 /** Build the response describing the session's current settled state. */
@@ -567,6 +587,13 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   });
 
   // The verbose debug journal for a conversation — the "Halp!" record (D-15).
+  // MCP servers as they stand right now (P7b): state, discovered tools with
+  // their live gate class, and what the user has taught JLCode (D-47d/D-48).
+  app.get("/mcp", (c) => {
+    if (!deps.mcpStatus) return c.json({ servers: [], problems: [], files: null, enabled: false });
+    return c.json({ ...deps.mcpStatus(), enabled: true });
+  });
+
   app.get("/conversation/:id/journal", (c) => {
     if (!deps.debugJournal) return c.json({ error: "no debug journal" }, 404);
     return c.json({ records: deps.debugJournal.read(c.req.param("id")) });
@@ -582,9 +609,11 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       editedArgs?: unknown;
       reason?: unknown;
       addRoot?: unknown;
+      learned?: unknown;
     };
     await session.approve({
       approve: body.approve !== false,
+      learned: parseLearned(body.learned),
       editedArgs:
         body.editedArgs && typeof body.editedArgs === "object"
           ? (body.editedArgs as Record<string, unknown>)

@@ -71,8 +71,17 @@ What the browser gives you: streaming markdown chat with a reasoning
 disclosure, a left rail of concurrent sessions, live Ask/Plan/Code + approval
 controls, edit-before-approve on tool calls, out-of-fence prompts, whole-tree
 spend with a settable cap, branch/rewind arrows with pencil edit-fork, a
-per-turn debug-journal drawer, and lazy-loaded Mermaid diagrams. Screenshots of
-each slice are in [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md).
+per-turn debug-journal drawer, lazy-loaded Mermaid diagrams, and an MCP status
+drawer. Screenshots of each slice are in
+[`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md).
+
+MCP tools pass the same gate and fence as native ones. JLCode can't take a
+third-party server's word for what its tools do, so it assumes the worst — the
+tool writes, a slashy argument is a path — and when one of those guesses is what
+made it stop, the approval card asks you to settle it (*does this tool write?*,
+*is this field a path?*). The answers are written back into your
+`mcp_settings.json`, so each question is asked once. If your approval policy
+would have let the call run unattended, nothing is asked (D-48).
 
 ### Serving scope and auth
 

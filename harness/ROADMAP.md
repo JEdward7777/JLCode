@@ -99,11 +99,15 @@ server per instance, failures reported not fatal), and the bridge that turns eac
 tool into a native `Tool` — namespaced `<server>__<tool>`, classified conservatively unless
 `readOnlyHint`, `alwaysAllow` honored as pre-approval, and args flattened to jq-style field names
 for the learned `pathFields`/`notPathFields` fence lists. `jlcode mcp list|import|path` ships with
-it, and `serve` starts the servers. **237 Tier-0/1 green** (+2 replayed Fable). **Next: P7b** —
-the *is this a path?* pause in the browser (the one piece of D-47d not yet wired: unclassified
-fields are currently fenced fail-closed but never asked about), plus the MCP status surface.
-Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P6c +
-the D-46 banner).
+it, and `serve` starts the servers. **P7b is done** (2026-07-28): **learn-on-pause (D-48)** —
+a pause that is happening anyway also settles JLCode's two guesses about an MCP call (*does this
+tool write?*, *is this field a path?*), answered in the browser and persisted into the owning
+`mcp_settings.json` (`writeTools`/`readTools` beside `pathFields`/`notPathFields`). It never stops
+just to ask: under `full-auto` with in-fence args the call runs unattended. A mode/policy denial
+resting only on the presumed write (Ask mode, `read-only`) becomes the write question instead of a
+silent wall. Plus `GET /mcp` and a read-only **MCP status drawer** in the browser. **249 Tier-0/1
+green** (+2 replayed Fable). **Next: P7c** — live validation against the real `file_utils` server.
+Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P7b).
 
 ---
 
@@ -447,10 +451,29 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 - **Done when:** a real stdio MCP server (spawned in-test) is discovered, listed, and callable
   through the gate, headless. ✅
 
-### P7b — Session/UI integration: the path-field question + always-allow
-- The *is this a path?* pause (D-47d), answered in the browser, persisted back into the owning
-  `mcp_settings.json`; `alwaysAllow` honored as pre-approval; MCP server status/tools surfaced
-  in the browser (a real Chrome peek, logged in `VISUAL-LOG.md`).
+### P7b — Session/UI integration: learn-on-pause + the MCP status surface ✅ done (2026-07-28)
+- **Learn-on-pause (D-48).** The pause carries the questions JLCode's own guesses raise — *does
+  `<tool>` write anything?* (D-47b) and *is `<field>` a file path?* (D-47d) — answered in the
+  browser beside approve/deny and persisted into the owning `mcp_settings.json`. Answers are facts
+  about the tool, not consent: kept on a deny, and applied **before** the fence is re-evaluated, so
+  a field just called prose widens nothing (the card drops the fence block live).
+- **Never a pause just to ask** (Joshua's rule): if the policy would let the call through
+  unattended, the answer wouldn't change the outcome, so nothing is asked.
+- **A denial resting on a guess becomes a question.** Ask mode / `read-only` blocking a
+  *presumed*-writing tool now raises the write question instead of a silent wall — answering
+  read-only reclassifies it and the call proceeds; "it writes" denies it permanently.
+- **Status surface:** `GET /mcp` + a read-only browser drawer (server state/scope/error, each
+  tool's live gate class with a **presumed** marker and `alwaysAllow`, the learned lists, and both
+  settings-file paths); `jlcode mcp list --probe` shows the same classes.
+- **Verified:** +12 tests (Tier-0 `classifyTool`/`rememberTool`; Tier-1 against the real spawned
+  stdio server — the fence pause carrying the unclassified field, a prose answer sticking to disk
+  and the next identical call running free, a path answer still fencing but not re-asking, the
+  manual-approval write question relaxing the tool, Ask mode's block becoming a question that
+  unblocks, full-auto in-fence staying silent, `readOnlyHint` never asked about; server-route tests
+  for `/mcp` and the `learned` wire shape). **249 Tier-0/1 green.**
+- **Peeked in Chrome** — the card, its live reaction, and the drawer, against the real fixture MCP
+  server; see [`VISUAL-LOG.md`](VISUAL-LOG.md). The fake driver gained an `mcp: <tool> <json>`
+  prefix so bridged calls can be driven offline.
 
 ### P7c — Live validation against `file_utils`
 - Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate.

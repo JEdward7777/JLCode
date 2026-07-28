@@ -670,7 +670,8 @@ body {
   font-weight: 650;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.card-head .kind {
+.card-head .kind,
+.mcp-tool .kind {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -680,7 +681,8 @@ body {
   color: var(--muted);
 }
 .card-head .kind.write,
-.card-head .kind.command {
+.card-head .kind.command,
+.mcp-tool .kind.command {
   color: var(--danger);
   border-color: var(--danger);
 }
@@ -1098,4 +1100,127 @@ figure.mermaid svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Learn-on-pause questions (D-48): settle JLCode's conservative guesses about an
+   MCP tool while the user is already stopped here. */
+.learn {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.learn-note {
+  font-size: 13px;
+  color: var(--muted);
+}
+.learn-q {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.learn-q > span {
+  font-size: 13px;
+}
+.learn-q code {
+  font-size: 12px;
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.learn-value {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 8px;
+  font-style: italic;
+}
+.learn-foot {
+  font-size: 11px;
+  color: var(--muted);
+}
+.raw-view {
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+/* MCP status drawer (P7b) — read-only view of the configured servers. */
+.mcp-drawer .drawer-body {
+  gap: 12px;
+}
+.mcp-server {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mcp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-name {
+  font-weight: 650;
+}
+.mcp-scope {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.mcp-state {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.mcp-state.connected {
+  background: rgba(64, 200, 140, 0.16);
+  color: #67d6a5;
+}
+.mcp-state.failed {
+  background: rgba(240, 90, 90, 0.16);
+  color: var(--danger);
+}
+.mcp-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.mcp-flag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.mcp-flag.presumed {
+  color: #d8b45c;
+}
+.mcp-learned {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mcp-learned-label {
+  color: var(--text);
+}
+.mcp-files,
+.mcp-empty {
+  font-size: 11px;
+  color: var(--muted);
 }

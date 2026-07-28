@@ -55,7 +55,12 @@ export async function runMcp(args: string[]): Promise<number> {
         for (const status of manager.statuses()) {
           const detail = status.state === "failed" ? `  ${status.error ?? ""}` : `  ${status.tools.length} tools`;
           process.stdout.write(`${status.state.padEnd(10)} ${status.name} (${status.scope})${detail}\n`);
-          for (const tool of status.tools) process.stdout.write(`             ${tool}\n`);
+          for (const tool of status.toolInfo) {
+            // "presumed" = the strict class is JLCode's guess, settled at the
+            // next pause the tool causes (D-48).
+            const marks = [tool.kind, ...(tool.presumed ? ["presumed"] : []), ...(tool.alwaysAllow ? ["alwaysAllow"] : [])];
+            process.stdout.write(`             ${tool.name}  [${marks.join(", ")}]\n`);
+          }
         }
         await manager.close();
         return 0;

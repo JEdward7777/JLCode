@@ -52,6 +52,15 @@ export interface Tool {
   classifyPaths?(args: Record<string, unknown>): ClassifiedPaths;
   /** Persist the user's answer to that question, so it is asked only once. */
   rememberPathField?(field: string, isPath: boolean): void;
+  /**
+   * MCP tools (D-48) are presumed to write until the server's `readOnlyHint` or
+   * the user says otherwise. `true` means *presumed* — the strict class is a
+   * guess, so a pause that is happening anyway may ask about it. `kind`/`mutates`
+   * are live on such a tool: answering flips them for the next call.
+   */
+  writeUnknown?(): boolean;
+  /** Persist the user's answer to *does this tool write?*, asked only once. */
+  rememberWrite?(writes: boolean): void;
   /** Pre-approved by the user in config (MCP `alwaysAllow`, D-47b) — skips the
    *  approval prompt, but never the mode gate or the `read-only` policy. */
   autoApprove?: boolean;

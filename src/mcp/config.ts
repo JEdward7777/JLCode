@@ -7,9 +7,10 @@
  * *replaces* the global one of the same name (whole-entry, not field-merge — one
  * place to look when a server misbehaves).
  *
- * JLCode adds two fields of its own to each entry — `pathFields` /
- * `notPathFields` (D-47d) — which is why JLCode owns the file rather than reading
- * KiloCode's in place: the learned answers get written back here.
+ * JLCode adds learned fields of its own to each entry — `pathFields` /
+ * `notPathFields` (D-47d) and `writeTools` / `readTools` (D-48) — which is why
+ * JLCode owns the file rather than reading KiloCode's in place: the answers the
+ * user gives at an approval pause get written back here.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -36,6 +37,10 @@ export interface McpServerConfig {
   pathFields?: string[];
   /** Flattened arg fields known *not* to be paths → never fenced (D-47d). */
   notPathFields?: string[];
+  /** Tools the user confirmed change state — keep the strict class (D-48). */
+  writeTools?: string[];
+  /** Tools the user confirmed are read-only — demoted to `kind:"read"` (D-48). */
+  readTools?: string[];
 }
 
 export interface McpSettings {

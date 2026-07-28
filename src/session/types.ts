@@ -81,6 +81,31 @@ export interface CompactionRequest {
   window: number;
 }
 
+/**
+ * Questions riding along on a pause (D-48). JLCode guesses conservatively about
+ * an MCP tool — it writes; a slashy arg is a path — and those guesses are what
+ * make it stop. So when it has stopped *anyway*, it asks the user to settle
+ * them, once, and persists the answers into `mcp_settings.json`. It never
+ * creates a pause just to ask: if the policy would have let the call run
+ * unattended, the answer wouldn't have changed the outcome.
+ */
+export interface LearnRequest {
+  /** Ask *does this tool write?* — the class is presumed, not known. */
+  askWrite?: boolean;
+  /** Ask *is this a path?* per unclassified slashy arg (jq-style field names). */
+  fields?: { field: string; value: string; escapes?: boolean }[];
+  /** The pause exists *only* because a presumed-writing tool is mode-blocked
+   *  (Ask/Plan). Answering "read-only" un-blocks the call; "writes" denies it. */
+  modeBlocked?: string;
+}
+
+/** The user's answers to a `LearnRequest`, applied before the call proceeds. */
+export interface LearnAnswers {
+  writes?: boolean;
+  /** Flattened field name → is it a filesystem path? */
+  fields?: Record<string, boolean>;
+}
+
 /** A tool call paused for approval (D-16 — args are editable before running). */
 export interface ApprovalRequest {
   id: string;
@@ -88,8 +113,11 @@ export interface ApprovalRequest {
   kind: ToolKind;
   args: Record<string, unknown>;
   reason: string;
-  /** Present when the call touches paths outside the fence (D-19). */
-  outOfFence?: { paths: string[]; suggestedRoot: string };
+  /** Present when the call touches paths outside the fence (D-19). `fields` runs
+   *  parallel to `paths`: the arg each escape came from (D-48). */
+  outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string };
+  /** Present when this pause can also settle a guess (D-48). */
+  learn?: LearnRequest;
 }
 
 /** One question in an ask_user form (D-18). */
@@ -127,6 +155,11 @@ export interface ApprovalDecision {
   /** For out-of-fence access (D-19): true → remember the containing root(s);
    *  a string → remember that specific root; omitted → allow just this once. */
   addRoot?: boolean | string;
+  /** Answers to the questions the pause carried (D-48). Applied — and persisted
+   *  — before the fence is re-evaluated, so a field the user says is *not* a
+   *  path never widens the fence on its account. Kept on a denial too: the
+   *  answers are facts about the tool, not consent to this call. */
+  learned?: LearnAnswers;
 }
 
 export type SessionEvent =

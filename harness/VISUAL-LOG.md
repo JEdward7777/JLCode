@@ -311,3 +311,47 @@ suite does now.
 Not exercised visually (covered by tests): the discard path's confirm step
 ("Continue without saving…" → "Really discard N?"), a fault on the shared
 `index.jsonl`, and journal-write failures (warn-only, they never stop a session).
+
+---
+
+## P7b — the MCP learn-on-pause card + status drawer · 2026-07-28 · ✅ looked good
+
+**Screenshots:** [`visual/p7b-learn-card.png`](visual/p7b-learn-card.png) ·
+[`visual/p7b-learn-answered.png`](visual/p7b-learn-answered.png) ·
+[`visual/p7b-mcp-drawer.png`](visual/p7b-mcp-drawer.png)
+
+Drove the built server against the **real stdio MCP fixture server**
+(`test/fixtures/mcp-test-server.mjs`, spawned by the manager from an isolated
+`mcp_settings.json`) with the fake agent driver — which gained an `mcp: <tool>
+<json>` prefix so a bridged call can be triggered by hand offline. Sent
+`mcp: testsrv__echo {"text":"…","note":"/etc/hosts"}` — a tool with no
+`readOnlyHint` (presumed to write) and an unclassified slashy arg pointing
+outside the fence, so every D-48 question fires at once. Confirmed with my own
+eyes:
+
+- **One card, both guesses.** The approval card shows the tool, the `COMMAND`
+  class, the raw args, then *"JLCode guessed conservatively here — settle it once
+  and it won't ask again"* with **Does `testsrv__echo` write anything?**
+  (writes / read-only) and **Is `note` a file path?** — the offending value
+  (`/etc/hosts`) shown beside it — plus the fence block below.
+- **The answers change the card, live.** Clicking *just text* retires the fence
+  section entirely and the buttons collapse from **Allow once / Remember /etc /
+  Deny** to plain **Approve / Deny** — a field the user just called prose no
+  longer widens the fence. (That's why `outOfFence` now carries the arg name per
+  escape.)
+- **Answering sticks, on the real file.** Clicking through Approve wrote
+  `notPathFields: [text, note]` and `readTools: [echo]` into the actual
+  `mcp_settings.json`, and the tool ran (*"Done — the tool ran and reported
+  back."*).
+- **Asked once, then never.** The identical call a second time returned
+  `status: idle` with no pause at all — no fence prompt, no approval prompt.
+  `jlcode mcp list --probe` agrees: `testsrv__echo [read]`.
+- **The MCP drawer reads true.** The `mcp` header button opens a read-only
+  drawer: `connected  testsrv  global`, each tool with its live class
+  (`echo READ`, `peek READ`, `touch_file COMMAND presumed`), the learned lists
+  (`paths`, `not paths`, `read-only`), and both settings-file paths. The amber
+  **presumed** tag marks the classes that are still JLCode's guess.
+
+Not exercised visually (covered by tests): the Ask-mode variant of the card
+(the *"No — it only reads / Yes — it writes"* pair), a failed server's error row
+in the drawer, and the workspace-scoped settings file.

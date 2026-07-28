@@ -1,7 +1,8 @@
 /**
- * P7a Tier-1: MCP tools driven through a real `Session` — the same gate, the
- * same D-19 soft fence, the same approval pause as a native tool (D-47b/d).
- * The MCP server is a real stdio child; the model is the fake driver.
+ * P7a/P7b Tier-1: MCP tools driven through a real `Session` — the same gate, the
+ * same D-19 soft fence, the same approval pause as a native tool (D-47b/d) —
+ * plus the learn-on-pause questions that settle JLCode's conservative guesses
+ * (D-48). The MCP server is a real stdio child; the model is the fake driver.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -138,7 +139,9 @@ describe("MCP tools in a session", () => {
     expect(s.awaitingApproval?.reason).toBe("access outside the workspace");
   });
 
-  it("Ask mode blocks an unannotated MCP tool but allows a readOnlyHint one (D-47b)", async () => {
+  it("Ask mode asks about an unannotated MCP tool but allows a readOnlyHint one (D-47b/D-48)", async () => {
+    // The block rests on JLCode's own guess that the tool writes, so instead of
+    // denying outright the session stops and offers to settle it (D-48).
     const blocked = new Session({
       config,
       driver: callThenAnswer("testsrv__echo", { text: "hi" }),
@@ -147,6 +150,12 @@ describe("MCP tools in a session", () => {
       gate: new ModeApprovalGate("ask", "manual"),
     });
     await blocked.send("try to echo");
+    expect(blocked.status).toBe("awaiting-approval");
+    expect(blocked.awaitingApproval?.learn?.askWrite).toBe(true);
+    expect(blocked.awaitingApproval?.learn?.modeBlocked).toMatch(/Ask mode is read-only/);
+
+    // Confirming that it does write leaves the mode wall exactly where it was.
+    await blocked.approve({ approve: true, learned: { writes: true } });
     expect(blocked.status).toBe("idle");
     const denied = blocked.conversation.entries.find((e) => e.type === "tool");
     expect(denied && denied.type === "tool" && denied.content).toMatch(/denied: Ask mode is read-only/);
@@ -161,5 +170,102 @@ describe("MCP tools in a session", () => {
     await allowed.send("peek");
     const ok = allowed.conversation.entries.find((e) => e.type === "tool");
     expect(ok && ok.type === "tool" && ok.content).toBe("peeked notes.md");
+  });
+
+  // ---- Learn-on-pause (D-48). JLCode guesses conservatively about MCP tools;
+  // the guess is what makes it stop, so a pause that is happening anyway also
+  // offers to settle it. It never stops *just* to ask.
+
+  it("an out-of-fence pause offers the unclassified field, and a prose answer sticks", async () => {
+    const note = path.join(outside, "secret.txt");
+    const s = session(callThenAnswer("testsrv__echo", { text: "hi", note }), "full-auto");
+    await s.send("echo with a mystery field");
+    expect(s.status).toBe("awaiting-approval");
+    const learn = s.awaitingApproval?.learn;
+    expect(learn?.fields).toEqual([{ field: "note", value: note, escapes: true }]);
+    // The escape reports which arg produced it, so the browser can drop it once
+    // the user says it is prose.
+    expect(s.awaitingApproval?.outOfFence?.fields).toEqual(["note"]);
+
+    // Denied — but the answer is a fact about the tool, so it is kept anyway.
+    await s.approve({ approve: false, learned: { fields: { note: false } } });
+    expect(mcp.serverConfig("testsrv")?.notPathFields).toContain("note");
+    const written = JSON.parse(fs.readFileSync(path.join(configDir, "mcp_settings.json"), "utf8"));
+    expect(written.mcpServers.testsrv.notPathFields).toContain("note");
+
+    // Same call again: `note` is prose now, so nothing is fenced and nothing asked.
+    const again = session(callThenAnswer("testsrv__echo", { text: "hi", note }), "full-auto");
+    await again.send("echo again");
+    expect(again.status).toBe("idle");
+  });
+
+  it("answering \"it is a path\" keeps fencing it, without asking twice", async () => {
+    const note = path.join(outside, "secret.txt");
+    const first = session(callThenAnswer("testsrv__echo", { text: "hi", note }), "full-auto");
+    await first.send("echo");
+    await first.approve({ approve: false, learned: { fields: { note: true } } });
+    expect(mcp.serverConfig("testsrv")?.pathFields).toContain("note");
+
+    const again = session(callThenAnswer("testsrv__echo", { text: "hi", note }), "full-auto");
+    await again.send("echo again");
+    expect(again.status).toBe("awaiting-approval");
+    expect(again.awaitingApproval?.reason).toBe("access outside the workspace");
+    expect(again.awaitingApproval?.learn?.fields ?? []).toEqual([]); // asked once, not again
+  });
+
+  it("a manual-approval pause carries the write question, and the answer relaxes the tool", async () => {
+    const s = session(callThenAnswer("testsrv__echo", { text: "hi" }), "manual");
+    await s.send("echo");
+    expect(s.status).toBe("awaiting-approval");
+    expect(s.awaitingApproval?.kind).toBe("command"); // presumed to write (D-47b)
+    expect(s.awaitingApproval?.learn?.askWrite).toBe(true);
+
+    await s.approve({ approve: true, learned: { writes: false } });
+    expect(mcp.serverConfig("testsrv")?.readTools).toContain("echo");
+
+    // Now known read-only: no approval prompt at all the next time.
+    const again = session(callThenAnswer("testsrv__echo", { text: "hi" }), "manual");
+    await again.send("echo again");
+    expect(again.status).toBe("idle");
+    const out = again.conversation.entries.find((e) => e.type === "tool");
+    expect(out && out.type === "tool" && out.content).toBe("echo: hi");
+  });
+
+  it("Ask mode's block is a question, and read-only unblocks the call (D-48)", async () => {
+    const blocked = new Session({
+      config,
+      driver: callThenAnswer("testsrv__echo", { text: "hi" }),
+      tools: new ToolRegistry([...mcp.tools()]),
+      sandbox: new Sandbox([root]),
+      gate: new ModeApprovalGate("ask", "manual"),
+    });
+    await blocked.send("echo in ask mode");
+    expect(blocked.status).toBe("awaiting-approval");
+    expect(blocked.awaitingApproval?.learn?.modeBlocked).toBeDefined();
+
+    await blocked.approve({ approve: true, learned: { writes: false } });
+    const out = blocked.conversation.entries.find((e) => e.type === "tool");
+    expect(out && out.type === "tool" && out.content).toBe("echo: hi");
+    expect(mcp.serverConfig("testsrv")?.readTools).toContain("echo");
+  });
+
+  it("never stops just to ask: a full-auto in-fence call runs unattended", async () => {
+    // `path` is a known path field and lands inside the fence; the policy would
+    // let the write through either way, so no question is worth the interruption.
+    const target = path.join(root, "auto.txt");
+    const s = session(callThenAnswer("testsrv__touch_file", { path: target, body: "x" }), "full-auto");
+    await s.send("write inside the fence");
+    expect(s.status).toBe("idle");
+    expect(fs.readFileSync(target, "utf8")).toBe("x");
+    expect(mcp.serverConfig("testsrv")?.readTools ?? []).not.toContain("touch_file");
+    expect(mcp.serverConfig("testsrv")?.writeTools ?? []).not.toContain("touch_file");
+  });
+
+  it("a readOnlyHint tool is never asked about — the server already said so", async () => {
+    const s = session(callThenAnswer("testsrv__peek", { target: "notes.md" }), "manual");
+    await s.send("peek");
+    expect(s.status).toBe("idle"); // read tools need no approval
+    const peek = mcp.tools().find((t) => t.name === "testsrv__peek")!;
+    expect(peek.writeUnknown?.()).toBe(false);
   });
 });

@@ -15,6 +15,7 @@ import { loadSettings, serverEnv, settingsFiles, updateServerEntry } from "./con
 import type { McpToolInfo } from "./bridge.js";
 import { bridgeTool, renderMcpContent } from "./bridge.js";
 import { rememberField } from "./path-fields.js";
+import { rememberTool } from "./tool-class.js";
 import { getVersion } from "../version.js";
 
 const DEFAULT_TIMEOUT_SEC = 60;
@@ -22,12 +23,31 @@ const CONNECT_TIMEOUT_MS = 30_000;
 
 export type McpServerState = "connected" | "disabled" | "failed";
 
+/** One discovered tool, as the status surface shows it (P7b). */
+export interface McpToolStatus {
+  /** Name the model sees (`<server>__<tool>`). */
+  name: string;
+  /** Name on the server itself. */
+  mcpName: string;
+  description?: string;
+  /** Gate class right now — `command` while presumed to write (D-47b/D-48). */
+  kind: string;
+  /** True while the class is a guess the user hasn't confirmed (D-48). */
+  presumed: boolean;
+  /** Pre-approved via the server's `alwaysAllow` (D-47b). */
+  alwaysAllow: boolean;
+}
+
 export interface McpServerStatus {
   name: string;
   scope: SettingsScope;
   state: McpServerState;
   /** Tool names as the model sees them (`<server>__<tool>`). */
   tools: string[];
+  /** The same tools with their gate class, for the browser panel (P7b). */
+  toolInfo: McpToolStatus[];
+  /** What the user has taught JLCode about this server (D-47d/D-48). */
+  learned: { pathFields: string[]; notPathFields: string[]; writeTools: string[]; readTools: string[] };
   error?: string;
 }
 
@@ -36,6 +56,8 @@ interface Connection {
   client?: Client;
   transport?: StdioClientTransport;
   status: McpServerStatus;
+  /** Discovered tools, kept so the status surface can report their live class. */
+  tools: { tool: Tool; info: McpToolInfo }[];
 }
 
 export interface McpManagerOptions {
@@ -72,11 +94,11 @@ export class McpManager {
 
   private async connect(server: ResolvedServer): Promise<void> {
     if (server.config.disabled) {
-      this.connections.push({ server, status: { name: server.name, scope: server.scope, state: "disabled", tools: [] } });
+      this.connections.push({ server, status: this.blankStatus(server, "disabled"), tools: [] });
       return;
     }
-    const status: McpServerStatus = { name: server.name, scope: server.scope, state: "failed", tools: [] };
-    const connection: Connection = { server, status };
+    const status = this.blankStatus(server, "failed");
+    const connection: Connection = { server, status, tools: [] };
     this.connections.push(connection);
     try {
       const transport = new StdioClientTransport({
@@ -96,6 +118,7 @@ export class McpManager {
         const tool = this.bridge(connection, info);
         this.bridged.push(tool);
         status.tools.push(tool.name);
+        connection.tools.push({ tool, info });
       }
     } catch (e) {
       status.error = (e as Error).message;
@@ -113,6 +136,7 @@ export class McpManager {
       ...(server.config.alwaysAllow ? { alwaysAllow: server.config.alwaysAllow } : {}),
       lists: () => server.config,
       remember: (field, isPath) => this.remember(server, field, isPath),
+      rememberWrite: (writes) => this.rememberWrite(server, info.name, writes),
       call: (toolName, args) => this.call(connection, toolName, args),
     });
   }
@@ -122,6 +146,18 @@ export class McpManager {
     const updated = rememberField(server.config, field, isPath);
     server.config.pathFields = updated.pathFields; // live, so the next call sees it
     server.config.notPathFields = updated.notPathFields;
+    this.persist(server, updated);
+  }
+
+  /** Persist a *does this tool write?* answer, same file, same way (D-48). */
+  private rememberWrite(server: ResolvedServer, tool: string, writes: boolean): void {
+    const updated = rememberTool(server.config, tool, writes);
+    server.config.writeTools = updated.writeTools; // live: the bridged tool's
+    server.config.readTools = updated.readTools; //   kind/mutates read these
+    this.persist(server, updated);
+  }
+
+  private persist(server: ResolvedServer, updated: Partial<McpServerConfig>): void {
     const file = server.scope === "workspace" ? this.files.workspace : this.files.global;
     try {
       updateServerEntry(file, server.name, (entry) => ({ ...entry, ...updated }));
@@ -150,8 +186,25 @@ export class McpManager {
     return [...this.bridged];
   }
 
+  private blankStatus(server: ResolvedServer, state: McpServerState): McpServerStatus {
+    return { name: server.name, scope: server.scope, state, tools: [], toolInfo: [], learned: learnedOf(server.config) };
+  }
+
+  /** Live status — classes and learned lists are re-read, since answers land mid-session. */
   statuses(): McpServerStatus[] {
-    return this.connections.map((c) => ({ ...c.status, tools: [...c.status.tools] }));
+    return this.connections.map((c) => ({
+      ...c.status,
+      tools: [...c.status.tools],
+      learned: learnedOf(c.server.config),
+      toolInfo: c.tools.map(({ tool, info }) => ({
+        name: tool.name,
+        mcpName: info.name,
+        ...(info.description ? { description: info.description } : {}),
+        kind: tool.kind,
+        presumed: tool.writeUnknown?.() === true,
+        alwaysAllow: tool.autoApprove === true,
+      })),
+    }));
   }
 
   /** The server config as currently held (including learned fields) — for tests/UI. */
@@ -167,6 +220,15 @@ export class McpManager {
       }),
     );
   }
+}
+
+function learnedOf(config: McpServerConfig): McpServerStatus["learned"] {
+  return {
+    pathFields: [...(config.pathFields ?? [])],
+    notPathFields: [...(config.notPathFields ?? [])],
+    writeTools: [...(config.writeTools ?? [])],
+    readTools: [...(config.readTools ?? [])],
+  };
 }
 
 /** Convenience for the CLI: settings paths without starting anything. */

@@ -318,3 +318,109 @@ describe("dev server — ask_user answers (D-18)", () => {
     expect(tool.content).toContain("Store — Which store?: postgres");
   });
 });
+
+// P7b: the MCP status route and the learn-on-pause answers riding on /approve
+// (D-48). The tool here is a stand-in for a bridged MCP tool — the wire shape is
+// what matters; the real bridge is covered Tier-1 in mcp-session.test.ts.
+describe("MCP surface (P7b)", () => {
+  it("GET /mcp reports that MCP is not wired in when the dep is absent", async () => {
+    const res = await makeApp().request("/mcp");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.enabled).toBe(false);
+    expect(body.servers).toEqual([]);
+  });
+
+  it("GET /mcp passes the live status through", async () => {
+    const app = createServer({
+      resolveConfig: () => config,
+      newSession: (c, conversation) => new Session({ config: c, driver: echoDriver(), conversation }),
+      store,
+      workingDir: "/work/test",
+      version: "0.0.0",
+      mcpStatus: () => ({
+        servers: [
+          {
+            name: "file_utils",
+            scope: "global",
+            state: "connected",
+            tools: ["file_utils__read"],
+            toolInfo: [
+              { name: "file_utils__read", mcpName: "read", kind: "command", presumed: true, alwaysAllow: false },
+            ],
+            learned: { pathFields: ["path"], notPathFields: [], writeTools: [], readTools: [] },
+          },
+        ],
+        problems: ["nope.json: not valid JSON"],
+        files: { global: "/cfg/mcp_settings.json", workspace: "/work/.jlcode/mcp_settings.json" },
+      }),
+    }).app;
+    const body = (await (await app.request("/mcp")).json()) as any;
+    expect(body.enabled).toBe(true);
+    expect(body.servers[0].toolInfo[0].presumed).toBe(true);
+    expect(body.problems).toHaveLength(1);
+    expect(body.files.global).toBe("/cfg/mcp_settings.json");
+  });
+
+  it("/approve carries the learned answers to the tool", async () => {
+    const answered: string[] = [];
+    let writes: boolean | undefined;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-learn-"));
+    const tool = {
+      name: "srv__thing",
+      kind: "command" as const,
+      mutates: true,
+      def: { type: "function" as const, function: { name: "srv__thing", description: "", parameters: {} } },
+      classifyPaths: () => ({ paths: [], unknown: [{ field: "note", value: "a/b" }] }),
+      rememberPathField: (field: string, isPath: boolean) => answered.push(`${field}=${isPath}`),
+      writeUnknown: () => true,
+      rememberWrite: (w: boolean) => {
+        writes = w;
+      },
+      execute: async () => ({ content: "ran" }),
+    };
+    const driver: LlmDriver = (() => {
+      let n = 0;
+      return {
+        async *streamChat(): AsyncGenerator<StreamEvent> {
+          n++;
+          if (n === 1) {
+            yield { type: "tool_call", index: 0, id: "c1", name: "srv__thing", argsDelta: JSON.stringify({ note: "a/b" }) };
+            yield { type: "finish", reason: "tool_calls" };
+          } else {
+            yield { type: "text", delta: "done" };
+            yield { type: "finish", reason: "stop" };
+          }
+        },
+      };
+    })();
+    const app = createServer({
+      resolveConfig: () => config,
+      store,
+      workingDir: root,
+      newSession: (c, conversation) =>
+        new Session({
+          config: c,
+          driver,
+          tools: new ToolRegistry([tool]),
+          sandbox: new Sandbox([root]),
+          gate: new ModeApprovalGate("code", "manual"),
+          conversation,
+        }),
+      version: "0.0.0",
+    }).app;
+
+    const first = await post(app, "/chat", { text: "go" });
+    expect(first.json.approvalRequest.learn).toEqual({ askWrite: true, fields: [{ field: "note", value: "a/b" }] });
+
+    const id = first.json.sessionId as string;
+    const res = await post(app, `/session/${id}/approve`, {
+      approve: true,
+      learned: { writes: false, fields: { note: false, bogus: "not a boolean" } },
+    });
+    expect(res.status).toBe(200);
+    expect(writes).toBe(false);
+    expect(answered).toEqual(["note=false"]); // the non-boolean is dropped on the wire
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});

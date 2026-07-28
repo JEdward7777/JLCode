@@ -91,6 +91,21 @@ export interface PersistenceFault {
   retryFailed?: boolean;
 }
 
+/** Guesses this pause can settle, asked once and remembered (D-48). JLCode
+ *  presumes an MCP tool writes and that a slashy arg is a path; those guesses
+ *  are why it stopped, so it asks while the user is here anyway. */
+export interface LearnRequest {
+  askWrite?: boolean;
+  fields?: { field: string; value: string; escapes?: boolean }[];
+  /** Set when the pause exists *only* because the tool is presumed to write. */
+  modeBlocked?: string;
+}
+
+export interface LearnAnswers {
+  writes?: boolean;
+  fields?: Record<string, boolean>;
+}
+
 /** A tool call paused for approval (D-16). Args are editable before running. */
 export interface ApprovalRequest {
   id: string;
@@ -98,7 +113,33 @@ export interface ApprovalRequest {
   kind: "read" | "write" | "command" | "meta";
   args: Record<string, unknown>;
   reason: string;
-  outOfFence?: { paths: string[]; suggestedRoot: string };
+  outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string };
+  learn?: LearnRequest;
+}
+
+/** One MCP server as `GET /mcp` reports it (P7b). */
+export interface McpToolStatus {
+  name: string;
+  mcpName: string;
+  description?: string;
+  kind: string;
+  presumed: boolean;
+  alwaysAllow: boolean;
+}
+export interface McpServerStatus {
+  name: string;
+  scope: "global" | "workspace";
+  state: "connected" | "disabled" | "failed";
+  tools: string[];
+  toolInfo: McpToolStatus[];
+  learned: { pathFields: string[]; notPathFields: string[]; writeTools: string[]; readTools: string[] };
+  error?: string;
+}
+export interface McpStatus {
+  enabled: boolean;
+  servers: McpServerStatus[];
+  problems: string[];
+  files: { global: string; workspace: string } | null;
 }
 
 /** One field of an ask_user form (D-18). */
@@ -251,9 +292,24 @@ export async function sendChat(id: string, text: string): Promise<void> {
  *  and an out-of-fence root decision (D-19). */
 export async function approve(
   id: string,
-  decision: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string; reason?: string },
+  decision: {
+    approve: boolean;
+    editedArgs?: Record<string, unknown>;
+    addRoot?: boolean | string;
+    reason?: string;
+    /** Answers to the questions the pause carried (D-48) — kept even on a deny. */
+    learned?: LearnAnswers;
+  },
 ): Promise<void> {
   await postJson(`/session/${id}/approve`, decision);
+}
+
+/** MCP server status for the panel (P7b) — read-only; settings files are the
+ *  source of truth and are edited by hand or via `jlcode mcp`. */
+export async function fetchMcpStatus(): Promise<McpStatus> {
+  const res = await fetch("/mcp");
+  if (!res.ok) throw new Error(`request failed (${res.status})`);
+  return (await res.json()) as McpStatus;
 }
 
 /** Answer a pending ask_user (D-18): a single string, or per-question answers. */

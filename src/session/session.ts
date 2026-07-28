@@ -45,6 +45,8 @@ import type {
   AskUserQuestion,
   AskUserRequest,
   CompactionRequest,
+  LearnAnswers,
+  LearnRequest,
   PersistenceFault,
   SessionEvent,
   SessionListener,
@@ -758,6 +760,22 @@ export class Session {
     const pending = this.pendingApproval;
     if (!pending) throw new Error("No pending approval");
     this.pendingApproval = undefined;
+    // Answers first (D-48): they are facts about the tool, kept whether or not
+    // this call runs, and the fence check below must see them. A field the user
+    // just called prose is no longer an escape, so it widens nothing.
+    this.applyLearned(pending.tool, decision.learned);
+    const blocked = pending.request.learn?.modeBlocked;
+    if (decision.approve && blocked !== undefined) {
+      // The pause existed only because the tool was presumed to write. Re-run
+      // the gate against what we now know rather than trusting the approval.
+      const recheck = this.gate.check(pending.tool, pending.request.args);
+      if (recheck.kind === "deny") {
+        this.appendToolResult(pending.call, `denied: ${recheck.reason}`, true);
+        this.pendingToolCalls.shift();
+        await this.advance();
+        return;
+      }
+    }
     if (decision.approve) {
       const runArgs = decision.editedArgs ?? pending.request.args;
       const edited = decision.editedArgs !== undefined;
@@ -1048,6 +1066,14 @@ export class Session {
 
     const decision = this.gate.check(tool, args);
     if (decision.kind === "deny") {
+      // A presumed-writing MCP tool blocked *because* it is presumed to write
+      // (D-48): the block rests on a guess JLCode made, and denying is a
+      // different outcome from running, so this is worth stopping for. Answering
+      // "read-only" reclassifies the tool and the call proceeds; "writes" denies
+      // it, permanently. The second check confirms the guess is the only reason.
+      if (tool.writeUnknown?.() === true && this.gate.check({ ...tool, kind: "read", mutates: false }, args).kind !== "deny") {
+        return this.pauseForApproval(call, tool, args, decision.reason, [], { askWrite: true, modeBlocked: decision.reason });
+      }
       this.appendToolResult(call, `denied: ${decision.reason}`, true);
       return "done";
     }
@@ -1056,23 +1082,75 @@ export class Session {
     // a prompt even if the mode/approval gate would otherwise allow.
     const escapes = this.fenceEscapes(tool, args);
     if (decision.kind === "prompt" || escapes.length > 0) {
-      const request: ApprovalRequest = {
-        id: newId("appr"),
-        tool: tool.name,
-        kind: tool.kind,
-        args,
-        reason: escapes.length > 0 ? "access outside the workspace" : "approval required by policy",
-        ...(escapes.length > 0
-          ? { outOfFence: { paths: escapes.map((e) => e.escapedPath), suggestedRoot: path.dirname(escapes[0]!.escapedPath) } }
-          : {}),
-      };
-      this.pendingApproval = { request, call, tool };
-      this.emit({ type: "awaiting-approval", request });
-      return "paused-approval";
+      const reason = escapes.length > 0 ? "access outside the workspace" : "approval required by policy";
+      return this.pauseForApproval(call, tool, args, reason, escapes, this.learnRequest(tool, args, escapes));
     }
 
     await this.doExecute(call, tool, args, false);
     return "done";
+  }
+
+  /** Raise the approval pause, optionally carrying questions to settle (D-48). */
+  private pauseForApproval(
+    call: ToolCall,
+    tool: Tool,
+    args: Record<string, unknown>,
+    reason: string,
+    escapes: { arg: string; escapedPath: string }[],
+    learn?: LearnRequest,
+  ): StepOutcome {
+    const request: ApprovalRequest = {
+      id: newId("appr"),
+      tool: tool.name,
+      kind: tool.kind,
+      args,
+      reason,
+      ...(escapes.length > 0
+        ? {
+            outOfFence: {
+              paths: escapes.map((e) => e.escapedPath),
+              // Parallel to `paths` — which arg produced each escape, so the UI
+              // can drop one the user just reclassified as prose (D-48).
+              fields: escapes.map((e) => e.arg),
+              suggestedRoot: path.dirname(escapes[0]!.escapedPath),
+            },
+          }
+        : {}),
+      ...(learn ? { learn } : {}),
+    };
+    this.pendingApproval = { request, call, tool };
+    this.emit({ type: "awaiting-approval", request });
+    return "paused-approval";
+  }
+
+  /**
+   * What this pause can also settle (D-48): whether the tool writes (when that
+   * is still a guess) and which unclassified slashy args are really paths. Both
+   * only ever ride along — `tryExecute` has already decided to stop.
+   */
+  private learnRequest(
+    tool: Tool,
+    args: Record<string, unknown>,
+    escapes: { arg: string; escapedPath: string }[],
+  ): LearnRequest | undefined {
+    const askWrite = tool.writeUnknown?.() === true;
+    const escaped = new Set(escapes.map((e) => e.arg));
+    const fields = (tool.classifyPaths?.(args).unknown ?? []).map((u) => ({
+      field: u.field,
+      value: u.value,
+      ...(escaped.has(u.field) ? { escapes: true } : {}),
+    }));
+    if (!askWrite && fields.length === 0) return undefined;
+    return { ...(askWrite ? { askWrite: true } : {}), ...(fields.length > 0 ? { fields } : {}) };
+  }
+
+  /** Persist the answers a pause collected, before anything acts on them (D-48). */
+  private applyLearned(tool: Tool, learned: LearnAnswers | undefined): void {
+    if (!learned) return;
+    if (learned.writes !== undefined) tool.rememberWrite?.(learned.writes);
+    for (const [field, isPath] of Object.entries(learned.fields ?? {})) {
+      tool.rememberPathField?.(field, isPath);
+    }
   }
 
   /** Path args of a tool call that fall outside the fence (D-19). Native tools

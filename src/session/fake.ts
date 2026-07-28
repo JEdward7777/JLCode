@@ -69,6 +69,7 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   read: <path>                → a read_file call
  *   ask: <question>             → a single-question ask_user form
  *   form:                       → a multi-question ask_user form
+ *   mcp: <tool> <json>          → a bridged MCP call, e.g. `mcp: srv__echo {"text":"hi"}`
  *
  * Anything else echoes like {@link echoDriver}. Once a tool result comes back
  * (the latest message is no longer the user's), it gives a short final answer.
@@ -92,6 +93,20 @@ export function fakeAgentDriver(): LlmDriver {
     if (msg.startsWith("read:")) return toolCall("read_file", { path: after("read:") || "README.md" });
     if (msg.startsWith("ask:")) {
       return toolCall("ask_user", { question: after("ask:") || "How should I proceed?", options: ["Yes", "No"] });
+    }
+    // A bridged MCP tool by its namespaced name, args verbatim (P7b) — the only
+    // way to drive an MCP call offline, and how the D-48 learn card is peeked.
+    if (msg.startsWith("mcp:")) {
+      const rest = after("mcp:");
+      const space = rest.indexOf(" ");
+      const name = space < 0 ? rest : rest.slice(0, space);
+      let args: unknown = {};
+      try {
+        args = space < 0 ? {} : JSON.parse(rest.slice(space + 1));
+      } catch {
+        /* malformed JSON → call it with no args and let the tool complain */
+      }
+      return toolCall(name || "unknown_tool", args);
     }
     if (msg.startsWith("demo")) return textReply(RICH_MD);
     if (msg.startsWith("form:")) {

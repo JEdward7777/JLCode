@@ -14,7 +14,7 @@ import type { ModelConfig } from "../config/types.js";
 import { fakeAgentDriver } from "../session/fake.js";
 import { Session } from "../session/session.js";
 import { ToolRegistry, defaultTools } from "../tools/registry.js";
-import { McpManager } from "../mcp/client.js";
+import { McpManager, mcpSettingsFiles } from "../mcp/client.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { Sandbox } from "../tools/sandbox.js";
 import { ModeApprovalGate } from "../tools/mode-gate.js";
@@ -185,6 +185,9 @@ export async function runServe(args: string[]): Promise<number> {
     staticDir: staticDir(),
     auth,
     logger: log,
+    // Live MCP status for the browser panel (P7b) — re-read per request so
+    // answers learned mid-session show up without a restart.
+    mcpStatus: () => ({ servers: mcp.statuses(), problems: mcp.problems, files: mcpSettingsFiles(cwd) }),
     // Persist a live mode/approval switch as the config's new default (Joshua's
     // call: the header controls both re-gate now and stick for next launch).
     persistDefaults: (configName, patch) => {

@@ -18,6 +18,7 @@ import {
   closeSession as apiClose,
   createSession,
   fetchJournal,
+  fetchMcpStatus,
   loadTree,
   openBus,
   sendChat,
@@ -27,6 +28,9 @@ import {
   type BusFrame,
   type EntryView,
   type JournalRecord,
+  type LearnAnswers,
+  type McpServerStatus,
+  type McpStatus,
   type Mode,
   type QueuedMessage,
   type CompactionRequest,
@@ -286,7 +290,15 @@ export function App() {
   );
 
   const resolveApproval = useCallback(
-    async (id: string, decision: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => {
+    async (
+      id: string,
+      decision: {
+        approve: boolean;
+        editedArgs?: Record<string, unknown>;
+        addRoot?: boolean | string;
+        learned?: LearnAnswers;
+      },
+    ) => {
       dispatch({ t: "patch", id, patch: { pendingApproval: null, working: true } });
       try {
         await apiApprove(id, decision);
@@ -599,7 +611,10 @@ function ChatPane({
   onCompact: (id: string, opts?: { skip?: boolean }) => void;
   onResolvePersistence: (id: string, opts?: { discard?: boolean }) => void;
   retryingPersistence: boolean;
-  onResolveApproval: (id: string, d: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => void;
+  onResolveApproval: (
+    id: string,
+    d: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string; learned?: LearnAnswers },
+  ) => void;
   onSubmitAnswer: (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => void;
   onChangeCap: (id: string, v: number | null) => void;
   onStop: (id: string, scope: "hard" | "soft") => void;
@@ -654,6 +669,7 @@ function ChatPane({
           <button className="ghost" title="debug journal (D-15)" onClick={onOpenDrawer}>
             journal
           </button>
+          <McpButton />
           <SpendChip spendUsd={slice.spendUsd} capUsd={slice.capUsd} capReached={slice.capReached} onSetCap={(v) => onChangeCap(id, v)} />
           <StopControl active={slice.working || slice.tasks.length > 0} onStop={(scope) => onStop(id, scope)} />
           <div className="seg" role="group" aria-label="mode">
@@ -1303,6 +1319,124 @@ function JournalDrawer({
   );
 }
 
+/**
+ * MCP status (P7b): which servers came up, what they offer, and what JLCode has
+ * learned about them (D-47d/D-48). Read-only on purpose — `mcp_settings.json`
+ * stays the source of truth, edited by hand or with `jlcode mcp`. The servers
+ * are per-instance (D-47e), not per-session, so this lives beside the pane
+ * header rather than inside a conversation.
+ */
+function McpButton() {
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<McpStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setStatus(await fetchMcpStatus());
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
+
+  return (
+    <>
+      <button className="ghost" title="MCP servers (D-47)" onClick={() => setOpen(true)}>
+        mcp
+      </button>
+      {open ? (
+        <>
+          <div className="drawer-scrim" onClick={() => setOpen(false)} />
+          <aside className="drawer mcp-drawer">
+            <div className="drawer-head">
+              <span className="drawer-title">MCP servers</span>
+              <span className="drawer-sub">{status ? `${status.servers.length} configured` : "loading…"}</span>
+              <button className="ghost" onClick={() => void load()}>
+                refresh
+              </button>
+              <button className="ghost" onClick={() => setOpen(false)}>
+                close
+              </button>
+            </div>
+            <div className="drawer-body">
+              {error ? <div className="json-err">{error}</div> : null}
+              {status && !status.enabled ? <div className="mcp-empty">MCP is not wired into this server.</div> : null}
+              {status?.problems.map((p) => (
+                <div className="json-err" key={p}>
+                  {p}
+                </div>
+              ))}
+              {status?.servers.length === 0 ? (
+                <div className="mcp-empty">
+                  No servers configured. <code>jlcode mcp import</code> copies KiloCode's settings over.
+                </div>
+              ) : null}
+              {status?.servers.map((s) => (
+                <McpServerCard key={s.name} server={s} />
+              ))}
+              {status?.files ? (
+                <div className="mcp-files">
+                  <div>
+                    global: <code>{status.files.global}</code>
+                  </div>
+                  <div>
+                    workspace: <code>{status.files.workspace}</code>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </aside>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function McpServerCard({ server }: { server: McpServerStatus }) {
+  const learned = server.learned;
+  const learnedRows: [string, string[]][] = [
+    ["paths", learned.pathFields],
+    ["not paths", learned.notPathFields],
+    ["writes", learned.writeTools],
+    ["read-only", learned.readTools],
+  ];
+  return (
+    <div className="mcp-server">
+      <div className="mcp-head">
+        <span className={`mcp-state ${server.state}`}>{server.state}</span>
+        <span className="mcp-name">{server.name}</span>
+        <span className="mcp-scope">{server.scope}</span>
+      </div>
+      {server.error ? <div className="json-err">{server.error}</div> : null}
+      {server.toolInfo.map((t) => (
+        <div className="mcp-tool" key={t.name} title={t.description ?? ""}>
+          <code>{t.mcpName}</code>
+          <span className={`kind ${t.kind}`}>{t.kind}</span>
+          {/* A presumed class is JLCode's guess, settled at the next pause (D-48). */}
+          {t.presumed ? <span className="mcp-flag presumed">presumed</span> : null}
+          {t.alwaysAllow ? <span className="mcp-flag always">alwaysAllow</span> : null}
+        </div>
+      ))}
+      {learnedRows.some(([, v]) => v.length > 0) ? (
+        <div className="mcp-learned">
+          {learnedRows
+            .filter(([, v]) => v.length > 0)
+            .map(([label, v]) => (
+              <div key={label}>
+                <span className="mcp-learned-label">{label}:</span> <code>{v.join(", ")}</code>
+              </div>
+            ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** The primary editable arg for a tool (the D-16 quick-fix case), if any. */
 function primaryArgKey(args: Record<string, unknown>): string | null {
   for (const k of ["command", "path", "pattern"]) if (typeof args[k] === "string") return k;
@@ -1317,7 +1451,12 @@ function ApprovalCard({
   onResolve,
 }: {
   request: ApprovalRequest;
-  onResolve: (d: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string }) => void;
+  onResolve: (d: {
+    approve: boolean;
+    editedArgs?: Record<string, unknown>;
+    addRoot?: boolean | string;
+    learned?: LearnAnswers;
+  }) => void;
 }) {
   const primaryKey = primaryArgKey(request.args);
   const [edited, setEdited] = useState<Record<string, unknown>>({ ...request.args });
@@ -1344,7 +1483,57 @@ function ApprovalCard({
 
   const changed = JSON.stringify(edited) !== JSON.stringify(request.args);
   const editedArgs = changed ? edited : undefined;
-  const fence = request.outOfFence;
+
+  // Guesses this pause can settle (D-48). Answers ride along with the decision
+  // and are kept even on a deny — they describe the tool, not this call.
+  const learn = request.learn;
+  const [answers, setAnswers] = useState<LearnAnswers>({});
+  const setField = (field: string, isPath: boolean) =>
+    setAnswers((a) => ({ ...a, fields: { ...a.fields, [field]: isPath } }));
+  const learned = answers.writes !== undefined || answers.fields !== undefined ? answers : undefined;
+
+  // A field the user just called prose stops being an escape, so it must not
+  // widen the fence — the buttons follow the answers, live.
+  const fenceAll = request.outOfFence;
+  const liveEscapes = fenceAll
+    ? fenceAll.paths.filter((_, i) => answers.fields?.[fenceAll.fields[i] ?? ""] !== false)
+    : [];
+  const fence = fenceAll && liveEscapes.length > 0 ? { ...fenceAll, paths: liveEscapes } : undefined;
+
+  // The mode gate blocked this only because JLCode presumes the tool writes.
+  // Answering settles it: read-only lets the call through, "it writes" makes the
+  // block permanent (the session re-runs the gate, so it denies with its own
+  // reason rather than as a user denial).
+  if (learn?.modeBlocked) {
+    return (
+      <div className="card approval">
+        <div className="card-head">
+          <span className="tool">{request.tool}</span>
+          <span className={`kind ${request.kind}`}>{request.kind}</span>
+          <span className="reason">{learn.modeBlocked}</span>
+        </div>
+        <div className="learn">
+          <div className="learn-note">
+            JLCode assumes an MCP tool writes unless its server says otherwise, and that is the only reason this
+            call was blocked. Does <code>{request.tool}</code> change anything?
+          </div>
+          <details>
+            <summary>args (JSON)</summary>
+            <pre className="raw-view">{JSON.stringify(request.args, null, 2)}</pre>
+          </details>
+          <div className="actions">
+            <button className="primary" onClick={() => onResolve({ approve: true, learned: { writes: false } })}>
+              No — it only reads
+            </button>
+            <button className="danger" onClick={() => onResolve({ approve: true, learned: { writes: true } })}>
+              Yes — it writes
+            </button>
+          </div>
+          <div className="learn-foot">Remembered in mcp_settings.json — asked once per tool.</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="card approval">
@@ -1367,6 +1556,54 @@ function ApprovalCard({
         {jsonErr ? <div className="json-err">invalid JSON: {jsonErr}</div> : null}
       </details>
 
+      {learn && (learn.askWrite || (learn.fields?.length ?? 0) > 0) ? (
+        <div className="learn">
+          <div className="learn-note">
+            JLCode guessed conservatively here — settle it once and it won't ask again:
+          </div>
+          {learn.askWrite ? (
+            <div className="learn-q">
+              <span>
+                Does <code>{request.tool}</code> write anything?
+              </span>
+              <div className="seg">
+                <button
+                  className={answers.writes === true ? "on" : ""}
+                  onClick={() => setAnswers((a) => ({ ...a, writes: true }))}
+                >
+                  writes
+                </button>
+                <button
+                  className={answers.writes === false ? "on" : ""}
+                  onClick={() => setAnswers((a) => ({ ...a, writes: false }))}
+                >
+                  read-only
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {(learn.fields ?? []).map((f) => (
+            <div className="learn-q" key={f.field}>
+              <span>
+                Is <code>{f.field}</code> a file path?
+                <em className="learn-value" title={f.value}>
+                  {f.value.length > 60 ? `${f.value.slice(0, 60)}…` : f.value}
+                </em>
+              </span>
+              <div className="seg">
+                <button className={answers.fields?.[f.field] === true ? "on" : ""} onClick={() => setField(f.field, true)}>
+                  a path
+                </button>
+                <button className={answers.fields?.[f.field] === false ? "on" : ""} onClick={() => setField(f.field, false)}>
+                  just text
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="learn-foot">Remembered in mcp_settings.json — unanswered stays fenced.</div>
+        </div>
+      ) : null}
+
       {fence ? (
         <div className="fence">
           <div className="fence-note">⚠ outside the workspace fence:</div>
@@ -1378,23 +1615,27 @@ function ApprovalCard({
             ))}
           </ul>
           <div className="actions">
-            <button className="primary" disabled={!!jsonErr} onClick={() => onResolve({ approve: true, editedArgs })}>
+            <button className="primary" disabled={!!jsonErr} onClick={() => onResolve({ approve: true, editedArgs, learned })}>
               Allow once
             </button>
-            <button className="primary" disabled={!!jsonErr} onClick={() => onResolve({ approve: true, editedArgs, addRoot: true })}>
+            <button
+              className="primary"
+              disabled={!!jsonErr}
+              onClick={() => onResolve({ approve: true, editedArgs, addRoot: true, learned })}
+            >
               Remember <code>{fence.suggestedRoot}</code>
             </button>
-            <button className="danger" onClick={() => onResolve({ approve: false })}>
+            <button className="danger" onClick={() => onResolve({ approve: false, learned })}>
               Deny
             </button>
           </div>
         </div>
       ) : (
         <div className="actions">
-          <button className="primary" disabled={!!jsonErr} onClick={() => onResolve({ approve: true, editedArgs })}>
+          <button className="primary" disabled={!!jsonErr} onClick={() => onResolve({ approve: true, editedArgs, learned })}>
             {changed ? "Approve edited" : "Approve"}
           </button>
-          <button className="danger" onClick={() => onResolve({ approve: false })}>
+          <button className="danger" onClick={() => onResolve({ approve: false, learned })}>
             Deny
           </button>
         </div>

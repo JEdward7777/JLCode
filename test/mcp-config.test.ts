@@ -20,6 +20,7 @@ import {
   looksLikePath,
   rememberField,
 } from "../src/mcp/path-fields";
+import { classifyTool, rememberTool } from "../src/mcp/tool-class";
 
 let dir: string;
 let workspace: string;
@@ -162,5 +163,27 @@ describe("path-field classification (D-47d)", () => {
     lists = rememberField(lists, "f", false);
     expect(lists).toEqual({ pathFields: [], notPathFields: ["f"] });
     expect(classifyArgs({ f: "a/b" }, lists).unknown).toEqual([]);
+  });
+});
+
+describe("learned tool classification (D-48)", () => {
+  it("the server's readOnlyHint settles it without asking anyone", () => {
+    expect(classifyTool("peek", {}, true)).toBe("read");
+    // Even a stale learned "write" loses to the annotation — the server is
+    // authoritative about its own read-only tools; the guess never was.
+    expect(classifyTool("peek", { writeTools: ["peek"] }, true)).toBe("read");
+  });
+
+  it("without a hint the class is unknown until the user answers", () => {
+    expect(classifyTool("echo", {})).toBe("unknown");
+    expect(classifyTool("echo", { readTools: ["echo"] })).toBe("read");
+    expect(classifyTool("echo", { writeTools: ["echo"] })).toBe("write");
+  });
+
+  it("an answer moves the tool between lists and never duplicates it", () => {
+    let lists = rememberTool({ writeTools: ["t"] }, "t", false);
+    expect(lists).toEqual({ writeTools: [], readTools: ["t"] });
+    lists = rememberTool(lists, "t", true);
+    expect(lists).toEqual({ writeTools: ["t"], readTools: [] });
   });
 });

@@ -4,13 +4,19 @@
  * pauses, the debug journal — treats them exactly like a native tool.
  *
  * Classification is deliberately pessimistic: an MCP tool is a mutating
- * `command` unless the server says `annotations.readOnlyHint`. A server's
+ * `command` unless the server says `annotations.readOnlyHint` **or the user has
+ * told us otherwise** (D-48 — a learned `readTools` entry). A server's
  * `alwaysAllow` list marks a tool pre-approved (it still can't beat the mode
  * gate or the `read-only` policy).
+ *
+ * `kind` and `mutates` are **getters**: the user can answer *does this tool
+ * write?* mid-session, and the very next gate check must see the new answer.
  */
 import type { Tool, ToolKind, ToolResult } from "../tools/types.js";
 import type { FieldLists } from "./path-fields.js";
 import { classifyArgs } from "./path-fields.js";
+import type { ToolClassLists } from "./tool-class.js";
+import { classifyTool } from "./tool-class.js";
 
 /** The subset of MCP's `tools/list` entry we consume. */
 export interface McpToolInfo {
@@ -25,10 +31,12 @@ export interface McpToolBinding {
   info: McpToolInfo;
   /** Forward the call to the server. */
   call(toolName: string, args: Record<string, unknown>): Promise<ToolResult>;
-  /** Live view of the server's learned path-field lists (they change as the user answers). */
-  lists(): FieldLists;
+  /** Live view of the server's learned lists (they change as the user answers). */
+  lists(): FieldLists & ToolClassLists;
   /** Persist an answer to the *is this a path?* question (D-47d). */
   remember(field: string, isPath: boolean): void;
+  /** Persist an answer to the *does this tool write?* question (D-48). */
+  rememberWrite(writes: boolean): void;
   alwaysAllow?: string[];
 }
 
@@ -74,14 +82,21 @@ export function renderMcpContent(result: {
 
 /** Wrap one discovered MCP tool as a `Tool`. */
 export function bridgeTool(binding: McpToolBinding): Tool {
-  const readOnly = binding.info.annotations?.readOnlyHint === true;
-  const kind: ToolKind = readOnly ? "read" : "command";
+  const hint = binding.info.annotations?.readOnlyHint;
+  const verdict = () => classifyTool(binding.info.name, binding.lists(), hint);
   const name = bridgedToolName(binding.server, binding.info.name);
   const description = binding.info.description ?? `${binding.info.name} (MCP server "${binding.server}")`;
   return {
     name,
-    kind,
-    mutates: !readOnly,
+    // Live (D-48): `unknown` is treated exactly like `write` until answered.
+    get kind(): ToolKind {
+      return verdict() === "read" ? "read" : "command";
+    },
+    get mutates(): boolean {
+      return verdict() !== "read";
+    },
+    writeUnknown: () => verdict() === "unknown",
+    rememberWrite: (writes) => binding.rememberWrite(writes),
     autoApprove: binding.alwaysAllow?.includes(binding.info.name) === true,
     def: {
       type: "function",
