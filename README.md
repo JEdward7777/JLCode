@@ -31,7 +31,7 @@ First-time setup — add a model config, bind this directory to it, then serve:
 
 ```bash
 # The OpenRouter key is read from stdin (or $JLCODE_ADD_KEY) — never from argv.
-npx github:JEdward7777/JLCode config add --name work --model anthropic/claude-sonnet-4.5
+npx github:JEdward7777/JLCode config add --name work --model anthropic/claude-sonnet-5
 npx github:JEdward7777/JLCode config use work     # binds the current directory
 npx github:JEdward7777/JLCode serve               # → http://127.0.0.1:4517
 ```
