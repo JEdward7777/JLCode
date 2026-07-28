@@ -53,6 +53,10 @@ export interface ChatRequest {
   /** Tool-selection control. `"none"` forbids tool calls — used by the compaction
    *  summary request so the model only writes prose (D-29). */
   tool_choice?: "none" | "auto" | "required";
+  /** OpenRouter provider routing. Set to pin a conversation to the backend that
+   *  minted the reasoning signatures already in its history (D-49/H-02):
+   *  `allow_fallbacks:false` makes the pin binding rather than advisory. */
+  provider?: { order: string[]; allow_fallbacks: boolean };
 }
 
 export type StreamEvent =
@@ -61,6 +65,7 @@ export type StreamEvent =
   | { type: "reasoning_details"; value: unknown }
   | { type: "tool_call"; index: number; id?: string; name?: string; argsDelta?: string }
   | { type: "finish"; reason: string }
+  | { type: "provider"; name: string }
   | { type: "usage"; usage: Usage };
 
 export interface AssistantResult {
@@ -70,6 +75,9 @@ export interface AssistantResult {
   reasoning?: unknown;
   toolCalls: ToolCall[];
   finishReason: string;
+  /** Which backend OpenRouter actually routed to (its top-level `provider`),
+   *  recorded so later turns can pin to it (D-49/H-02). */
+  provider?: string;
   usage?: Usage;
 }
 

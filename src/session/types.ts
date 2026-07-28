@@ -19,6 +19,11 @@ export type DebugRecord =
       model: string;
       messages: number;
       tools: string[];
+      /** Backend OpenRouter routed to, and the pin we asked for (D-49/H-02).
+       *  Recorded so an unexpected provider switch is visible in the journal
+       *  instead of only surfacing as a signature rejection two turns later. */
+      provider?: string;
+      pinnedTo?: string;
       finishReason?: string;
       truncated?: boolean;
       usage?: Usage;

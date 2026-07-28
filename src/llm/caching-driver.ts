@@ -20,6 +20,9 @@ function* replay(result: AssistantResult): Generator<StreamEvent> {
     yield { type: "tool_call", index: i, id: t.id, name: t.function.name, argsDelta: t.function.arguments };
   }
   yield { type: "finish", reason: result.finishReason };
+  // Keep the recorded backend on a cache hit too, or a replayed turn would lose
+  // its pin and the next live call could route elsewhere (D-49/H-02).
+  if (result.provider) yield { type: "provider", name: result.provider };
   if (result.usage) yield { type: "usage", usage: result.usage };
 }
 

@@ -14,7 +14,7 @@ import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
-import { buildWireMessages } from "../conversation/wire.js";
+import { buildWireMessages, pinnedProvider } from "../conversation/wire.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -729,6 +729,12 @@ export class Session {
     if (s?.maxTokens !== undefined) req.max_tokens = s.maxTokens;
     const reasoning = this.reasoningParam();
     if (reasoning) req.reasoning = reasoning;
+    // Stick to the backend that minted the reasoning signatures we're about to
+    // replay (D-49/H-02). `allow_fallbacks:false` makes it binding: a failover
+    // to another provider would 400 on the signatures anyway, so surfacing "that
+    // provider is unavailable" beats an opaque `Invalid signature` error.
+    const pin = pinnedProvider(this.conversation);
+    if (pin) req.provider = { order: [pin], allow_fallbacks: false };
     return req;
   }
 
@@ -992,6 +998,7 @@ export class Session {
       toolCalls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
       reasoning: result.reasoning,
       reasoningText: result.reasoningText,
+      provider: result.provider,
       finishReason: result.finishReason,
       truncated: result.finishReason === "length",
       usage: result.usage,
@@ -1005,6 +1012,8 @@ export class Session {
         model: req.model,
         messages: req.messages.length,
         tools: toolNames,
+        provider: result.provider,
+        pinnedTo: req.provider?.order[0],
         finishReason: result.finishReason,
         truncated: result.finishReason === "length",
         usage: result.usage,

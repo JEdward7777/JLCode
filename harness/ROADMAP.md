@@ -105,9 +105,16 @@ tool write?*, *is this field a path?*), answered in the browser and persisted in
 `mcp_settings.json` (`writeTools`/`readTools` beside `pathFields`/`notPathFields`). It never stops
 just to ask: under `full-auto` with in-fence args the call runs unattended. A mode/policy denial
 resting only on the presumed write (Ask mode, `read-only`) becomes the write question instead of a
-silent wall. Plus `GET /mcp` and a read-only **MCP status drawer** in the browser. **249 Tier-0/1
-green** (+2 replayed Fable). **Next: P7c** — live validation against the real `file_utils` server.
-Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md` (through P7b).
+silent wall. Plus `GET /mcp` and a read-only **MCP status drawer** in the browser.
+
+**H-02 fixed (D-49, 2026-07-28), out of band from the phase plan** — found the first time Opus 5
+was driven through OpenRouter for real. OpenRouter routed turn 3 of a conversation to a different
+Anthropic backend than turn 1, and the replayed `reasoning_details` were rejected
+(`Invalid signature in thinking block`). Turns now record the backend that served them, and later
+requests pin to it (`allow_fallbacks:false`), with the pin derived from the replayed window so
+compaction releases it. **264 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
+validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
+slice, logged in `VISUAL-LOG.md` (through P7b).
 
 ---
 
@@ -479,6 +486,33 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 - Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-02 — OpenRouter re-routes mid-conversation; replayed reasoning signatures then fail.**
+  Found 2026-07-28 in real use (Opus 5 via OpenRouter); **FIXED 2026-07-28 (D-49).**
+  - **Symptom.** Two turns succeed, the third dies with
+    `400 … messages.1.content.5: Invalid signature in thinking block`, naming
+    `Claude Platform on AWS` with `Amazon Bedrock` in `previous_errors`. Message *1* is the
+    **first** assistant turn — a block signed two turns earlier.
+  - **Cause.** `ChatRequest` carried no `provider` field, so OpenRouter chose a backend per call.
+    Anthropic `thinking` blocks carry a signature only the minting deployment can verify, and
+    D-14 replays `reasoning_details` verbatim — correctly. The bug was never the replay; it was
+    that the replay *target* moved. Nothing recorded which backend served a turn, so the switch
+    was invisible until it failed.
+  - **Fix.** The reported backend is captured from the stream (`chunk.provider`), stored on the
+    `AssistantEntry`, and folded back out of the replayed window by `pinnedProvider()`; later
+    requests send `provider:{order:[pin],allow_fallbacks:false}`. Derived, not stored as state —
+    so old logs don't pin, forks follow their own branch, and a compaction `replayCut` releases
+    the pin (no signatures survive a summary). The journal now records `provider`/`pinnedTo`, so
+    a re-route is visible at the turn it happens instead of two turns later.
+  - **Verified.** +15 Tier-0 tests — `pinnedProvider` fold (first-turn-wins, no-provider logs,
+    release-at-cut, re-pin after cut, per-branch on a fork), stream capture/accumulate,
+    cache-hit round-trip (a hit would otherwise drop the pin), and session end-to-end
+    (no pin on call 1, binding pin on 2+, unmoved by a later turn reporting elsewhere).
+    **264 Tier-0/1 green.** Live-checked against OpenRouter that chunks carry `provider`, that
+    `order` takes the reported display name verbatim, and that an unroutable pin 404s rather
+    than silently falling back.
+  - **Known cost:** a pinned conversation gives up OpenRouter's failover. Deliberate — a
+    failover would reject the history anyway (D-49).
 
 - **H-01 — `AppendLog` write failures are silent; open fds are unbounded.** Found 2026-07-24;
   **FIXED 2026-07-24 (D-46).** Both weaknesses in `src/persist/append-log.ts` are closed:

@@ -54,3 +54,37 @@ describe("chunkToEvents + accumulate", () => {
     expect(result.finishReason).toBe("tool_calls");
   });
 });
+
+/**
+ * OpenRouter names the backend it routed to on every chunk. We capture it so a
+ * conversation can pin later turns to the provider that minted its reasoning
+ * signatures (D-49/H-02).
+ */
+describe("provider capture", () => {
+  it("emits a provider event from a chunk's top-level field", () => {
+    const events = chunkToEvents({ provider: "Anthropic", choices: [{ delta: { content: "hi" } }] });
+    expect(events).toContainEqual({ type: "provider", name: "Anthropic" });
+  });
+
+  it("ignores a missing or empty provider rather than pinning to nothing", () => {
+    expect(chunkToEvents({ choices: [{ delta: { content: "hi" } }] })).not.toContainEqual(
+      expect.objectContaining({ type: "provider" }),
+    );
+    expect(chunkToEvents({ provider: "", choices: [{ delta: {} }] })).not.toContainEqual(
+      expect.objectContaining({ type: "provider" }),
+    );
+  });
+
+  it("keeps the first provider seen across a multi-chunk response", () => {
+    const events: StreamEvent[] = [
+      { type: "provider", name: "Anthropic" },
+      { type: "text", delta: "hi" },
+      { type: "provider", name: "Amazon Bedrock" },
+    ];
+    expect(accumulate(events).provider).toBe("Anthropic");
+  });
+
+  it("leaves provider undefined when none was reported", () => {
+    expect(accumulate([{ type: "text", delta: "hi" }]).provider).toBeUndefined();
+  });
+});

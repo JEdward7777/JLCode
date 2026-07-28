@@ -25,6 +25,11 @@ export interface AssistantEntry extends BaseEntry {
   reasoning?: unknown;
   /** Human-readable reasoning for the UI — never replayed. */
   reasoningText?: string;
+  /** Which OpenRouter backend served this turn. Reasoning signatures are only
+   *  verifiable by the provider that minted them, so later turns pin to the
+   *  first one recorded in the replayed window (D-49/H-02). Absent on entries
+   *  written before this was captured — those simply don't pin. */
+  provider?: string;
   finishReason?: string;
   /** finish_reason === "length": the turn was cut off (D-30). */
   truncated?: boolean;

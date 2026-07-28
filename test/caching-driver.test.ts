@@ -84,3 +84,23 @@ describe("CachingDriver", () => {
     expect(hit.finishReason).toBe("tool_calls");
   });
 });
+
+/** A cache hit must not lose the recorded backend, or a replayed turn would
+ *  drop its pin and the next live call could route elsewhere (D-49/H-02). */
+it("round-trips the provider through a cache hit", async () => {
+  const inner: LlmDriver = {
+    // eslint-disable-next-line require-yield
+    async *streamChat() {
+      yield { type: "provider", name: "Anthropic" } as StreamEvent;
+      yield { type: "text", delta: "hi" } as StreamEvent;
+      yield { type: "finish", reason: "stop" } as StreamEvent;
+    },
+  };
+  const driver = new CachingDriver(inner, cache);
+  const miss = await collect(driver, req);
+  expect(miss.provider).toBe("Anthropic");
+
+  // Second call is served from disk; the provider must survive the round trip.
+  const hit = await collect(new CachingDriver(throwingDriver(), cache), req);
+  expect(hit.provider).toBe("Anthropic");
+});

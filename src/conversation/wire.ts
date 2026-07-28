@@ -44,3 +44,28 @@ export function buildWireMessages(conv: Conversation, options: WireOptions = {})
   }
   return [...systemMsg, ...messages];
 }
+
+/**
+ * The backend this conversation is pinned to (D-49/H-02), or undefined to let
+ * OpenRouter route freely.
+ *
+ * Anthropic `thinking` blocks carry a signature only the provider that minted
+ * it can verify, and we replay `reasoning_details` verbatim (D-14) — so once a
+ * turn has been served, every later turn in the same replayed window must go
+ * back to the same place or the provider rejects the history.
+ *
+ * Derived from the *replayed* window rather than stored as separate state: it
+ * walks the same path and honors the same `replayCut` reset as the wire build
+ * above. That gives two properties for free — old logs (no `provider` recorded)
+ * simply don't pin, and compaction releases the pin, since the summary drops
+ * `reasoning_details` and leaves no signature to protect.
+ */
+export function pinnedProvider(conv: Conversation, leafId?: string | null): string | undefined {
+  const path = pathToLeaf(conv, leafId ?? conv.activeLeaf);
+  let pin: string | undefined;
+  for (const entry of path) {
+    if (entry.type === "compaction") pin = undefined; // everything above is gone
+    else if (entry.type === "assistant" && pin === undefined) pin = entry.provider;
+  }
+  return pin;
+}

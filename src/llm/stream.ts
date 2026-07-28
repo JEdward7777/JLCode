@@ -70,6 +70,11 @@ export function chunkToEvents(chunk: any): StreamEvent[] {
     }
   }
   if (choice?.finish_reason) events.push({ type: "finish", reason: choice.finish_reason });
+  // OpenRouter names the backend it routed to on every chunk; we keep the first
+  // one so the conversation can pin to it later (D-49/H-02).
+  if (typeof chunk?.provider === "string" && chunk.provider.length > 0) {
+    events.push({ type: "provider", name: chunk.provider });
+  }
   if (chunk?.usage) events.push({ type: "usage", usage: mapUsage(chunk.usage) });
   return events;
 }
@@ -81,6 +86,7 @@ export function accumulate(events: Iterable<StreamEvent>): AssistantResult {
   const reasoningDetails: unknown[] = [];
   const toolByIndex = new Map<number, { id?: string; name?: string; args: string }>();
   let finishReason = "stop";
+  let provider: string | undefined;
   let usage: Usage | undefined;
 
   for (const ev of events) {
@@ -106,6 +112,9 @@ export function accumulate(events: Iterable<StreamEvent>): AssistantResult {
       case "finish":
         finishReason = ev.reason;
         break;
+      case "provider":
+        provider ??= ev.name; // first chunk wins; it can't change mid-response
+        break;
       case "usage":
         usage = ev.usage;
         break;
@@ -123,6 +132,7 @@ export function accumulate(events: Iterable<StreamEvent>): AssistantResult {
   const result: AssistantResult = { text, toolCalls, finishReason };
   if (reasoningText) result.reasoningText = reasoningText;
   if (reasoningDetails.length > 0) result.reasoning = reasoningDetails;
+  if (provider) result.provider = provider;
   if (usage) result.usage = usage;
   return result;
 }
