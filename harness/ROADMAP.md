@@ -112,7 +112,12 @@ was driven through OpenRouter for real. OpenRouter routed turn 3 of a conversati
 Anthropic backend than turn 1, and the replayed `reasoning_details` were rejected
 (`Invalid signature in thinking block`). Turns now record the backend that served them, and later
 requests pin to it (`allow_fallbacks:false`), with the pin derived from the replayed window so
-compaction releases it. **264 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
+compaction releases it.
+
+**H-03 fixed (2026-07-28)** — Ctrl-C couldn't stop `serve` while a browser tab was open (the
+never-ending SSE bus kept `server.close()` waiting), and that handler also skipped the durability
+flush. Both paths now share one teardown that flushes, then force-closes the sockets; a second
+Ctrl-C exits immediately. **269 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
 validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
 slice, logged in `VISUAL-LOG.md` (through P7b).
 
@@ -486,6 +491,30 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 - Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-03 — Ctrl-C didn't stop `serve` while a browser tab was open; and it skipped the flush.**
+  Found 2026-07-28 (Joshua: *"control c doesn't kill the server, it just appends ^C"*);
+  **FIXED 2026-07-28.**
+  - **Cause.** The SIGINT handler was `() => server.close(() => resolve(0))`. `server.close()`
+    stops *new* connections and then waits for in-flight ones — and the multiplexed SSE bus
+    (§11, D-43) is a request that never ends, so the callback never fired. The `^C` on screen
+    was ordinary terminal echo; the signal arrived and was handled, the handler just never
+    finished. Joshua confirmed the mechanism independently: closing the tab let Ctrl-C work.
+  - **Second, quieter defect.** That handler bypassed the durability flush `POST /shutdown`
+    ran via `closeServer` — so on the occasions Ctrl-C *did* exit (no tab open), queued
+    conversation/journal records could be dropped and MCP children left unreaped.
+  - **Fix.** One teardown for both paths in `src/server/shutdown.ts`: flush the store, journal
+    and MCP children, then `server.close()` **followed by `closeAllConnections()`** to drop the
+    held-open SSE streams so close can complete. Idempotent, so a repeated signal can't start
+    two teardowns; a **second Ctrl-C exits immediately** without waiting for the flush, so a
+    stalled write (D-46) can never produce a process the user can't kill from their terminal.
+    Banner updated to say so.
+  - **Verified.** +5 Tier-0 tests over a stub server that reproduces the hold-open behaviour
+    (flush-before-close ordering, completion despite a held connection, shutdown still
+    completing when the flush throws, idempotency, and tolerance of a server without
+    `closeAllConnections`). Plus an out-of-band real-process repro: `serve` + a live SSE
+    stream + `SIGINT` hung before the fix and exits after it, and the same for
+    `POST /shutdown`. **269 Tier-0/1 green.**
 
 - **H-02 — OpenRouter re-routes mid-conversation; replayed reasoning signatures then fail.**
   Found 2026-07-28 in real use (Opus 5 via OpenRouter); **FIXED 2026-07-28 (D-49).**

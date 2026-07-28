@@ -27,6 +27,7 @@ import { parseArgs, flagString } from "../util/args.js";
 import { readSecret } from "../util/prompt.js";
 import { createServer } from "./server.js";
 import { startNodeServer } from "./node-adapter.js";
+import { createShutdown } from "./shutdown.js";
 import { randomBytes } from "node:crypto";
 import {
   createAuthGuard,
@@ -217,17 +218,17 @@ export async function runServe(args: string[]): Promise<number> {
     },
   });
   const server = await startNodeServer((req) => app.fetch(req), { host, port });
-  // Flush pending persistence writes before exiting. flush() now *rejects* on a
-  // stalled write (D-46) rather than resolving green, so report the loss on the
-  // way out instead of exiting silently — and still exit, since a shutdown that
-  // can't complete because the disk is full would be worse than a loud one.
-  closeServer = () =>
-    void Promise.all([store.flush(), debugJournal.flush(), mcp.close()])
-      .catch((err: unknown) => {
-        log.error("shutdown: unwritten records were lost", { err });
-        process.exitCode = 1;
-      })
-      .finally(() => server.close(() => process.exit(process.exitCode ?? 0)));
+  // One teardown for both `/shutdown` and Ctrl-C (H-03) — see shutdown.ts for
+  // why the sockets have to be forced closed as well as flushed.
+  const { shutdown, isShuttingDown } = createShutdown({
+    server,
+    flush: () => Promise.all([store.flush(), debugJournal.flush(), mcp.close()]),
+    onError: (err) => {
+      log.error("shutdown: unwritten records were lost", { err });
+      process.exitCode = 1;
+    },
+  });
+  closeServer = () => shutdown(() => process.exit(process.exitCode ?? 0));
 
   const base = `http://${host}:${port}`;
   const client = staticDir() ? `open ${base}/  in your browser` : `browser client not built — run \`npm run build\``;
@@ -256,14 +257,23 @@ export async function runServe(args: string[]): Promise<number> {
       `  curl -s ${base}/chat -H 'content-type: application/json' -d '{"text":"and again","sessionId":"<id>"}'`,
       `  curl -s ${base}/session/<id>`,
       ``,
-      `Ctrl-C to stop.`,
+      `Ctrl-C to stop (press it again to skip the flush and exit immediately).`,
       ``,
     ].join("\n"),
   );
 
   return new Promise<number>((resolve) => {
-    const shutdown = () => server.close(() => resolve(0));
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+    const onSignal = (signal: NodeJS.Signals) => {
+      // A second Ctrl-C means "stop waiting" — a stalled flush must never leave
+      // the user in a process they can't kill from the terminal they started it in.
+      if (isShuttingDown()) {
+        process.stderr.write(`\n${signal} again — exiting without finishing the flush.\n`);
+        process.exit(process.exitCode ?? 1);
+      }
+      process.stderr.write(`\n${signal} — flushing and stopping…\n`);
+      shutdown(() => resolve(typeof process.exitCode === "number" ? process.exitCode : 0));
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
   });
 }
