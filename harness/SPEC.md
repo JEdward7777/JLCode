@@ -141,6 +141,11 @@ Nothing project-specific is written into the project folder.
 - **UI affordance:** a **pencil** on a message you wrote. Editing it *is* a fork — the edited
   message appends as a sibling branch off the same parent, the original stays as the other
   sibling. "Edit my message" and "fork" are the same operation.
+- **Conversation labels (planned, X-09):** a conversation carries a **human-readable label**,
+  **auto-derived** from its opening exchange and **hand-editable** at any time. Today the index
+  row is `id` + `workingDir` + `createdAt` only, so the history list and the session rail can't
+  tell two threads apart. Open questions live with X-09: whether an auto-title refreshes as a
+  thread drifts, whether a manual rename pins it, and what a fork inherits.
 
 ## 9. File access
 

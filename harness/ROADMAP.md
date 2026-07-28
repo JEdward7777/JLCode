@@ -504,7 +504,8 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
-## Later (post-v1; see DECISIONS "Deferred" X-01…X-08)
+## Later (post-v1; see DECISIONS "Deferred" X-01…X-09)
+**conversation labels — auto-titled + hand-editable (X-09)** ·
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·

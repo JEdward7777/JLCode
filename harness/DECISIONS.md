@@ -94,6 +94,7 @@ Spec references point at [`SPEC.md`](SPEC.md).
 | X-06 | Browser-driven app testing | Playwright/Puppeteer (not jsdom); maybe just CLI | SPEC §17 |
 | X-07 | File viewer + upload/download chrome | Redundant inside VS Code; wraps the standalone chat view | SPEC §11 |
 | X-08 | Agent-directed minimize/expand (collapsible context items) | Non-destructive, same overlay principle as compaction; ship after the core loop is proven | SPEC §15 |
+| X-09 | **Conversation labels — auto-titled and hand-editable** | Raised by Joshua 2026-07-28 from real use: the history list shows only opaque ids + timestamps, so threads are indistinguishable. `IndexRow` (`persist/conversation-store.ts`) has no title field — needs one, plus a rename path and a backfill for rows written before it existed. **Auto:** derive a short title from the opening exchange (cheap model call, or first-user-message truncation as the zero-cost fallback); decide whether it re-titles as a thread drifts, and whether a hand-edited label pins against later auto-updates. **Manual:** inline rename in the history list and the session rail. Interacts with fork (D-15) — a branch presumably inherits its parent's label until renamed | SPEC §8, §11 |
 
 ## Proposed (Claude's recommendation, pending Joshua)
 
