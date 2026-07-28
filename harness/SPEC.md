@@ -576,6 +576,12 @@ scissors" power-user risk**, never a source of internal inconsistency. **Nothing
 
 ### Deferred (same mechanism, later)
 
+- **Running two live sessions on two branches of one conversation (X-14)** — *wanted, not built*.
+  This is the explicit spawn the rule above describes; today no API can start a session from a
+  chosen *(conversation, leaf)* pair. Blocked on **H-05**: a running turn currently appends wherever
+  `activeLeaf` points *when the stream ends*, so the "at most one live leaf per session" invariant
+  doesn't actually hold under mid-turn navigation. Open design question is whether a forked session
+  copies the tree into its own conversation file or shares one live tree (see X-14).
 - **Workspace isolation via git worktrees** — *postponed*. When added, an editing session can take
   its own worktree/branch so concurrent editing is safe (merge after); read-mostly side threads
   still just share the folder.

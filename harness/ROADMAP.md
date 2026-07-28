@@ -126,6 +126,12 @@ block was stored as several partial ones plus an orphan signature. Found *becaus
 fields showed the provider pin working while the call still failed — which ruled out routing and
 pointed at the payload.
 
+**H-05 is OPEN (found 2026-07-28, not fixed)** — forking or switching branches *while a turn is
+running* re-parents the in-flight reply onto the wrong branch, and the rejected edit still moves
+the pointer. Read the Hardening block before touching `editFork`/`setActiveLeaf`. The agreed fix is
+to **pin the turn's parent at turn start** (not merely to guard against mid-turn navigation), which
+is also the correctness floor under **X-14** — Joshua wants multiple agents live on different forks.
+
 **Conversations recorded before H-04 are unrecoverable** — fragmented reasoning is on disk and the
 append-only log isn't rewritten. If one fails on resume with `Invalid signature`, start a new
 conversation; a repair-on-read that assembles fragments at wire-build time was considered and
@@ -545,6 +551,59 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 - Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-05 — a fork or branch-switch *during a running turn* re-parents the in-flight reply; the
+  pointer moves even when the edit is rejected.** Found 2026-07-28 by inspection + a scratch
+  repro, after Joshua asked what happens if you edit a message while the model is working.
+  **OPEN — not fixed.**
+  - **Symptom.** Pencil-edit an earlier message mid-stream: the browser shows
+    *"Session is busy; queue the message instead."* and then the model's reply **disappears** from
+    the transcript. After a reload the transcript can show a single orphaned assistant message
+    where the conversation used to be.
+  - **Cause — two independent holes.**
+    (a) `Session.editFork` (`src/session/session.ts:686`) moves `activeLeaf` to the edited entry's
+    parent **before** calling `send()`, and `send()`'s busy guard (`:766`) throws *after* the move.
+    The route catches the throw and returns 400 (`src/server/server.ts:576`), but nothing rolls the
+    pointer back. (b) `POST /session/:id/rewind` → `setActiveLeaf` (`:676`) has **no** busy guard at
+    all, so the branch arrows move the pointer under a running loop — and that path *feels* passive,
+    which is what makes it the likelier way to trip this. The UI disables neither affordance while
+    working (`web/src/App.tsx:1262`, `:1301`). Either way the running loop appends its
+    assistant/tool entries via `pushEntry`'s **default** parent — whatever `activeLeaf` happens to
+    be when the stream finishes (`:1070`, `:1117` → `conversation/tree.ts:27`).
+  - **Observed** (scratch repro against `dist/` with a driver parked mid-stream). Editing the
+    *first* user message left `activeLeaf = null`, so the reply attached to the **root** as a second
+    top-level branch and the replayed path became one lone assistant message with the entire
+    conversation off-path. The arrow case recorded a reply generated from branch **B** as a child of
+    branch **A**, yielding a path with two assistant turns back to back and the prompting user
+    message stranded on the other branch. The session then settles to `idle` and keeps building on
+    the corrupted branch.
+  - **Why it looks like data loss.** `editFork` mutates the field directly instead of going through
+    `setActiveLeaf`, so **no `active-leaf` event is emitted**. The client's reducer only advances its
+    leaf when `entry.parent === s.activeLeaf` (`web/src/session-state.ts:139`), so the reply is
+    folded into `entries` but never rendered while the streaming overlay retires. On disk the
+    entries carry the wrong `parent`, and `load()` rebuilds `activeLeaf` from the last entry record
+    (`persist/conversation-store.ts:162`) — so a reload faithfully restores the damaged shape.
+    Nothing is actually lost (append-only), and the orphan renders as a sibling so ‹1/2› navigates
+    back; you just have to know that's what happened.
+  - **Not affected.** The in-flight call is never aborted (only `stop("hard")` touches
+    `abortController`), and there is never more than one turn in flight — one loop, one leaf per
+    session, and `send()` does refuse while running.
+  - **Preferred fix — Joshua's call: pin the turn's parent at turn start.** Capture the parent when
+    `advance()` begins and pass it explicitly to every `pushEntry` for that turn, so the loop appends
+    where the turn *began* regardless of later pointer moves. That makes branch navigation genuinely
+    passive as SPEC §27 promises ("navigating a branch runs nothing") and lets you read another
+    branch while a turn runs, rather than merely forbidding it. Alongside it: move `editFork`'s busy
+    check **before** the mutation and route that mutation through `setActiveLeaf` so the event is
+    emitted. Disabling the affordances in the UI is then optional polish, **not** the fix — the
+    guard-only variant (reject mid-turn navigation) was considered and is explicitly *not* what's
+    wanted.
+  - **Coverage gap.** `test/fork-rewind.test.ts` covers fork/rewind on an **idle** session only;
+    nothing drives either path mid-turn. A regression test wants the parked-driver shape from the
+    repro (park the stream, act, release, assert the parent).
+  - **Why it matters beyond the bug: X-14.** Joshua wants **multiple agents running on different
+    forks at the same time**. Pinning the turn's parent is the correctness floor under that — the
+    invariant "a turn's entries belong to the branch that turn started on" is exactly what has to
+    hold once more than one live session can touch one conversation tree.
 
 - **H-04 — streamed `reasoning_details` were appended, not merged; every signed thinking block
   was stored malformed.** Found 2026-07-28 (the *second* `Invalid signature` report, after H-02's
