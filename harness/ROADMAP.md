@@ -200,7 +200,19 @@ have existed since Phase 4 (`GET /conversations`, `GET /conversation/:id`, resum
 slice ever built a UI over them — so "close a session, it's recoverable from history" means
 recoverable by API, not by clicking. Not dropped on purpose; it fell between the phases.
 
-**328 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
+**X-12 designed 2026-07-28, not yet built — start a fresh thread here.** The browser history list
+now has a settled design (full note at the end of the Deferred table in
+[`DECISIONS.md`](DECISIONS.md); read it before writing code). It is mostly a UI slice: the cwd
+filter + show-all and the `createdAt` sort need **no** backend change, and resume-without-duplicate
+already holds by construction. Three small server additions: a `{kind:"deleted", id, deleted:true}`
+**masking** record folded out of `list()` (delete never unlinks — Joshua wants to be able to flip
+the flag back by hand), a conversation-scoped `POST /conversation/:id/title` that routes through a
+live session when one holds that id, and a `conversationId` (+ optional `leaf`) fallback in `/chat`
+so a peek's first message — and a stale browser tab — materializes the session lazily instead of
+404ing. A peek itself creates no session and no rail card. Auto-re-titling on drift was split out as
+**X-17** and is explicitly *not* part of this slice.
+
+**334 Tier-0/1 green** (+2 replayed Fable). **Next: X-12 (designed above), then P7c** — live
 validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
 slice, logged in `VISUAL-LOG.md` (through P7b).
 
@@ -733,8 +745,10 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
-## Later (post-v1; see DECISIONS "Deferred" X-01…X-16)
-**a browser history list — open a past conversation from the page (X-12)** ·
+## Later (post-v1; see DECISIONS "Deferred" X-01…X-17)
+**a browser history list — open a past conversation from the page (X-12 — DESIGNED, ready to
+build; see the X-12 design note in `DECISIONS.md`)** ·
+**auto-re-title a thread as it drifts (X-17)** ·
 **TTS auto-read when the agent hands the turn back (X-13)** ·
 **auto-read the workspace's `AGENTS.md` into the system prompt (X-15)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
