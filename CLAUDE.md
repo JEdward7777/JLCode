@@ -70,7 +70,20 @@ These are automatic — don't wait to be reminded:
 
 - This repo commits under the identity **Joshua Lansford <Joshua@lansfords.com>**
   (set locally). Claude manages commits per the discipline above: commit at meaningful
-  milestones with clear messages. Do not push unless asked.
+  milestones with clear messages.
+- **Push automatically after a green commit** — don't wait to be asked. JLCode is normally
+  launched with `npx github:JEdward7777/JLCode`, so an unpushed commit is a fix Joshua
+  cannot actually run; "committed" and "available" are the same event here. Same bar as
+  committing: build + free-tier tests green first, never push red.
+- **Ask before pushing only when there's a real reason to hold back** — a rewrite of
+  already-pushed history (force-push), a commit carrying a secret or a large stray file,
+  work deliberately parked mid-refactor, or a branch other than `main`. Flag the reason
+  and let Joshua decide; don't quietly skip the push.
+- **Pushing is not the same as reaching npx.** npx caches by *spec string*, not by resolved
+  commit: `github:JEdward7777/JLCode` keeps serving `~/.npm/_npx/<hash>/node_modules/jlcode`
+  from the first fetch. After a push that Joshua needs to run, tell him to bust the cache
+  (`rm -rf ~/.npm/_npx/<hash>`) or pin the sha (`github:JEdward7777/JLCode#<sha>`). For
+  driving *this* working copy, `node <repo>/dist/cli.js` skips the whole round trip.
 
 ## Related project
 
