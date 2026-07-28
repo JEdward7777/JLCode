@@ -7,6 +7,7 @@ import {
   answer as apiAnswer,
   approve as apiApprove,
   setMode as apiSetMode,
+  setTitle as apiSetTitle,
   setTriggerMode as apiSetTriggerMode,
   compact as apiCompact,
   resolvePersistence as apiResolvePersistence,
@@ -178,9 +179,12 @@ export function App() {
     void fetchConfig().then(setInstance).catch(() => {});
   }, []);
   const workspace = instance?.workingDir ? folderName(instance.workingDir) : null;
+  const focusedTitle = (focusedId ? slices[focusedId]?.title : null) ?? null;
   useEffect(() => {
-    document.title = tabTitle(workspace);
-  }, [workspace]);
+    // `<label> — <folder>`: the label is what changes as you work, the folder is
+    // which project it belongs to (X-09 + X-10).
+    document.title = tabTitle(workspace, focusedTitle);
+  }, [workspace, focusedTitle]);
 
   // If the focused session vanished (closed), fall back to another (or none).
   useEffect(() => {
@@ -447,6 +451,17 @@ export function App() {
     }
   }, []);
 
+  const rename = useCallback(
+    async (id: string, title: string) => {
+      try {
+        await apiSetTitle(id, title); // the `title` event folds it into the slice
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
+
   const openDrawer = useCallback(() => {
     void loadJournal();
     setDrawerOpen(true);
@@ -465,6 +480,7 @@ export function App() {
         onFocus={focus}
         onNew={() => void newSession()}
         onClose={(id) => void closeOne(id)}
+        onRename={(id, title) => void rename(id, title)}
       />
       {focused ? (
         <ChatPane
@@ -516,6 +532,7 @@ function SessionRail({
   onFocus,
   onNew,
   onClose,
+  onRename,
 }: {
   sessions: SessionSlice[];
   focusedId: string | null;
@@ -524,6 +541,7 @@ function SessionRail({
   onFocus: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
+  onRename: (id: string, title: string) => void;
 }) {
   const statusLabel = (s: SessionSlice): string => {
     if (s.persistenceFault) return "can’t save"; // outranks everything (D-46)
@@ -570,22 +588,7 @@ function SessionRail({
             tabIndex={0}
             onKeyDown={(e) => e.key === "Enter" && onFocus(s.id)}
           >
-            <div className="rail-item-top">
-              <span className={`sdot ${dotClass(s)}`} />
-              <span className="rail-model" title={s.model}>
-                {s.model || "session"}
-              </span>
-              <button
-                className="rail-close"
-                title="close session (stops it)"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onClose(s.id);
-                }}
-              >
-                ✕
-              </button>
-            </div>
+            <RailCardHead session={s} dotClass={dotClass(s)} onClose={onClose} onRename={onRename} />
             <div className="rail-item-meta">
               <span className={`rail-status ${dotClass(s)}`}>{statusLabel(s)}</span>
               <span className="rail-spend">${s.spendUsd.toFixed(4)}</span>
@@ -595,6 +598,81 @@ function SessionRail({
         ))}
       </div>
     </aside>
+  );
+}
+
+/** A rail card's top line: status dot, the thread's label (X-09) — auto-titled
+ *  after the first exchange, falling back to the model until then — with a
+ *  pencil to rename in place, and the close button. A hand-edited label pins:
+ *  the auto-title only ever runs when there is none. */
+function RailCardHead({
+  session,
+  dotClass,
+  onClose,
+  onRename,
+}: {
+  session: SessionSlice;
+  dotClass: string;
+  onClose: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const label = session.title || session.model || "session";
+
+  const start = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(session.title ?? "");
+    setEditing(true);
+  };
+  const commit = () => {
+    setEditing(false);
+    const next = draft.trim();
+    if (next && next !== session.title) onRename(session.id, next);
+  };
+
+  if (editing) {
+    return (
+      <div className="rail-item-top" onClick={(e) => e.stopPropagation()}>
+        <input
+          className="rail-rename"
+          value={draft}
+          autoFocus
+          spellCheck={false}
+          placeholder="name this thread"
+          // Pre-selected: typing replaces the old name (renaming is the common
+          // case), clicking still puts the caret where you clicked to edit it.
+          onFocus={(e) => e.target.select()}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") setEditing(false);
+          }}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="rail-item-top">
+      <span className={`sdot ${dotClass}`} />
+      <span className="rail-model" title={session.title ? `${session.title} — ${session.model}` : session.model}>
+        {label}
+      </span>
+      <button className="rail-icon" title="rename this thread" onClick={start}>
+        ✎
+      </button>
+      <button
+        className="rail-close"
+        title="close session (stops it)"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose(session.id);
+        }}
+      >
+        ✕
+      </button>
+    </div>
   );
 }
 

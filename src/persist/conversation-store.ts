@@ -22,6 +22,9 @@ export interface IndexRow {
   id: string;
   workingDir: string;
   createdAt: string;
+  /** A human label for the thread (X-09). Absent on rows written before titles
+   *  existed, and on threads whose first exchange hasn't happened yet. */
+  title?: string;
 }
 
 export class ConversationStore {
@@ -113,6 +116,17 @@ export class ConversationStore {
     return this.log(convId).append({ kind: "activeLeaf", leaf });
   }
 
+  /** Name a conversation (X-09). Append-only like everything else: the newest
+   *  title record wins, so a rename is just another append and old logs (which
+   *  have none) simply stay untitled. Written to the conversation log *and* the
+   *  index, so the history list can show labels without opening every file. */
+  async title(convId: string, title: string, source: "auto" | "manual" = "auto"): Promise<void> {
+    await Promise.all([
+      this.log(convId).append({ kind: "title", title, source, ts: new Date().toISOString() }),
+      this.index.append({ kind: "title", id: convId, title }),
+    ]);
+  }
+
   private static parseLines(text: string): Record<string, unknown>[] {
     const out: Record<string, unknown>[] = [];
     for (const line of text.split("\n")) {
@@ -138,9 +152,11 @@ export class ConversationStore {
     let header: Record<string, unknown> | undefined;
     const entries: Entry[] = [];
     let activeLeaf: string | null = null;
+    let title: string | undefined;
     for (const r of records) {
       if (r.kind === "header") header = r;
       else if (r.kind === "activeLeaf") activeLeaf = typeof r.leaf === "string" ? r.leaf : activeLeaf;
+      else if (r.kind === "title") title = typeof r.title === "string" ? r.title : title; // newest wins
       else {
         entries.push(r as unknown as Entry);
         if (typeof r.id === "string") activeLeaf = r.id; // mirrors appendEntry
@@ -150,6 +166,7 @@ export class ConversationStore {
     const last = entries[entries.length - 1];
     return {
       id: header.id,
+      title,
       entries,
       activeLeaf,
       createdAt: typeof header.createdAt === "string" ? header.createdAt : new Date().toISOString(),
@@ -166,7 +183,12 @@ export class ConversationStore {
       return [];
     }
     const rows: IndexRow[] = [];
+    const titles = new Map<string, string>(); // later title records win (X-09)
     for (const r of ConversationStore.parseLines(text)) {
+      if (r.kind === "title") {
+        if (typeof r.id === "string" && typeof r.title === "string") titles.set(r.id, r.title);
+        continue;
+      }
       if (typeof r.id !== "string" || typeof r.workingDir !== "string") continue;
       if (workingDir !== undefined && r.workingDir !== workingDir) continue;
       rows.push({
@@ -174,6 +196,10 @@ export class ConversationStore {
         workingDir: r.workingDir,
         createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
       });
+    }
+    for (const row of rows) {
+      const title = titles.get(row.id);
+      if (title !== undefined) row.title = title;
     }
     return rows.reverse();
   }

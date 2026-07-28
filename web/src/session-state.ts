@@ -35,6 +35,9 @@ export interface LiveAssistant {
 export interface SessionSlice {
   id: string;
   model: string;
+  /** The thread's label (X-09) — auto after the first exchange, or hand-edited.
+   *  Null until it has one; the rail falls back to the model name. */
+  title: string | null;
   status: string;
   mode: Mode;
   approval: ApprovalPolicy;
@@ -70,6 +73,7 @@ export function newSlice(id: string, model = ""): SessionSlice {
   return {
     id,
     model,
+    title: null,
     status: "idle",
     mode: "code",
     approval: "manual",
@@ -104,6 +108,7 @@ export function sliceFromDescriptor(d: SessionDescriptor): SessionSlice {
  *  response) into a slice. */
 export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   const next = { ...s };
+  if (state.title !== undefined) next.title = state.title;
   if (state.mode) next.mode = state.mode;
   if (state.approval) next.approval = state.approval;
   if (state.status) next.status = state.status;
@@ -138,6 +143,9 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, activeLeaf: e.leaf as string };
     case "mode":
       return { ...s, mode: e.mode as Mode, approval: e.approval as ApprovalPolicy };
+    case "title":
+      // Auto-titled after the first exchange, or renamed by hand (X-09).
+      return { ...s, title: e.title as string };
     case "spend":
       return { ...s, spendUsd: e.totalUsd as number };
     case "cap":

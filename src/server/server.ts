@@ -131,6 +131,7 @@ function sessionDescriptor(session: Session): Record<string, unknown> {
   return { id: session.id, model: session.config.model, state: stateOf(session) };
 }
 
+
 /** Answers to the questions an approval pause carried (D-48), off the wire. */
 function parseLearned(raw: unknown): LearnAnswers | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
@@ -154,6 +155,7 @@ function stateOf(session: Session): Record<string, unknown> {
   const base: Record<string, unknown> = {
     sessionId: session.id,
     conversationId: session.conversation.id,
+    title: session.conversation.title ?? null, // the thread's label (X-09)
     status: session.status,
     mode: session.mode,
     approval: session.approval,
@@ -224,6 +226,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     session.onEvent((e) => {
       if (e.type === "entry") settled(deps.store.entry(session.conversation.id, e.entry));
       else if (e.type === "active-leaf") settled(deps.store.activeLeaf(session.conversation.id, e.leaf));
+      else if (e.type === "title") settled(deps.store.title(session.conversation.id, e.title, e.source));
       else if (e.type === "debug" && deps.debugJournal) {
         // The journal is diagnostic and never replayed to a model, so a failure
         // here is a warning — not worth stopping the session over (D-46).
@@ -400,6 +403,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json({
       id: session.id,
       conversationId: session.conversation.id, // for the debug-journal fetch (D-15)
+      title: session.conversation.title ?? null, // thread label (X-09)
       status: session.status,
       model: session.config.model,
       mode: session.mode,
@@ -425,6 +429,22 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (mode === undefined && approval === undefined) return c.json({ error: "nothing to change" }, 400);
     session.setModeApproval(mode, approval);
     deps.persistDefaults?.(session.config.name, { mode, approval });
+    return c.json(stateOf(session));
+  });
+
+  // Rename the thread (X-09): {title}. The auto-title runs once after the first
+  // exchange; this is the hand-edit, and it pins — auto never overwrites it.
+  app.post("/session/:id/title", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { title?: unknown };
+    if (typeof body.title !== "string" || body.title.trim() === "") return c.json({ error: "title is required" }, 400);
+    try {
+      session.setTitle(body.title, "manual"); // the event drives persistence
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    await deps.store.flush(); // read-your-writes, like the other mutating routes
     return c.json(stateOf(session));
   });
 

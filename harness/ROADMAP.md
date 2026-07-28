@@ -154,7 +154,24 @@ instance's `workingDir` (+ `homeDir` so the browser can shorten it); the rail he
 (Joshua's call — "JLCode" names the tool, not the project). `tabTitle()` already takes an optional
 label first, which is where X-09 plugs in.
 
-**305 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
+**X-09 shipped 2026-07-28 — threads have names.** Joshua's design for the auto title: after the
+first exchange, an **ephemeral** question is tagged onto the end of the live conversation and asked
+of the **active** model (`tool_choice:"none"`, small `max_tokens`) — never appended to the tree, so
+nothing has to be flattened and the same prompt-cache reuse that makes same-model compaction cheap
+(D-29) applies. It is **opt-in per session** (`SessionOptions.autoTitle`, on under `serve`) because
+it costs one extra call, and it runs **once**: a failure leaves the thread unnamed rather than
+costing a turn, and a hand-picked name pins. Titles are append-only records in the conversation log
+*and* `index.jsonl` (newest wins), so `GET /conversations` labels history for free and old logs
+simply stay untitled. The rail renames in place via `POST /session/:id/title`, and the tab reads
+`<label> — <folder>`. The fake agent driver answers the title question offline so this is peekable
+without spend.
+
+**Found while scoping X-09 and logged as X-12: there is no browser history list.** The endpoints
+have existed since Phase 4 (`GET /conversations`, `GET /conversation/:id`, resume-by-id) but no P5
+slice ever built a UI over them — so "close a session, it's recoverable from history" means
+recoverable by API, not by clicking. Not dropped on purpose; it fell between the phases.
+
+**328 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
 validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
 slice, logged in `VISUAL-LOG.md` (through P7b).
 
@@ -635,7 +652,7 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-11)
-**conversation labels — auto-titled + hand-editable (X-09)** ·
+**a browser history list — open a past conversation from the page (X-12)** ·
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·

@@ -72,7 +72,12 @@ disclosure, a left rail of concurrent sessions, live Ask/Plan/Code + approval
 controls, edit-before-approve on tool calls, out-of-fence prompts, whole-tree
 spend with a settable cap, branch/rewind arrows with pencil edit-fork, a
 per-turn debug-journal drawer, lazy-loaded Mermaid diagrams, and an MCP status
-drawer. Screenshots of each slice are in
+drawer. Every tool call leaves its result in the transcript — collapsed to the
+tool, its arguments and a size hint, expandable to the full output — so you can
+check the model's work instead of taking its summary on faith. Each thread names
+itself after the first exchange (rename it with the ✎ on its rail card), and the
+tab title reads `<thread> — <project folder>`, so two instances in two projects
+stay tellable apart. Screenshots of each slice are in
 [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md).
 
 MCP tools pass the same gate and fence as native ones. JLCode can't take a

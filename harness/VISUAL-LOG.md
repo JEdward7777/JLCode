@@ -415,3 +415,38 @@ tabs are indistinguishable. Read back from the live page via CDP:
 Not exercised visually (covered by tests): the no-home / short-path forms of the
 abbreviation, and the `<label> — <folder>` tab composition (X-09 supplies the
 label).
+
+---
+
+## X-09 — conversation labels in the rail + tab title · 2026-07-28 · ✅ looked good (one UX fix)
+
+**Screenshots:** [`visual/x09-labels.png`](visual/x09-labels.png) ·
+[`visual/x09-rename.png`](visual/x09-rename.png)
+
+Two live sessions in the `JLCode-peek` instance (fake driver, isolated dirs).
+The fake agent driver gained an answer for the **ephemeral auto-title question**
+so labels can be peeked at offline — it replies with a few words off the opening
+message instead of echoing the ask. Renaming was driven with **real** input
+events (CDP `Input.insertText` + a genuine Enter key), not synthetic DOM events,
+so React's controlled input was exercised the way a person exercises it.
+Confirmed with my own eyes and read back from the page:
+
+- **Both cards carry a label** instead of the same `fake/model` twice —
+  `Src/index.ts` and `Why does compaction drop the` — with the model still on
+  the hover title, and ✎ / ✕ appearing on hover like the existing close button.
+- **The tab composes both features** — `document.title` reads
+  `Src/index.ts — JLCode-peek`: what this thread is (X-09), in which project (X-10).
+- **Rename is live and durable** — typed a new name, pressed Enter: the card
+  updated, the tab title followed within the same tick, and
+  `GET /conversations` (read from `index.jsonl`) already agreed. **Restarted the
+  server** and the labels came back from disk.
+- **A hand-picked name pins** — sent another turn on the renamed thread; it kept
+  the manual name, no re-title.
+
+**The UX gap this peek caught:** clicking ✎ pre-filled the field but did not
+select it, so typing *appended* to the old name (`…drop theProvider pin…`) —
+exactly what a real rename never wants. `onFocus → select()` fixes it; clicking
+into the text still places the caret for an edit.
+
+Not exercised visually (covered by tests): Escape-to-cancel, the empty-rename
+rejection, and the auto-title's one-attempt-per-session guard.

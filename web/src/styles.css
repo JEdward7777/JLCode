@@ -189,11 +189,42 @@ body {
   opacity: 0;
 }
 .rail-item:hover .rail-close,
-.rail-item.focused .rail-close {
+.rail-item.focused .rail-close,
+.rail-item:hover .rail-icon,
+.rail-item.focused .rail-icon {
   opacity: 1;
 }
 .rail-close:hover {
   color: var(--danger);
+}
+/* Rename-in-place (X-09): same hover affordance as the close button. */
+.rail-icon {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 3px;
+  border-radius: 5px;
+  line-height: 1;
+  opacity: 0;
+}
+.rail-icon:hover {
+  color: var(--accent);
+}
+.rail-rename {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 5px;
+}
+.rail-rename:focus {
+  outline: none;
 }
 .rail-item-meta {
   display: flex;

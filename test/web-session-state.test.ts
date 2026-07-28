@@ -161,3 +161,23 @@ describe("persistence-fault events fold into the slice (D-46)", () => {
     expect(next.persistenceFault).toEqual(fault);
   });
 });
+
+describe("conversation label (X-09)", () => {
+  it("folds a title event into the slice", () => {
+    let s = newSlice("s1", "some/model");
+    expect(s.title).toBeNull();
+    s = reduceEvent(s, { type: "title", title: "Fix the SSE hang", source: "auto" } as unknown as WireEvent);
+    expect(s.title).toBe("Fix the SSE hang");
+    s = reduceEvent(s, { type: "title", title: "What I call it", source: "manual" } as unknown as WireEvent);
+    expect(s.title).toBe("What I call it");
+  });
+
+  it("takes the title off a settled snapshot, and lets a rename clear back to unnamed", () => {
+    let s = applyState(newSlice("s1"), { title: "Named" });
+    expect(s.title).toBe("Named");
+    s = applyState(s, { status: "idle" }); // a snapshot without the field leaves it alone
+    expect(s.title).toBe("Named");
+    s = applyState(s, { title: null }); // an untitled thread reports null, not absent
+    expect(s.title).toBeNull();
+  });
+});

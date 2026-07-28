@@ -71,6 +71,9 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   form:                       → a multi-question ask_user form
  *   mcp: <tool> <json>          → a bridged MCP call, e.g. `mcp: srv__echo {"text":"hi"}`
  *
+ * It also answers the ephemeral auto-title question (X-09) with a short label
+ * taken from the opening message, so labels can be peeked at offline.
+ *
  * Anything else echoes like {@link echoDriver}. Once a tool result comes back
  * (the latest message is no longer the user's), it gives a short final answer.
  */
@@ -82,6 +85,19 @@ export function fakeAgentDriver(): LlmDriver {
 
     const msg = typeof last.content === "string" ? last.content.trim() : "";
     const after = (p: string) => msg.slice(p.length).trim();
+
+    // The ephemeral auto-title question (X-09) — offline, answer it the way a
+    // model would: a few words off the opening message, not an echo of the ask.
+    if (msg.startsWith("Ignore the task for one moment. Name this conversation.")) {
+      const opening = req.messages.find((m) => m.role === "user");
+      const words = (typeof opening?.content === "string" ? opening.content : "")
+        .replace(/^\w+:\s*/, "") // drop a driver prefix like `run:` / `read:`
+        .split(/\s+/)
+        .filter((w) => w !== "")
+        .slice(0, 5)
+        .join(" ");
+      return textReply(words === "" ? "A new conversation" : words[0]!.toUpperCase() + words.slice(1));
+    }
 
     if (msg.startsWith("write:")) {
       const [rawPath, ...rest] = after("write:").split("|");

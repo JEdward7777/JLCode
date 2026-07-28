@@ -181,6 +181,7 @@ export type SessionEvent =
   | { type: "awaiting-approval"; request: ApprovalRequest }
   | { type: "awaiting-input"; question: AskUserRequest }
   | { type: "mode"; mode: Mode; approval: ApprovalPolicy } // live mode/approval change (D-07/D-08)
+  | { type: "title"; title: string; source: "auto" | "manual" } // the thread got a name (X-09)
   | { type: "spend"; totalUsd: number; turnUsd: number; usage?: Usage } // whole-tree spend (D-33)
   | { type: "cap"; capUsd: number | null } // the spend cap was set/raised/cleared (D-33)
   | { type: "cap-reached"; spendUsd: number; capUsd: number } // breach → no further LLM call (D-33)

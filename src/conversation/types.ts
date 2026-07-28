@@ -55,6 +55,9 @@ export type Entry = UserEntry | AssistantEntry | ToolEntry | CompactionEntry;
 
 export interface Conversation {
   id: string;
+  /** Human label for the thread (X-09) — auto-titled after the first exchange,
+   *  renameable by hand. Absent until then, and on logs written before titles. */
+  title?: string;
   entries: Entry[];
   activeLeaf: string | null;
   createdAt: string;

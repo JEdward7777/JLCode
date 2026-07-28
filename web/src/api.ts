@@ -176,6 +176,7 @@ export interface QueuedMessage {
  *  the action POSTs (see server stateOf). */
 export interface SessionState {
   status?: string;
+  title?: string | null; // the thread's label (X-09), null until it has one
   mode?: Mode;
   approval?: ApprovalPolicy; // the approval policy (D-08)
   approvalRequest?: ApprovalRequest; // the pending approval request, if any (D-16)
@@ -328,6 +329,12 @@ export async function fetchMcpStatus(): Promise<McpStatus> {
   const res = await fetch("/mcp");
   if (!res.ok) throw new Error(`request failed (${res.status})`);
   return (await res.json()) as McpStatus;
+}
+
+/** Rename the thread (X-09). The auto-title runs once after the first exchange;
+ *  this is the hand-edit, and it pins — auto never overwrites it. */
+export async function setTitle(id: string, title: string): Promise<void> {
+  await postJson(`/session/${id}/title`, { title });
 }
 
 /** Answer a pending ask_user (D-18): a single string, or per-question answers. */

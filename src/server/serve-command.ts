@@ -99,6 +99,9 @@ export async function runServe(args: string[]): Promise<number> {
       approval: config.defaultApproval,
       buildGate: (mode, approval) => new ModeApprovalGate(mode, approval, cfg.autoSafeAllowlist),
       conversation,
+      // Name the thread after the first exchange (X-09) — the browser rail and
+      // the tab title have somewhere to show it, so the extra call earns its keep.
+      autoTitle: true,
       onAddRoot: (dir) => {
         const current = loadConfig(paths);
         const existing = current.folderRoots?.[cwd] ?? [];

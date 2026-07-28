@@ -36,6 +36,7 @@ import {
   COMPACTION_MAX_TOKENS,
   type CompactionBudget,
 } from "./compaction.js";
+import { buildTitleInstruction, sanitizeTitle, TITLE_MAX_TOKENS } from "./title.js";
 import type { CompactionTrigger } from "../config/types.js";
 import type { QueuedMessage } from "./types.js";
 import type {
@@ -89,6 +90,11 @@ export interface SessionOptions {
   /** The compaction model's window, when a *smaller* summarizer is configured
    *  (compactor-fit guard, D-44a). Defaults to the working window. */
   compactorWindow?: number;
+  /** Auto-title this conversation after the first exchange (X-09). **Off unless
+   *  asked for**: it costs one extra model call, and only an embedder that has
+   *  somewhere to keep and show a label (the server + browser rail) benefits —
+   *  a headless session would pay for a string nobody reads. */
+  autoTitle?: boolean;
 }
 
 /** Default watchdog interval — 30 minutes (D-34). */
@@ -225,6 +231,11 @@ export class Session {
   /** The known-prefix size from the last budget-crossing evaluation (D-44), shown
    *  on the pre-send compaction pause card (P6c). Informational only. */
   private lastPrefixTokens = 0;
+  /** Auto-titling ran (or was ruled out) for this conversation (X-09). One
+   *  attempt per session: a nicety must never cost a call per turn. */
+  private titleAttempted = false;
+  /** Whether to auto-title at all (X-09) — opt-in, since it costs a call. */
+  private readonly autoTitle: boolean;
   /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
   private readonly tasks: TaskRegistry;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
@@ -254,6 +265,7 @@ export class Session {
     this.conversation = options.conversation ?? newConversation();
     this.pricing = options.config.pricing;
     this.spendCapUsd = options.spendCapUsd;
+    this.autoTitle = options.autoTitle ?? false;
     this.contextWindow = options.contextWindow ?? options.config.compaction?.contextLength;
     this.compactorWindow = options.compactorWindow;
     this.triggerMode = activeTriggerMode(options.config.compaction);
@@ -889,7 +901,70 @@ export class Session {
     }
     this.stopScope = null; // settled normally; a soft stop on the last turn is spent
     this.status = "idle";
+    await this.maybeAutoTitle();
     await this.drainQueue();
+  }
+
+  /** Name the conversation (X-09). Joshua's design: once the first exchange has
+   *  happened, tag an **ephemeral** question onto the end of the live
+   *  conversation — asked of the active model, `tool_choice:"none"`, never
+   *  appended to the tree — so the title comes from the real context without
+   *  flattening or re-shaping anything, and the prompt-cache reuse that makes
+   *  same-model compaction cheap (D-29) pays for most of it. At most one attempt
+   *  per session, and a failure is swallowed: a label is a nicety and must never
+   *  cost a turn. */
+  private async maybeAutoTitle(): Promise<void> {
+    if (!this.autoTitle || this.titleAttempted || this.conversation.title) return;
+    // Nothing worth naming until the model has actually said something.
+    if (!this.conversation.entries.some((e) => e.type === "assistant" && e.text.trim() !== "")) return;
+    if (this.stopScope || this.capBlocked()) return; // don't spend past a stop/cap
+    this.titleAttempted = true;
+
+    const req: ChatRequest = {
+      model: this.config.model,
+      messages: [
+        ...buildWireMessages(this.conversation, { system: this.systemPrompt }),
+        { role: "user", content: buildTitleInstruction() },
+      ],
+      tool_choice: "none",
+      max_tokens: TITLE_MAX_TOKENS,
+    };
+    const startedAt = Date.now();
+    const events: StreamEvent[] = [];
+    try {
+      for await (const ev of this.driver.streamChat(req)) events.push(ev);
+    } catch {
+      return; // no title this time; the thread just stays unnamed
+    }
+    const result = accumulate(events);
+    const turnUsd = computeCost(result.usage, this.pricing);
+    this.spendUsd += turnUsd;
+    this.emit({ type: "spend", totalUsd: this.spendUsd, turnUsd, usage: result.usage });
+    this.emit({
+      type: "debug",
+      record: {
+        kind: "llm",
+        ms: Date.now() - startedAt,
+        model: req.model,
+        messages: req.messages.length,
+        tools: [],
+        finishReason: result.finishReason,
+        usage: result.usage,
+        textPreview: `[title] ${result.text.slice(0, 160)}`,
+      },
+    });
+    const title = sanitizeTitle(result.text);
+    if (title) this.setTitle(title, "auto");
+  }
+
+  /** Set the thread's label (X-09). `manual` is the browser's inline rename;
+   *  persistence is the caller's concern (the server projects the event). */
+  setTitle(title: string, source: "auto" | "manual" = "manual"): void {
+    const clean = sanitizeTitle(title);
+    if (!clean) throw new Error("Title is empty.");
+    this.titleAttempted = true; // a hand-picked name is never overwritten by auto
+    this.conversation.title = clean;
+    this.emit({ type: "title", title: clean, source });
   }
 
   // ---- Queued message (D-34): typed mid-turn, applied FIFO at a turn boundary.
