@@ -355,3 +355,42 @@ eyes:
 Not exercised visually (covered by tests): the Ask-mode variant of the card
 (the *"No — it only reads / Yes — it writes"* pair), a failed server's error row
 in the drawer, and the workspace-scoped settings file.
+
+---
+
+## X-11 — tool output in the transcript · 2026-07-28 · ✅ looked good (one defect caught)
+
+**Screenshots:** [`visual/x11-tool-collapsed.png`](visual/x11-tool-collapsed.png) ·
+[`visual/x11-tool-expanded.png`](visual/x11-tool-expanded.png)
+
+Drove the built server with the fake agent driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs, a scratch workspace) under **`full-auto`** so the calls run
+without a pause — the point being what you can read *after* the approval card is
+gone. Seeded four turns: `run: ls -la`, `read: src/index.ts` (success),
+`read: nope/missing.txt` (error), and a deliberately **very wide** `printf` +
+`ls -la src`. Confirmed with my own eyes:
+
+- **A tool block sits in flow** between the turn that called it and the turn that
+  talks about it (Joshua's call), collapsed to one line: caret, monospace tool
+  name, the argument gist (`read_file src/index.ts`), and a size hint
+  (`2 lines · 40 B`) right-aligned.
+- **Errors read as errors** — red left rule and a red `ERROR` chip on the failed
+  `read_file`, distinct from the amber rule of a normal call.
+- **Expanded shows both halves** — the pretty-printed arguments above the **full**
+  output (not the journal's 200-char preview), monospace, on its own panel.
+- **A wide line scrolls the box, never the page** — measured, not eyeballed:
+  with everything expanded the widest output box is `scrollWidth 1312` vs
+  `clientWidth 847`, while `document.documentElement.scrollWidth ===
+  clientWidth === 1280`. No horizontal page scroll.
+- **A bare tool-call turn still draws no empty bubble** — the block carries it.
+
+**The defect this peek caught that the tests could not:** every block rendered as
+a **1px hairline**. `.thread` is a flex column, and a child whose contents scroll
+has nothing to hold its height open — it shrank to nothing. `flex: none` on
+`.tool-block` fixes it. A pure-function test suite would never have seen this.
+Also corrected on sight: the size hint counted a trailing newline as a line, so a
+two-line file read "3 lines".
+
+Not exercised visually (covered by tests): the live path (a block appearing as
+the turn streams — the same `entryView` shape now goes over SSE), and an empty
+result rendering as `(no output)`.

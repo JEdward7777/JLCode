@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
+import { outputStats, prettyArgs, summarizeArgs } from "./tool-view";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import {
   answer as apiAnswer,
@@ -645,7 +646,20 @@ function ChatPane({
   }, [slice.entries, slice.activeLeaf, slice.live, slice.working, slice.pendingApproval, slice.pendingAsk, slice.pendingCompaction]);
 
   const path = pathToLeaf(slice.entries, slice.activeLeaf);
-  const rendered = path.filter((e) => e.type === "user" || (e.type === "assistant" && (e.text || e.reasoningText)));
+  // Tool results render in flow (X-11), between the turn that called them and the
+  // turn that reasons about them — the approval card is gone by then, so this is
+  // where you check the model's work. Silent assistant turns (a bare tool call)
+  // still don't draw a bubble; their tool block carries the story.
+  const rendered = path.filter(
+    (e) => e.type === "user" || e.type === "tool" || (e.type === "assistant" && (e.text || e.reasoningText)),
+  );
+  // Arguments live on the calling assistant entry, results on the tool entry;
+  // `toolCallId` is the join.
+  const argsByCall = new Map<string, string>();
+  for (const e of path) {
+    if (e.type !== "assistant") continue;
+    for (const call of e.toolCalls ?? []) if (call.id) argsByCall.set(call.id, call.arguments);
+  }
 
   // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
   // background command is running, or a prompt is open. While busy, the composer
@@ -718,6 +732,9 @@ function ChatPane({
           <div className="empty">Say something to get started.</div>
         )}
         {rendered.map((entry) => {
+          if (entry.type === "tool") {
+            return <ToolBlock key={entry.id} entry={entry} args={entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined} />;
+          }
           const siblings = childrenOf(slice.entries, entry.parent);
           const branch =
             siblings.length > 1
@@ -1215,6 +1232,40 @@ function Message({
         </button>
       </div>
       {showJournal ? <JournalRecords records={journal} /> : null}
+    </div>
+  );
+}
+
+/** A tool result in the transcript (X-11). Collapsed it's one scannable line —
+ *  tool name, the gist of its arguments, and how much output is hiding — because
+ *  a long `ls` or a stack trace shouldn't bury the conversation. Expanded it
+ *  shows the full arguments and the **whole** output (the debug journal's 200-char
+ *  preview is a journal concern, not a transcript one) in its own scroll box, so
+ *  a wide line scrolls here instead of shoving the page sideways. */
+function ToolBlock({ entry, args }: { entry: EntryView; args?: string }) {
+  const [open, setOpen] = useState(false);
+  const content = entry.content ?? "";
+  const stats = outputStats(content);
+  const gist = summarizeArgs(args);
+  return (
+    <div className={`tool-block ${entry.isError ? "err" : ""} ${open ? "open" : ""}`}>
+      <button className="tool-head" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={open ? "hide output" : "show output"}>
+        <span className="tool-caret">{open ? "▾" : "▸"}</span>
+        <span className="tool-name">{entry.name}</span>
+        {gist ? (
+          <span className="tool-gist" title={args}>
+            {gist}
+          </span>
+        ) : null}
+        {entry.isError ? <span className="tool-badge">error</span> : null}
+        <span className="tool-size">{stats.label}</span>
+      </button>
+      {open ? (
+        <div className="tool-body">
+          {args ? <pre className="tool-out args">{prettyArgs(args)}</pre> : null}
+          <pre className="tool-out">{content === "" ? "(no output)" : content}</pre>
+        </div>
+      ) : null}
     </div>
   );
 }

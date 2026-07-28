@@ -14,7 +14,7 @@ import { APPROVAL_POLICIES, MODES } from "../config/types.js";
 
 /** The five compaction trigger modes (D-27). Validated on the mode-switch route. */
 const TRIGGER_MODES: readonly CompactionTrigger[] = ["auto", "manual", "suggest", "cancelable", "hard"];
-import type { AskUserAnswer, LearnAnswers } from "../session/types.js";
+import type { AskUserAnswer, LearnAnswers, SessionEvent } from "../session/types.js";
 import type { McpServerStatus } from "../mcp/client.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
@@ -94,16 +94,34 @@ function entryView(entry: Entry): Record<string, unknown> {
         ...base,
         type: "assistant",
         text: entry.text,
-        toolCalls: entry.toolCalls?.map((t) => ({ name: t.function.name, arguments: t.function.arguments })),
+        // The call `id` rides along so the transcript can pair a tool result with
+        // the arguments it was called on (X-11) — the args live only here.
+        toolCalls: entry.toolCalls?.map((t) => ({ id: t.id, name: t.function.name, arguments: t.function.arguments })),
         reasoningText: entry.reasoningText,
         truncated: entry.truncated ?? false,
         finishReason: entry.finishReason,
       };
     case "tool":
-      return { ...base, type: "tool", name: entry.name, content: entry.content, isError: entry.isError ?? false };
+      return {
+        ...base,
+        type: "tool",
+        toolCallId: entry.toolCallId,
+        name: entry.name,
+        content: entry.content,
+        isError: entry.isError ?? false,
+      };
     case "compaction":
       return { ...base, type: "compaction", summary: entry.summary };
   }
+}
+
+/** Project a session event for the browser. `entry` events carry the **raw** tree
+ *  node because the persistence projection needs it verbatim (D-37) — but the
+ *  wire should ship the same trimmed shape as `GET /session/:id`, so a live entry
+ *  and a loaded one render identically (X-11), and the opaque signed reasoning
+ *  blobs (D-14) stay server-side instead of being pushed to every tab. */
+function wireEvent(e: SessionEvent): unknown {
+  return e.type === "entry" ? { ...e, entry: entryView(e.entry) } : e;
 }
 
 /** A session's roster descriptor for the multiplexed bus (D-43): identity + its
@@ -312,7 +330,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         w?.();
       };
       const unsub = session.onEvent((e) => {
-        queue.push(e);
+        queue.push(wireEvent(e));
         bump();
       });
       stream.onAbort(() => {
@@ -348,7 +366,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         w?.();
       };
       const unsub = manager.subscribe((frame) => {
-        if (frame.kind === "event") queue.push({ type: "session-event", sessionId: frame.sessionId, event: frame.event });
+        if (frame.kind === "event") queue.push({ type: "session-event", sessionId: frame.sessionId, event: wireEvent(frame.event) });
         else if (frame.kind === "added") queue.push({ type: "session-added", session: sessionDescriptor(frame.session) });
         else queue.push({ type: "session-removed", sessionId: frame.sessionId });
         bump();

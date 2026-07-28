@@ -13,10 +13,11 @@ export interface EntryView {
   type: "user" | "assistant" | "tool" | "compaction";
   text?: string;
   reasoningText?: string;
-  toolCalls?: { name: string; arguments: string }[];
+  toolCalls?: { id?: string; name: string; arguments: string }[];
   truncated?: boolean;
   finishReason?: string;
   name?: string; // tool
+  toolCallId?: string; // tool → the assistant toolCalls entry it answers (X-11)
   content?: string; // tool
   isError?: boolean; // tool
   summary?: string; // compaction

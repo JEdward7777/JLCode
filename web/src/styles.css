@@ -977,6 +977,94 @@ figure.mermaid svg {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* Tool results in the transcript (X-11) — collapsed header + expandable output */
+.tool-block {
+  border: 1px solid var(--border);
+  border-left: 2px solid #c8a24a;
+  border-radius: 7px;
+  background: var(--panel-2);
+  overflow: hidden;
+  max-width: 100%;
+  /* The thread is a flex column: without this the block (whose contents can
+     scroll) shrinks to a hairline instead of holding its own height. */
+  flex: none;
+}
+.tool-block.err {
+  border-left-color: var(--danger);
+}
+.tool-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.tool-head:hover {
+  background: var(--panel);
+}
+.tool-caret {
+  color: var(--muted);
+  flex: none;
+}
+.tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  flex: none;
+}
+.tool-gist {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-badge {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--danger);
+}
+.tool-size {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.tool-body {
+  border-top: 1px solid var(--border);
+  padding: 7px 9px;
+}
+/* `pre` (not pre-wrap): a wide line scrolls inside this box, never the page. */
+.tool-out {
+  margin: 0;
+  white-space: pre;
+  overflow: auto;
+  max-height: 320px;
+  background: var(--panel);
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.tool-out.args {
+  color: var(--muted);
+  max-height: 160px;
+  margin-bottom: 6px;
+}
+
 /* Debug journal — per-turn expander + drawer rows (D-15) */
 .journal {
   margin-top: 6px;
