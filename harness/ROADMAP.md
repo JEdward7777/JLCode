@@ -124,7 +124,22 @@ failures. Streamed `reasoning_details` arrive as deltas keyed by `index` (text i
 signature in a final fragment); we appended them instead of merging, so every signed thinking
 block was stored as several partial ones plus an orphan signature. Found *because* D-49's journal
 fields showed the provider pin working while the call still failed — which ruled out routing and
-pointed at the payload. **275 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
+pointed at the payload.
+
+**Conversations recorded before H-04 are unrecoverable** — fragmented reasoning is on disk and the
+append-only log isn't rewritten. If one fails on resume with `Invalid signature`, start a new
+conversation; a repair-on-read that assembles fragments at wire-build time was considered and
+**not** built (offer it before assuming it's wanted).
+
+**Also settled 2026-07-28 (D-50): config editing stays manual** — no `config set --key`, no
+live-config reload into running sessions. Both gaps are real and both were deliberately declined;
+don't re-propose them unprompted. Backlog additions from real use: **X-09** conversation labels,
+**X-10** workspace/cwd in the page + tab title, **X-11** tool output kept visible in the
+transcript. Push discipline changed the same day — **push after every green commit** (CLAUDE.md),
+because `npx github:…` is how JLCode is launched; note npx caches by *spec string*, so a push
+alone doesn't reach the user.
+
+**275 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
 validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
 slice, logged in `VISUAL-LOG.md` (through P7b).
 
