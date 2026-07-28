@@ -109,6 +109,13 @@ that the user edited it and what actually ran, so the agent learns of the correc
 result channel. The **debug journal** (§14) keeps both the original and edited command. This
 is a KiloCode gap Joshua specifically wants closed.
 
+**Output stays visible (planned, X-11).** Approving a command must not be the last time you see
+it. The **tool result stays in the transcript** as its own item — the full output, not a preview —
+so you can check what the model is reasoning about instead of taking its summary on faith. Today
+the approval card carries the *args* and disappears on approve, and the transcript renders only
+user and assistant entries, so `ToolEntry.content` is persisted and never shown; the debug journal
+(§14) keeps a 200-char preview, which is a journal concern and no substitute for reading output.
+
 Deferred (ROADMAP): an **LLM-judged auto** policy that calls a model (possibly a
 cheaper/different one) to decide whether a command is safe.
 
