@@ -141,7 +141,8 @@ conversation; a repair-on-read that assembles fragments at wire-build time was c
 live-config reload into running sessions. Both gaps are real and both were deliberately declined;
 don't re-propose them unprompted. Backlog additions from real use: **X-09** conversation labels,
 **X-10** workspace/cwd in the page + tab title, **X-11** tool output kept visible in the
-transcript. Push discipline changed the same day — **push after every green commit** (CLAUDE.md),
+transcript, **X-16** reasoning notes default-open (the first browser-side UI preference — no
+`localStorage` use exists yet, so that slice defines the mechanism X-13's toggle should share). Push discipline changed the same day — **push after every green commit** (CLAUDE.md),
 because `npx github:…` is how JLCode is launched; note npx caches by *spec string*, so a push
 alone doesn't reach the user.
 
@@ -732,9 +733,12 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
-## Later (post-v1; see DECISIONS "Deferred" X-01…X-13)
+## Later (post-v1; see DECISIONS "Deferred" X-01…X-16)
 **a browser history list — open a past conversation from the page (X-12)** ·
 **TTS auto-read when the agent hands the turn back (X-13)** ·
+**auto-read the workspace's `AGENTS.md` into the system prompt (X-15)** ·
+**multiple live sessions on different forks of one conversation (X-14)** ·
+**reasoning notes default-open, a browser-side UI preference (X-16)** ·
 Notifications (external push, P-02) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·
