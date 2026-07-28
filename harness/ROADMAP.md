@@ -745,10 +745,11 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
-## Later (post-v1; see DECISIONS "Deferred" X-01…X-17)
+## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
 **a browser history list — open a past conversation from the page (X-12 — DESIGNED, ready to
 build; see the X-12 design note in `DECISIONS.md`)** ·
 **auto-re-title a thread as it drifts (X-17)** ·
+**copy an assistant reply's markdown to the clipboard (X-18)** ·
 **TTS auto-read when the agent hands the turn back (X-13)** ·
 **auto-read the workspace's `AGENTS.md` into the system prompt (X-15)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
