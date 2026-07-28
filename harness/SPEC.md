@@ -141,6 +141,11 @@ Nothing project-specific is written into the project folder.
 - **UI affordance:** a **pencil** on a message you wrote. Editing it *is* a fork — the edited
   message appends as a sibling branch off the same parent, the original stays as the other
   sibling. "Edit my message" and "fork" are the same operation.
+- **Workspace identity in the UI (planned, X-10):** the browser shows **which working directory
+  this instance serves**, and the **tab title** carries it too — with several projects open, the
+  tabs are otherwise indistinguishable. The dir is already recorded (`IndexRow.workingDir`); it
+  just isn't sent to or shown by the client. The workspace is per *instance*; the label in X-09
+  is per *conversation*, and the tab likely wants both.
 - **Conversation labels (planned, X-09):** a conversation carries a **human-readable label**,
   **auto-derived** from its opening exchange and **hand-editable** at any time. Today the index
   row is `id` + `workingDir` + `createdAt` only, so the history list and the session rail can't
