@@ -651,9 +651,10 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
-## Later (post-v1; see DECISIONS "Deferred" X-01…X-11)
+## Later (post-v1; see DECISIONS "Deferred" X-01…X-13)
 **a browser history list — open a past conversation from the page (X-12)** ·
-Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
+**TTS auto-read when the agent hands the turn back (X-13)** ·
+Notifications (external push, P-02) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·
 browser-driven app testing · VS Code webview · response-caching product feature (§21) ·
