@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
 import { outputStats, prettyArgs, summarizeArgs } from "./tool-view";
+import { abbreviatePath, folderName, tabTitle } from "./workspace";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import {
   answer as apiAnswer,
@@ -18,6 +19,7 @@ import {
   editFork as apiEditFork,
   closeSession as apiClose,
   createSession,
+  fetchConfig,
   fetchJournal,
   fetchMcpStatus,
   loadTree,
@@ -28,6 +30,7 @@ import {
   type AskUserRequest,
   type BusFrame,
   type EntryView,
+  type InstanceConfig,
   type JournalRecord,
   type LearnAnswers,
   type McpServerStatus,
@@ -111,6 +114,8 @@ export function App() {
   const [journal, setJournal] = useState<JournalRecord[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+  // Which workspace this instance serves (X-10) — per instance, fetched once.
+  const [instance, setInstance] = useState<InstanceConfig | null>(null);
 
   const focusedRef = useRef<string | null>(null);
   focusedRef.current = focusedId;
@@ -166,6 +171,16 @@ export function App() {
     es.onerror = () => setConnected(false);
     return () => es.close();
   }, [onFrame]);
+
+  // Which project am I looking at? (X-10) The workspace names the tab, so two
+  // instances are tellable apart in a collapsed tab strip.
+  useEffect(() => {
+    void fetchConfig().then(setInstance).catch(() => {});
+  }, []);
+  const workspace = instance?.workingDir ? folderName(instance.workingDir) : null;
+  useEffect(() => {
+    document.title = tabTitle(workspace);
+  }, [workspace]);
 
   // If the focused session vanished (closed), fall back to another (or none).
   useEffect(() => {
@@ -446,6 +461,7 @@ export function App() {
         sessions={sessionList}
         focusedId={focusedId}
         connected={connected}
+        instance={instance}
         onFocus={focus}
         onNew={() => void newSession()}
         onClose={(id) => void closeOne(id)}
@@ -496,6 +512,7 @@ function SessionRail({
   sessions,
   focusedId,
   connected,
+  instance,
   onFocus,
   onNew,
   onClose,
@@ -503,6 +520,7 @@ function SessionRail({
   sessions: SessionSlice[];
   focusedId: string | null;
   connected: boolean;
+  instance: InstanceConfig | null;
   onFocus: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
@@ -530,6 +548,14 @@ function SessionRail({
         <span className="brand">JLCode</span>
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "connecting…"} />
       </div>
+      {/* The workspace this instance serves (X-10): abbreviated to stay readable
+          in the narrow rail, full path on hover. Per instance, so it sits with
+          the brand rather than on each session card. */}
+      {instance?.workingDir ? (
+        <div className="rail-workspace" title={instance.workingDir}>
+          {abbreviatePath(instance.workingDir, instance.homeDir)}
+        </div>
+      ) : null}
       <button className="rail-new" onClick={onNew} title="new session">
         + New
       </button>

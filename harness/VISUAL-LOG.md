@@ -394,3 +394,24 @@ two-line file read "3 lines".
 Not exercised visually (covered by tests): the live path (a block appearing as
 the turn streams — the same `entryView` shape now goes over SSE), and an empty
 result rendering as `(no output)`.
+
+---
+
+## X-10 — the served workspace in the rail + tab title · 2026-07-28 · ✅ looked good
+
+**Screenshot:** [`visual/x10-workspace.png`](visual/x10-workspace.png)
+
+Ran a second instance from a *different* directory (`~/work2/general/JLCode-peek`,
+fake driver, isolated dirs) — the actual complaint being that two projects'
+tabs are indistinguishable. Read back from the live page via CDP:
+
+- **`document.title` → `JLCode-peek`** — the **project folder**, which is the
+  point: the tab used to say "JLCode", the name of the tool, on every instance.
+- **Rail header → `~/work2/…/JLCode-peek`** — under the brand, monospace, muted;
+  home collapsed to `~` and the middle elided so it fits the narrow rail.
+- **Hover title → `/home/lansford/work2/general/JLCode-peek`** — the full path is
+  still there, one hover away.
+
+Not exercised visually (covered by tests): the no-home / short-path forms of the
+abbreviation, and the `<label> — <folder>` tab composition (X-09 supplies the
+label).

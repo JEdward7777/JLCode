@@ -90,6 +90,16 @@ body {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
 }
+/* The served workspace (X-10) — the instance's identity, under the brand. */
+.rail-workspace {
+  padding: 7px 14px 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .rail-new {
   margin: 10px 12px 4px;
   padding: 7px 10px;

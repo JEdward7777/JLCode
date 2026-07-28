@@ -6,6 +6,7 @@
  * resumes. Streaming (SSE), the browser UI, and auth arrive with full Phase 5.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -287,6 +288,11 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json({
       name: config.name,
       model: config.model,
+      // The workspace this instance serves (X-10). Per *instance*, not per
+      // conversation — which is why it rides on /config. `homeDir` lets the
+      // browser abbreviate it to `~/…`; only this side knows the home path.
+      workingDir: deps.workingDir,
+      homeDir: os.homedir(),
       mode: config.defaultMode,
       approval: config.defaultApproval,
       reasoningEffort: config.reasoningEffort ?? null,

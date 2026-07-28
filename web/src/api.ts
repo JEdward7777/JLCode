@@ -305,6 +305,23 @@ export async function approve(
   await postJson(`/session/${id}/approve`, decision);
 }
 
+/** Per-instance identity from GET /config: which config is selected and, since
+ *  X-10, which workspace this server was launched in. */
+export interface InstanceConfig {
+  name: string;
+  model: string;
+  workingDir?: string;
+  homeDir?: string;
+}
+
+/** The instance's config + workspace. Fetched once on load; `serve` is pinned to
+ *  the directory it was launched in, so this doesn't change under us. */
+export async function fetchConfig(): Promise<InstanceConfig | null> {
+  const res = await fetch("/config");
+  if (!res.ok) return null; // e.g. no config selected for this dir — the app still runs
+  return (await res.json()) as InstanceConfig;
+}
+
 /** MCP server status for the panel (P7b) — read-only; settings files are the
  *  source of truth and are edited by hand or via `jlcode mcp`. */
 export async function fetchMcpStatus(): Promise<McpStatus> {

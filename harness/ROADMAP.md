@@ -148,7 +148,13 @@ line scrolls inside its own box, never the page (measured in Chrome). `entryView
 `entry` events now go over SSE through that same projection** — one shape whether you watched it
 arrive or reloaded, and the opaque signed `reasoning` blobs (D-14) stop being pushed to every tab.
 
-**293 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
+**X-10 shipped 2026-07-28 — you can tell two instances apart.** `GET /config` carries the
+instance's `workingDir` (+ `homeDir` so the browser can shorten it); the rail header shows
+`~/work2/…/JLCode` with the full path on hover, and the **tab title is the project folder name**
+(Joshua's call — "JLCode" names the tool, not the project). `tabTitle()` already takes an optional
+label first, which is where X-09 plugs in.
+
+**305 Tier-0/1 green** (+2 replayed Fable). **Next: P7c** — live
 validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
 slice, logged in `VISUAL-LOG.md` (through P7b).
 
@@ -630,7 +636,6 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-11)
 **conversation labels — auto-titled + hand-editable (X-09)** ·
-**show the served workspace in the page + tab title (X-10)** ·
 Notifications (external push, P-02) · MCP client (KiloCode `mcp_settings` format) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·

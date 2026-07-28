@@ -62,6 +62,18 @@ describe("dev server", () => {
     expect((await res.json()).ok).toBe(true);
   });
 
+  it("reports the config and the workspace it serves (X-10)", async () => {
+    const res = await makeApp().request("/config");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string; model: string; workingDir: string; homeDir: string };
+    expect(body.name).toBe("Test");
+    expect(body.model).toBe("m");
+    // The browser names its tab after this; without it two instances look alike.
+    expect(body.workingDir).toBe("/work/test");
+    expect(typeof body.homeDir).toBe("string"); // so the client can shorten it to ~/…
+    expect(body.homeDir.length).toBeGreaterThan(0);
+  });
+
   it("starts a thread and retains it across calls", async () => {
     const app = makeApp();
     const first = await post(app, "/chat", { text: "hello" });
