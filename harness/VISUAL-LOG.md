@@ -482,3 +482,35 @@ eyes:
 
 Not exercised visually (covered by tests): the deny path, the trimming, and the
 hold-until-the-batch-drains ordering with two tool calls in one assistant message.
+
+---
+
+## D-52 — a queued message is consumed mid-run · 2026-07-28 · ✅ looked good
+
+**Screenshots:** [`visual/d52-queued-chip.png`](visual/d52-queued-chip.png) ·
+[`visual/d52-queued-consumed.png`](visual/d52-queued-consumed.png)
+
+Fake agent driver, isolated dirs, `full-auto` so the run proceeds unattended.
+Started a long turn from the composer (`run:sleep 8` → a real backgrounded
+command), then typed a second message *while it ran* and clicked **Queue** —
+driven through the page, not the API. Confirmed with my own eyes:
+
+- **While running**, the composer is in queue mode ("Queue a message for the next
+  turn…  (Enter to queue)", Queue button), the **background tasks** card shows
+  `sleep 8` with a live elapsed counter and a **Kill** button, and the queued
+  message sits above the composer as a `QUEUED` chip with its ✕.
+- **At the tool-loop boundary the chip cleared on its own** — no reload, no
+  further input — and the message appeared in the transcript as a normal user
+  bubble **directly under the `run_command` result**, which is the boundary D-52
+  moves it to.
+- **The model answered it in the very next turn**: the fake driver replied
+  "You said: Probably should rebase things as well." Before this fix that reply
+  could not have come until the whole run had settled.
+- Read back from the page: `entries` = `user assistant tool user assistant`, and
+  `document.querySelector('.queue')` → gone.
+
+This is the exact message text from Joshua's stuck live session, used deliberately
+so the peek reproduces the reported symptom rather than a synthetic stand-in.
+
+Not exercised visually (covered by tests): the multi-message flush at one boundary,
+and the hold-behind-a-soft-stop.

@@ -218,4 +218,82 @@ describe("queued message (D-34)", () => {
     const users = session.conversation.entries.filter((e) => e.type === "user").map((e: any) => e.text);
     expect(users).toEqual(["A", "B"]);
   });
+
+  // D-52. The boundary is each pass of the tool loop, not the settle to idle:
+  // a long autonomous run must see a queued message while it can still act on it.
+  it("injects a mid-run queued message at the next tool-loop boundary", async () => {
+    let n = 0;
+    const driver: LlmDriver = {
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        n++;
+        for (const ev of n <= 3 ? toolCallEvents("run_command", { command: `echo step${n}` }) : textEvents("all done")) {
+          yield ev;
+        }
+      },
+    };
+    const { session, tmp } = toolSession(driver);
+    let queued = false;
+    session.onEvent((e) => {
+      if (e.type === "tool-end" && !queued) {
+        queued = true; // typed while the run is in full swing
+        void session.enqueue("actually, stop and do it differently");
+      }
+    });
+
+    await session.send("go");
+    const kinds = session.conversation.entries.map((e) => e.type).join(" ");
+    // The remark lands after the FIRST tool result — not after the final answer.
+    expect(kinds).toBe("user assistant tool user assistant tool assistant tool assistant");
+    expect(session.queuedMessages).toHaveLength(0);
+    // It really reached the model: the turn after it saw a user message last.
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("flushes the whole queue at one boundary, in order", async () => {
+    let n = 0;
+    const driver: LlmDriver = {
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        n++;
+        for (const ev of n === 1 ? toolCallEvents("run_command", { command: "echo one" }) : textEvents("done")) {
+          yield ev;
+        }
+      },
+    };
+    const { session, tmp } = toolSession(driver);
+    session.onEvent((e) => {
+      if (e.type === "tool-start") session.setQueue([{ text: "B" }, { text: "C" }, { text: "D" }]);
+    });
+
+    await session.send("A");
+    const users = session.conversation.entries.filter((e) => e.type === "user").map((e: any) => e.text);
+    expect(users).toEqual(["A", "B", "C", "D"]);
+    expect(session.queuedMessages).toHaveLength(0);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("holds a queued message back behind a soft stop", async () => {
+    // A stopped loop takes no further turn, so injecting would strand the message.
+    let n = 0;
+    const driver: LlmDriver = {
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        n++;
+        for (const ev of n === 1 ? toolCallEvents("run_command", { command: "echo one" }) : textEvents("done")) {
+          yield ev;
+        }
+      },
+    };
+    const { session, tmp } = toolSession(driver);
+    session.onEvent((e) => {
+      if (e.type === "tool-start") {
+        void session.enqueue("later, please");
+        session.stop("soft");
+      }
+    });
+
+    await session.send("A");
+    const users = session.conversation.entries.filter((e) => e.type === "user").map((e: any) => e.text);
+    expect(users).toEqual(["A"]); // still queued, not injected into a dead loop
+    expect(session.queuedMessages).toHaveLength(1);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
 });

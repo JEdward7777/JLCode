@@ -145,6 +145,17 @@ transcript. Push discipline changed the same day — **push after every green co
 because `npx github:…` is how JLCode is launched; note npx caches by *spec string*, so a push
 alone doesn't reach the user.
 
+**D-52 shipped 2026-07-28 — queued messages actually get consumed (bug fix).** Joshua reported a
+queued message sitting unconsumed through a whole run; the live `cv_9bbb7bb76b12` log confirmed it —
+**one** user entry after fifty entries of tool calls. `drainQueue()` was only reachable at the bottom
+of `advance()`, so the "turn boundary" D-34 promised was really the *settle to idle*: during a long
+autonomous run the queue waited for the agent to finish everything, which is exactly when it is
+useless. Now `flushPendingUser()` (the D-51 seam) appends the queue as user entries at **each pass of
+the tool loop**, before the next LLM call, flushing **all** pending messages in order. It never
+splits a tool batch, and it is held back behind a stop (a stopped loop takes no further turn, so an
+injected message would strand unanswered). The settle-time `drainQueue()` remains for the message
+that arrives after a run's last LLM call. Peeked in Chrome (VISUAL-LOG "D-52").
+
 **D-51 shipped 2026-07-28 — a pause is an opening to speak.** Whatever is sitting in the composer
 when you click **Approve** or **Deny** rides along with the decision (`note` on `ApprovalDecision`)
 and lands in the transcript as an ordinary **user** entry, so it is in the replayed window on the

@@ -840,19 +840,38 @@ export class Session {
     await this.advance();
   }
 
-  /** Append a remark that rode in on an approval decision (D-51). Only safe with
-   *  no tool call outstanding, so every call site is guarded by a drained queue. */
-  private flushNote(): void {
-    const text = this.pendingNote;
-    if (!text) return;
-    this.pendingNote = undefined;
+  /** Append one user entry mid-run and announce it (the shared seam behind the
+   *  approval note and the mid-run queue drain). */
+  private appendUserText(text: string): void {
     const entry = this.pushEntry({ type: "user", text });
     this.emit({ type: "user", entryId: entry.id, text });
   }
 
+  /** Land everything the user has said that is waiting to enter the conversation:
+   *  a remark that rode in on an approval decision (D-51), then the pending queue
+   *  (D-52 — **all** of it, in order, so three things typed while waiting are all
+   *  seen before the model re-plans).
+   *
+   *  Only safe with no tool call outstanding: tool results must follow their
+   *  assistant message unbroken, so every call site is guarded by a drained
+   *  batch. The queue is held back behind a stop — a stopped loop takes no
+   *  further turn, so injecting there would strand the message unanswered. */
+  private flushPendingUser(): void {
+    if (this.pendingNote) {
+      const text = this.pendingNote;
+      this.pendingNote = undefined;
+      this.appendUserText(text);
+    }
+    if (this.stopScope || this.queue.length === 0) return;
+    const pending = this.queue;
+    this.queue = [];
+    this.emit({ type: "queue", queue: [] });
+    for (const m of pending) this.appendUserText(m.text);
+  }
+
   private async advance(): Promise<void> {
     this.status = "running";
-    if (this.pendingToolCalls.length === 0) this.flushNote();
+    if (this.pendingToolCalls.length === 0) this.flushPendingUser();
     for (let iter = 0; iter < this.maxToolIterations; iter++) {
       // Global stop observed at a turn boundary (D-34): soft or hard both settle
       // here; a hard stop has already aborted/killed/cleared.
@@ -872,7 +891,10 @@ export class Session {
         }
         this.pendingToolCalls.shift(); // "done" → dequeue
       }
-      this.flushNote(); // batch drained — a held remark can land now (D-51)
+      // Batch drained — this is the turn boundary (D-34). Anything the user has
+      // said since lands *here*, before the next LLM call, so a queued message
+      // steers the run it was typed during instead of arriving after it (D-52).
+      this.flushPendingUser();
 
       // A stop requested *during* this iteration's tool run (soft or hard): take
       // no further LLM turn. Running commands were allowed to finish above.
@@ -988,7 +1010,8 @@ export class Session {
     this.emit({ type: "title", title: clean, source });
   }
 
-  // ---- Queued message (D-34): typed mid-turn, applied FIFO at a turn boundary.
+  // ---- Queued message (D-34): typed mid-turn, applied at a turn boundary — the
+  // boundary being **each pass of the tool loop** (D-52), not the settle to idle.
 
   /** Queue a message to apply at the next turn boundary. If the session is idle,
    *  it is sent right away (the boundary is now). Returns the queued id. */
@@ -1004,8 +1027,12 @@ export class Session {
     this.emit({ type: "queue", queue: [...this.queue] });
   }
 
-  /** At a settled boundary, apply the next queued message (FIFO), unless stopped
-   *  or cap-blocked. */
+  /** Settle-time drain: start a fresh turn from the head of the queue, unless
+   *  stopped or cap-blocked. A running loop no longer relies on this — it flushes
+   *  the queue at each pass (D-52) — but a message that arrives *after* the last
+   *  LLM call of a run still needs a turn opened for it, and that is this. The
+   *  rest of the queue rides along: `send` → `advance` flushes it before the
+   *  first LLM call, so the whole backlog lands together. */
   private async drainQueue(): Promise<void> {
     if (this.status !== "idle" || this.stopScope || this.capReached) return;
     const next = this.queue.shift();
