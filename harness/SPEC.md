@@ -67,6 +67,13 @@ Each configuration carries:
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
 | Compaction settings (§15) | **Compaction model** (default = the working model; overridable to a cheaper one, with the compactor-fit guard); **auto** on/off; **headroom buffer** (default ~20K tokens); **keep-recent tokens** (default ~8K verbatim); **trigger modes**. Budget is derived from the model's `context_length` (from OpenRouter metadata). |
 
+**Project-scoped instructions (planned, X-15).** The addendum above is per *config* (per client).
+A **workspace** cannot yet ship instructions of its own: nothing reads `AGENTS.md` (or
+`CLAUDE.md`/`.clinerules`) from the launch directory, so a repo's harness does not auto-integrate.
+When added it appends to the base prompt ahead of the per-config addendum, is read **once at
+session start** (the system prompt is the stable prompt-cache prefix, §22/D-26 — re-reading it per
+turn would churn the cache), and is size-capped and visible. See X-15 for the open choices.
+
 Configuration UX:
 
 - **Filter-search** the config list by typing (KiloCode-style): type `Opus` to narrow,
