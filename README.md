@@ -80,7 +80,16 @@ along with **Approve**/**Deny** and joins the transcript, so you can redirect th
 run without waiting for the queue to drain at the next turn boundary. Each thread names
 itself after the first exchange (rename it with the ✎ on its rail card), and the
 tab title reads `<thread> — <project folder>`, so two instances in two projects
-stay tellable apart. Screenshots of each slice are in
+stay tellable apart.
+
+Past threads are in the rail too, under **HISTORY** below the live ones — filtered
+to the folder you're serving, with an *all folders* toggle. Clicking one **peeks**
+at it: the transcript renders read-only from disk, with branch arrows to walk it,
+while whatever was running keeps running behind you. Nothing is created by
+looking — **typing is what picks the thread back up**, from the branch you're
+looking at, and the card moves up into LIVE. That also means a browser tab left
+open across a restart heals itself: the session it knew is gone, but the thread
+is right there in the list. Screenshots of each slice are in
 [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md).
 
 MCP tools pass the same gate and fence as native ones. JLCode can't take a

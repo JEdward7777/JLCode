@@ -219,9 +219,28 @@ raised it, which is the prompting **D-50** asked for; D-50 still governs the *ho
 new sessions only, and must say so), and the key field stays a hand-edit. Full row in
 [`DECISIONS.md`](DECISIONS.md).
 
-**334 Tier-0/1 green** (+2 replayed Fable). **Next: X-12 (designed above), then P7c** — live
-validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
-slice, logged in `VISUAL-LOG.md` (through P7b).
+**X-12a shipped 2026-07-31 — you can open an old conversation from the page.** The endpoints had
+existed since Phase 4 with no UI over them; now the rail carries **HISTORY** under **LIVE** (Joshua's
+placement call — one rail, two temperatures of the same concept), each section independently
+scrolling and collapsible, split by a draggable divider whose position persists. Clicking a row
+**peeks**: the transcript renders read-only from `GET /conversation/:id` with branch arrows that move
+a *local* leaf — no `Session`, no rail card, nothing written, not even an `active-leaf` record — while
+a running turn keeps streaming behind it. **Typing is the promotion**: `/chat` now takes
+`conversationId` (+ optional `leaf`) and materializes the session, continuing the branch you were
+looking at. That same fallback heals a **stale browser tab** across a restart, and it **attaches** to
+a live session already on that conversation rather than duplicating it (the X-14 hazard). Also fixed
+in here: `list()` compared `workingDir` as a raw string, so a symlinked or trailing-slash launch path
+split one project into two invisible buckets — both sides are canonicalized now. Pre-H-04 logs get a
+"can't be resumed, start a fresh thread" card instead of a raw provider error (`isUnresumable`).
+First browser-side preference mechanism lands as `web/src/prefs.ts` — **X-16 and X-13 add keys to it,
+they do not grow a second path**. Peeked in Chrome (VISUAL-LOG "X-12a"), where two layout calls were
+made that mocks could not have caught: the live section holds a *cap* rather than a fixed height, and
+the divider renders only when there is something to resize.
+
+**351 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (delete as a reversible masking flag +
+rename from a history row — both designed in `DECISIONS.md`, both deliberately cut from X-12a since
+neither is needed to *read* an old thread), **then P7c** — live validation against the real
+`file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 

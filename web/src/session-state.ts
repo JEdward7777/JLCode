@@ -108,6 +108,9 @@ export function sliceFromDescriptor(d: SessionDescriptor): SessionSlice {
  *  response) into a slice. */
 export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   const next = { ...s };
+  // Known from the first roster frame, before any tree is loaded — the rail
+  // needs it to keep a live thread out of the history list (X-12).
+  if (state.conversationId) next.conversationId = state.conversationId;
   if (state.title !== undefined) next.title = state.title;
   if (state.mode) next.mode = state.mode;
   if (state.approval) next.approval = state.approval;
@@ -218,4 +221,21 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
     default:
       return s;
   }
+}
+
+/**
+ * Does this failure mean the conversation can never be resumed? (X-12)
+ *
+ * A log recorded before the H-04 fix (2026-07-28) stored streamed
+ * `reasoning_details` as several partial blocks plus an orphan signature, and
+ * the provider rejects the replayed window with `Invalid signature in thinking
+ * block`. The log is append-only and is never rewritten, so no retry and no
+ * repair-on-read can help — the history UI has to say so and offer a fresh
+ * thread rather than surfacing a raw provider error the user can only re-trigger.
+ *
+ * Matched on the provider's wording because that is all that reaches the client:
+ * the message is relayed through `/chat`'s 409 body, not a typed error code.
+ */
+export function isUnresumable(message: string): boolean {
+  return /invalid signature/i.test(message);
 }

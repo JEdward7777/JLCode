@@ -116,6 +116,124 @@ body {
   color: var(--text);
   border-color: var(--accent);
 }
+/* LIVE over HISTORY (X-12). The wrapper is the flex context the two sections
+   share; each owns its own scroller, so a long history can never push the live
+   cards out of view — the drawback that made a rail list look unworkable. */
+.rail-sections {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.rail-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 0;
+}
+/* Collapsed, a section is just its header — the other takes the whole rail. */
+.rail-section.collapsed {
+  flex: 0 0 auto;
+}
+.rail-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.rail-section-head:hover {
+  color: var(--text);
+}
+.rail-section-head .caret {
+  font-size: 9px;
+  width: 9px;
+}
+.rail-section-title {
+  flex: 1;
+  text-align: left;
+}
+.rail-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+/* Drag to reposition the split. The hit area is taller than the drawn grip so
+   the handle is catchable without a wide band of dead rail; the grip itself has
+   to be *visible* or the divider reads as an accidental gap. */
+.rail-divider {
+  position: relative;
+  flex: 0 0 auto;
+  height: 9px;
+  margin: 2px 0;
+  cursor: row-resize;
+  background: linear-gradient(transparent 4px, var(--border) 4px, var(--border) 5px, transparent 5px);
+}
+.rail-divider::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  width: 26px;
+  height: 3px;
+  margin-left: -13px;
+  border-radius: 2px;
+  background: #3b4560;
+}
+.rail-divider:hover::after {
+  background: var(--accent);
+}
+/* While dragging, keep the cursor and stop the drag from selecting text. */
+body.row-resizing {
+  cursor: row-resize;
+  user-select: none;
+}
+.rail-history-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.all-dirs {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+/* A past thread reads quieter than a running one — same shape, less ink. */
+.rail-item.history {
+  background: transparent;
+  border-style: dashed;
+}
+.rail-item.history:hover {
+  background: var(--panel-2);
+}
+.rail-item.history .rail-model {
+  font-weight: 500;
+}
+.rail-when,
+.rail-dir {
+  color: var(--muted);
+  font-size: 11px;
+}
+.rail-dir {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .rail-list {
   flex: 1;
   overflow-y: auto;
@@ -123,6 +241,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-height: 0;
 }
 .rail-empty {
   color: var(--muted);
@@ -365,6 +484,45 @@ body {
 .notice {
   color: var(--danger);
   font-size: 14px;
+}
+/* A pre-H-04 log the model refuses to replay (X-12): readable, not resumable. */
+.notice.unrecoverable {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* A history peek (X-12): the same transcript, marked as a look at the past so
+   it is never mistaken for the live session it sits in front of. */
+.peek .topbar {
+  background: var(--panel-2);
+}
+.peek-badge {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.peek-dir {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
 }
 
 .composer {

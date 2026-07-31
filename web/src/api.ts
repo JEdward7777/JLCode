@@ -176,6 +176,10 @@ export interface QueuedMessage {
  *  the action POSTs (see server stateOf). */
 export interface SessionState {
   status?: string;
+  /** Which conversation this session holds. Present on every settled state, so
+   *  the rail knows a session's conversation before its tree is loaded — which
+   *  is what keeps LIVE and HISTORY disjoint (X-12). */
+  conversationId?: string;
   title?: string | null; // the thread's label (X-09), null until it has one
   mode?: Mode;
   approval?: ApprovalPolicy; // the approval policy (D-08)
@@ -212,6 +216,44 @@ export type BusFrame =
   | { type: "session-added"; session: SessionDescriptor }
   | { type: "session-removed"; sessionId: string }
   | { type: "session-event"; sessionId: string; event: WireEvent };
+
+/** A row in the persisted history (X-12). Rows come from `index.jsonl`, so this
+ *  is everything known about a thread without opening it: no entry count, no
+ *  spend. `title` is absent on threads whose first exchange predates X-09. */
+export interface ConversationRow {
+  id: string;
+  workingDir: string;
+  createdAt: string;
+  title?: string;
+}
+
+/** A conversation read from disk (X-12) — the peek's source. Distinct from
+ *  `loadTree`, which reads a *live* session; nothing here implies a session. */
+export interface LoadedConversation {
+  id: string;
+  activeLeaf: string | null;
+  entries: EntryView[];
+}
+
+/** History for a directory (D-09). Defaults to the server's workspace; `"all"`
+ *  crosses projects. Newest first, by `createdAt`. */
+export async function listConversations(dir?: "all"): Promise<ConversationRow[]> {
+  const res = await fetch(dir === "all" ? "/conversations?dir=all" : "/conversations");
+  if (!res.ok) return [];
+  return ((await res.json()) as { conversations?: ConversationRow[] }).conversations ?? [];
+}
+
+/** Load a persisted conversation for a read-only peek (X-12). Creates nothing —
+ *  no session, no rail card; the session is materialized by the first message. */
+export async function loadConversation(id: string): Promise<LoadedConversation> {
+  const res = await fetch(`/conversation/${id}`);
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `could not load conversation (${res.status})`);
+  }
+  const data = (await res.json()) as { id: string; activeLeaf?: string | null; entries?: EntryView[] };
+  return { id: data.id, activeLeaf: data.activeLeaf ?? null, entries: data.entries ?? [] };
+}
 
 /** Create a fresh live session; returns its id. */
 export async function createSession(): Promise<string> {
@@ -285,9 +327,26 @@ async function postJson(url: string, body: unknown): Promise<any> {
   return res.json().catch(() => ({}));
 }
 
-/** Send a user message. Deltas arrive over SSE; this resolves at turn end. */
-export async function sendChat(id: string, text: string): Promise<void> {
-  await postJson("/chat", { sessionId: id, text });
+/** Send a user message. Deltas arrive over SSE; this resolves at turn end.
+ *
+ *  `conversationId` is the revival fallback (X-12): when the session id misses —
+ *  a peek being promoted, or a stale tab whose session died with a previous
+ *  process — the server attaches to a live session on that conversation or
+ *  resumes it from disk. `leaf` continues a chosen branch instead of the
+ *  persisted one. Returns the session actually used, which is *not* necessarily
+ *  the id passed in. */
+export async function sendChat(
+  id: string | null,
+  text: string,
+  opts: { conversationId?: string; leaf?: string | null } = {},
+): Promise<{ sessionId: string }> {
+  const body = await postJson("/chat", {
+    ...(id ? { sessionId: id } : {}),
+    ...(opts.conversationId ? { conversationId: opts.conversationId } : {}),
+    ...(opts.leaf ? { leaf: opts.leaf } : {}),
+    text,
+  });
+  return { sessionId: body.sessionId as string };
 }
 
 /** Resolve a pending approval (D-16): approve/deny, optionally with edited args

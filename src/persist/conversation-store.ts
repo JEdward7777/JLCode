@@ -18,6 +18,30 @@ export interface ConversationMeta {
   configName?: string;
 }
 
+/**
+ * Canonicalize a working directory so the history filter can't split one project
+ * into two invisible buckets (X-12). `list()` compares stored dirs as exact
+ * strings, so a trailing slash, a relative path, or a launch through a symlink
+ * files conversations under a directory the next launch won't match. Resolving
+ * the symlink is what makes it work for rows written *before* this existed, so
+ * this runs on both sides of the compare rather than only at write time.
+ *
+ * A dir that no longer exists (a deleted project) can't be realpath'd — fall back
+ * to the lexical form, which still fixes the trailing-slash and relative cases.
+ */
+export function normalizeWorkingDir(dir: string, cache?: Map<string, string>): string {
+  const cached = cache?.get(dir);
+  if (cached !== undefined) return cached;
+  let out = path.resolve(dir);
+  try {
+    out = fs.realpathSync.native(out);
+  } catch {
+    /* gone or unreadable — the lexical form is the best we can do */
+  }
+  cache?.set(dir, out);
+  return out;
+}
+
 export interface IndexRow {
   id: string;
   workingDir: string;
@@ -94,15 +118,16 @@ export class ConversationStore {
    *  fire-and-forget `create()`, would let the index write outlive teardown). */
   async create(meta: ConversationMeta): Promise<void> {
     const createdAt = new Date().toISOString();
+    const workingDir = normalizeWorkingDir(meta.workingDir); // canonical on the way in (X-12)
     await Promise.all([
       this.log(meta.id).append({
         kind: "header",
         id: meta.id,
-        workingDir: meta.workingDir,
+        workingDir,
         configName: meta.configName,
         createdAt,
       }),
-      this.index.append({ id: meta.id, workingDir: meta.workingDir, createdAt }),
+      this.index.append({ id: meta.id, workingDir, createdAt }),
     ]);
   }
 
@@ -184,13 +209,18 @@ export class ConversationStore {
     }
     const rows: IndexRow[] = [];
     const titles = new Map<string, string>(); // later title records win (X-09)
+    // Compare canonical dirs, not raw strings (X-12). Rows written before
+    // `create()` normalized are the reason this resolves each row rather than
+    // only the filter; the cache keeps that to one syscall per distinct dir.
+    const dirCache = new Map<string, string>();
+    const wanted = workingDir === undefined ? undefined : normalizeWorkingDir(workingDir, dirCache);
     for (const r of ConversationStore.parseLines(text)) {
       if (r.kind === "title") {
         if (typeof r.id === "string" && typeof r.title === "string") titles.set(r.id, r.title);
         continue;
       }
       if (typeof r.id !== "string" || typeof r.workingDir !== "string") continue;
-      if (workingDir !== undefined && r.workingDir !== workingDir) continue;
+      if (wanted !== undefined && normalizeWorkingDir(r.workingDir, dirCache) !== wanted) continue;
       rows.push({
         id: r.id,
         workingDir: r.workingDir,

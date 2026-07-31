@@ -5,7 +5,7 @@
  * and the events that flip status/spend/prompt state.
  */
 import { describe, it, expect } from "vitest";
-import { newSlice, reduceEvent, sliceFromDescriptor, applyState } from "../web/src/session-state";
+import { newSlice, reduceEvent, sliceFromDescriptor, applyState, isUnresumable } from "../web/src/session-state";
 import type { SessionDescriptor, WireEvent } from "../web/src/api";
 
 describe("session slice from a roster descriptor", () => {
@@ -179,5 +179,22 @@ describe("conversation label (X-09)", () => {
     expect(s.title).toBe("Named");
     s = applyState(s, { title: null }); // an untitled thread reports null, not absent
     expect(s.title).toBeNull();
+  });
+});
+
+describe("isUnresumable (X-12)", () => {
+  it("recognizes the pre-H-04 replay rejection in the provider's wording", () => {
+    // The message is relayed through /chat's 409 body — there is no typed code
+    // to match on, so the string is the contract.
+    expect(isUnresumable("Invalid signature in thinking block")).toBe(true);
+    expect(isUnresumable("provider error: invalid signature")).toBe(true);
+  });
+
+  it("does not condemn a thread over an ordinary failure", () => {
+    // Offering "start a fresh thread" for a transient error would throw away a
+    // perfectly good conversation, so this must not over-match.
+    expect(isUnresumable("no model config selected for the server directory")).toBe(false);
+    expect(isUnresumable("session is busy; cannot switch branch mid-turn")).toBe(false);
+    expect(isUnresumable("request failed (500)")).toBe(false);
   });
 });

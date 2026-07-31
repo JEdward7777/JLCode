@@ -23,6 +23,8 @@ import {
   fetchConfig,
   fetchJournal,
   fetchMcpStatus,
+  listConversations,
+  loadConversation,
   loadTree,
   openBus,
   sendChat,
@@ -30,7 +32,9 @@ import {
   type ApprovalRequest,
   type AskUserRequest,
   type BusFrame,
+  type ConversationRow,
   type EntryView,
+  type LoadedConversation,
   type InstanceConfig,
   type JournalRecord,
   type LearnAnswers,
@@ -49,9 +53,11 @@ import {
   reduceEvent,
   sliceFromDescriptor,
   applyState,
+  isUnresumable,
   type LiveAssistant,
   type SessionSlice,
 } from "./session-state";
+import { readBoolPref, readNumberPref, writePref } from "./prefs";
 
 // Whimsical working-status words (SPEC §11 note: percolating…).
 const WORKING = ["percolating…", "pondering…", "noodling…", "whirring…", "cogitating…", "ruminating…"];
@@ -69,6 +75,24 @@ type SliceAction =
   | { t: "event"; id: string; event: import("./api").WireEvent }
   | { t: "tree"; id: string; entries: EntryView[]; activeLeaf: string | null; conversationId: string | null }
   | { t: "patch"; id: string; patch: Partial<SessionSlice> };
+
+/** A read-only look at a persisted conversation (X-12). Deliberately *not* a
+ *  slice: a peek has no `Session` behind it, no rail card, and no event stream —
+ *  it is a view over disk. `leaf` is local (branch arrows move the view without
+ *  writing an `active-leaf` record), and it is what the first message continues
+ *  from when the peek is promoted into a live session. */
+type PeekState = {
+  row: ConversationRow;
+  conv: LoadedConversation | null; // null while loading
+  leaf: string | null;
+  input: string;
+  error: string | null;
+  /** A pre-H-04 log the model rejected on replay: fragmented `reasoning_details`
+   *  are already on disk and the append-only log is never rewritten, so the only
+   *  honest offer is a fresh thread. */
+  unrecoverable: boolean;
+  sending: boolean;
+};
 
 function slicesReducer(state: SliceMap, action: SliceAction): SliceMap {
   switch (action.t) {
@@ -117,6 +141,10 @@ export function App() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   // Which workspace this instance serves (X-10) — per instance, fetched once.
   const [instance, setInstance] = useState<InstanceConfig | null>(null);
+  // Persisted history (X-12) and the read-only peek open over the main pane.
+  const [history, setHistory] = useState<ConversationRow[]>([]);
+  const [showAllDirs, setShowAllDirs] = useState(() => readBoolPref("history.allDirs", false));
+  const [peek, setPeek] = useState<PeekState | null>(null);
 
   const focusedRef = useRef<string | null>(null);
   focusedRef.current = focusedId;
@@ -130,6 +158,7 @@ export function App() {
     window.history.replaceState({}, "", url);
     setJournal([]);
     setDrawerOpen(false);
+    setPeek(null); // focusing a live session leaves the peek (X-12)
   }, []);
 
   // Handle one multiplexed bus frame (D-43): fold session events into their
@@ -172,6 +201,58 @@ export function App() {
     es.onerror = () => setConnected(false);
     return () => es.close();
   }, [onFrame]);
+
+  // ---- Persisted history (X-12). ----
+
+  const refreshHistory = useCallback(async () => {
+    setHistory(await listConversations(showAllDirs ? "all" : undefined).catch(() => []));
+  }, [showAllDirs]);
+
+  // Reload on mount, on the dir-filter toggle, and whenever the roster changes:
+  // closing a session is exactly when its thread should appear under HISTORY,
+  // and promoting a peek is when it should leave.
+  const rosterKey = Object.keys(slices).sort().join(",");
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory, rosterKey]);
+
+  const toggleAllDirs = useCallback(() => {
+    setShowAllDirs((v) => {
+      writePref("history.allDirs", String(!v));
+      return !v;
+    });
+  }, []);
+
+  /** Open a history row read-only. Creates nothing — the rail is untouched and a
+   *  running turn keeps streaming behind the peek. */
+  const openPeek = useCallback((row: ConversationRow) => {
+    setPeek({ row, conv: null, leaf: null, input: "", error: null, unrecoverable: false, sending: false });
+    void loadConversation(row.id)
+      .then((conv) => setPeek((p) => (p?.row.id === row.id ? { ...p, conv, leaf: conv.activeLeaf } : p)))
+      .catch((err: unknown) =>
+        setPeek((p) => (p?.row.id === row.id ? { ...p, error: (err as Error).message } : p)),
+      );
+  }, []);
+
+  /** Promote a peek: the first message materializes the session (X-12). The
+   *  server attaches to a live session on this conversation if one exists, so
+   *  two tabs converge rather than forking the tree (the X-14 hazard). */
+  const promotePeek = useCallback(async () => {
+    const current = peek;
+    const text = (current?.input ?? "").trim();
+    if (!current || !text || current.sending) return;
+    setPeek({ ...current, sending: true, error: null });
+    try {
+      const { sessionId } = await sendChat(null, text, { conversationId: current.row.id, leaf: current.leaf });
+      focus(sessionId); // clears the peek; the slice arrives on the `added` frame
+    } catch (err) {
+      const message = (err as Error).message;
+      // Pre-H-04 logs replay malformed signed reasoning and the provider refuses
+      // the call. Nothing can repair it in place, so say so and offer the door.
+      const unrecoverable = isUnresumable(message);
+      setPeek((p) => (p?.row.id === current.row.id ? { ...p, sending: false, error: message, unrecoverable } : p));
+    }
+  }, [peek, focus]);
 
   // Which project am I looking at? (X-10) The workspace names the tab, so two
   // instances are tellable apart in a collapsed tab strip.
@@ -222,14 +303,19 @@ export function App() {
     async (id: string) => {
       const text = (slices[id]?.input ?? "").trim();
       if (!text) return;
+      const conversationId = slices[id]?.conversationId ?? undefined;
       dispatch({ t: "patch", id, patch: { input: "", notice: null } });
       try {
-        await sendChat(id, text); // the user entry streams back over the bus
+        // The conversation rides along as the revival fallback (X-12): if this
+        // tab's session died with a previous process, the server resumes from
+        // disk instead of 404ing. Costs nothing when the session is alive.
+        const { sessionId } = await sendChat(id, text, { conversationId });
+        if (sessionId !== id) focus(sessionId); // revived under a new id
       } catch (err) {
         notify(id, (err as Error).message);
       }
     },
-    [slices, notify],
+    [slices, notify, focus],
   );
 
   const queueMsg = useCallback(
@@ -472,6 +558,11 @@ export function App() {
 
   const sessionList = Object.values(slices);
   const focused = focusedId ? slices[focusedId] : undefined;
+  // LIVE and HISTORY are disjoint (X-12): a thread that is open above must not
+  // also sit below as a stale copy of itself. Closing a session is what moves it
+  // across, which is the whole "it's still recoverable" story told without words.
+  const liveConversations = new Set(sessionList.map((s) => s.conversationId).filter((c): c is string => Boolean(c)));
+  const pastConversations = history.filter((row) => !liveConversations.has(row.id));
 
   return (
     <div className="app-shell">
@@ -480,12 +571,31 @@ export function App() {
         focusedId={focusedId}
         connected={connected}
         instance={instance}
+        history={pastConversations}
+        showAllDirs={showAllDirs}
+        peekId={peek?.row.id ?? null}
         onFocus={focus}
         onNew={() => void newSession()}
         onClose={(id) => void closeOne(id)}
         onRename={(id, title) => void rename(id, title)}
+        onPeek={openPeek}
+        onToggleAllDirs={toggleAllDirs}
+        onRefreshHistory={() => void refreshHistory()}
       />
-      {focused ? (
+      {peek ? (
+        <PeekPane
+          key={peek.row.id}
+          peek={peek}
+          homeDir={instance?.homeDir}
+          speakingId={speakingId}
+          onSpeak={toggleSpeak}
+          onInput={(input) => setPeek((p) => (p ? { ...p, input } : p))}
+          onSwitchBranch={(leaf) => setPeek((p) => (p ? { ...p, leaf } : p))}
+          onSubmit={() => void promotePeek()}
+          onNewThread={() => void newSession()}
+          onClose={() => setPeek(null)}
+        />
+      ) : focused ? (
         <ChatPane
           key={focused.id}
           slice={focused}
@@ -525,27 +635,87 @@ export function App() {
   );
 }
 
-/** The left rail (D-43): one card per live session with its model, a status dot,
- *  live spend and mode; click to focus, ✕ to close (stop + drop from the bag). */
+/** The left rail: **LIVE** (D-43) over **HISTORY** (X-12) — running loops above,
+ *  persisted threads below, split by a draggable divider. One rail rather than a
+ *  separate drawer because they are the same concept at two temperatures, and
+ *  closing a session visibly moves it from one list to the other.
+ *
+ *  Each section scrolls independently, so a long history can never push the live
+ *  cards off screen, and either collapses to its header when the other needs the
+ *  room. The divider position persists per browser (X-12 prefs). */
 function SessionRail({
   sessions,
   focusedId,
   connected,
   instance,
+  history,
+  showAllDirs,
+  peekId,
   onFocus,
   onNew,
   onClose,
   onRename,
+  onPeek,
+  onToggleAllDirs,
+  onRefreshHistory,
 }: {
   sessions: SessionSlice[];
   focusedId: string | null;
   connected: boolean;
   instance: InstanceConfig | null;
+  history: ConversationRow[];
+  showAllDirs: boolean;
+  peekId: string | null;
   onFocus: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onPeek: (row: ConversationRow) => void;
+  onToggleAllDirs: () => void;
+  onRefreshHistory: () => void;
 }) {
+  const [liveOpen, setLiveOpen] = useState(() => readBoolPref("rail.liveOpen", true));
+  const [historyOpen, setHistoryOpen] = useState(() => readBoolPref("rail.historyOpen", true));
+  const [liveHeight, setLiveHeight] = useState(() => readNumberPref("rail.liveHeight", 240, 80, 900));
+  const sectionsRef = useRef<HTMLDivElement>(null);
+  const liveListRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  // The divider only appears once the live list is actually capped. Dragging a
+  // handle that can't move anything reads as broken, and with two sessions the
+  // section shrinks to fit — so there is genuinely nothing to resize until it
+  // doesn't. Measured rather than guessed: card heights vary.
+  const [liveCapped, setLiveCapped] = useState(false);
+  useEffect(() => {
+    const el = liveListRef.current;
+    setLiveCapped(!!el && el.scrollHeight > el.clientHeight + 1);
+  }, [sessions.length, liveHeight, liveOpen, historyOpen]);
+
+  const toggleLive = () => setLiveOpen((v) => (writePref("rail.liveOpen", String(!v)), !v));
+  const toggleHistory = () => setHistoryOpen((v) => (writePref("rail.historyOpen", String(!v)), !v));
+
+  // Drag the divider: track on the window so a fast drag that leaves the thin
+  // handle keeps working, and clamp so neither section can be dragged away.
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      if (!dragging.current || !sectionsRef.current) return;
+      const top = sectionsRef.current.getBoundingClientRect().top;
+      const max = Math.max(80, sectionsRef.current.clientHeight - 120); // leave history a strip
+      setLiveHeight(Math.min(max, Math.max(80, e.clientY - top)));
+    };
+    const up = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.classList.remove("row-resizing");
+      setLiveHeight((h) => (writePref("rail.liveHeight", String(Math.round(h))), h));
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, []);
+
   const statusLabel = (s: SessionSlice): string => {
     if (s.persistenceFault) return "can’t save"; // outranks everything (D-46)
     if (s.pendingApproval) return "needs approval";
@@ -580,28 +750,146 @@ function SessionRail({
       <button className="rail-new" onClick={onNew} title="new session">
         + New
       </button>
-      <div className="rail-list">
-        {sessions.length === 0 && <div className="rail-empty">no live sessions</div>}
-        {sessions.map((s) => (
-          <div
-            key={s.id}
-            className={`rail-item ${s.id === focusedId ? "focused" : ""}`}
-            onClick={() => onFocus(s.id)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && onFocus(s.id)}
-          >
-            <RailCardHead session={s} dotClass={dotClass(s)} onClose={onClose} onRename={onRename} />
-            <div className="rail-item-meta">
-              <span className={`rail-status ${dotClass(s)}`}>{statusLabel(s)}</span>
-              <span className="rail-spend">${s.spendUsd.toFixed(4)}</span>
-              <span className="rail-mode">{s.mode}</span>
+      <div className="rail-sections" ref={sectionsRef}>
+        <section
+          className={`rail-section ${liveOpen ? "" : "collapsed"}`}
+          /* The drag sets a **cap**, not a fixed height: with two live cards the
+             section shrinks to fit and history starts right below, instead of
+             holding open a band of empty rail. Past the cap it scrolls. Only
+             applies with both open — a collapsed neighbour should yield the rail. */
+          style={liveOpen && historyOpen ? { maxHeight: liveHeight, flex: "0 1 auto" } : undefined}
+        >
+          <button className="rail-section-head" onClick={toggleLive} aria-expanded={liveOpen}>
+            <span className="caret">{liveOpen ? "▾" : "▸"}</span>
+            <span className="rail-section-title">live</span>
+            <span className="rail-count">{sessions.length}</span>
+          </button>
+          {liveOpen && (
+            <div className="rail-list" ref={liveListRef}>
+              {sessions.length === 0 && <div className="rail-empty">no live sessions</div>}
+              {sessions.map((s) => (
+                <div
+                  key={s.id}
+                  className={`rail-item ${s.id === focusedId ? "focused" : ""}`}
+                  onClick={() => onFocus(s.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === "Enter" && onFocus(s.id)}
+                >
+                  <RailCardHead session={s} dotClass={dotClass(s)} onClose={onClose} onRename={onRename} />
+                  <div className="rail-item-meta">
+                    <span className={`rail-status ${dotClass(s)}`}>{statusLabel(s)}</span>
+                    <span className="rail-spend">${s.spendUsd.toFixed(4)}</span>
+                    <span className="rail-mode">{s.mode}</span>
+                  </div>
+                </div>
+              ))}
             </div>
-          </div>
-        ))}
+          )}
+        </section>
+
+        {liveOpen && historyOpen && liveCapped && (
+          <div
+            className="rail-divider"
+            role="separator"
+            aria-orientation="horizontal"
+            title="drag to resize"
+            onMouseDown={() => {
+              dragging.current = true;
+              document.body.classList.add("row-resizing");
+            }}
+          />
+        )}
+
+        <section className={`rail-section ${historyOpen ? "" : "collapsed"}`}>
+          <button className="rail-section-head" onClick={toggleHistory} aria-expanded={historyOpen}>
+            <span className="caret">{historyOpen ? "▾" : "▸"}</span>
+            <span className="rail-section-title">history</span>
+            <span className="rail-count">{history.length}</span>
+          </button>
+          {historyOpen && (
+            <>
+              <div className="rail-list">
+                {history.length === 0 && (
+                  <div className="rail-empty">{showAllDirs ? "no past conversations" : "none in this folder"}</div>
+                )}
+                {history.map((row) => (
+                  <HistoryRow
+                    key={row.id}
+                    row={row}
+                    active={row.id === peekId}
+                    // Only worth showing across projects — in the filtered list
+                    // every row has the same dir as the header already states.
+                    showDir={showAllDirs}
+                    homeDir={instance?.homeDir}
+                    onOpen={() => onPeek(row)}
+                  />
+                ))}
+              </div>
+              <div className="rail-history-foot">
+                <label className="all-dirs" title="show conversations from every folder (D-09)">
+                  <input type="checkbox" checked={showAllDirs} onChange={onToggleAllDirs} /> all folders
+                </label>
+                <button className="icon" title="refresh history" onClick={onRefreshHistory}>
+                  ⟳
+                </button>
+              </div>
+            </>
+          )}
+        </section>
       </div>
     </aside>
   );
+}
+
+/** One persisted thread in the rail's history section (X-12). Read-only by
+ *  nature: clicking peeks. The label is the X-09 title when there is one —
+ *  older logs simply stay untitled and fall back to their short id. */
+function HistoryRow({
+  row,
+  active,
+  showDir,
+  homeDir,
+  onOpen,
+}: {
+  row: ConversationRow;
+  active: boolean;
+  showDir: boolean;
+  homeDir?: string;
+  onOpen: () => void;
+}) {
+  return (
+    <div
+      className={`rail-item history ${active ? "focused" : ""}`}
+      onClick={onOpen}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === "Enter" && onOpen()}
+      title={row.title ? `${row.title} — ${row.workingDir}` : row.workingDir}
+    >
+      <div className="rail-item-top">
+        <span className="rail-model">{row.title || row.id.slice(0, 12)}</span>
+      </div>
+      <div className="rail-item-meta">
+        <span className="rail-when">{formatWhen(row.createdAt)}</span>
+        {showDir && <span className="rail-dir">{folderName(abbreviatePath(row.workingDir, homeDir))}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** History timestamps, at the resolution you actually scan by: a time today, a
+ *  weekday this week, a date beyond that. Falls back to the raw string rather
+ *  than rendering "Invalid Date" for a row whose `createdAt` never got written. */
+function formatWhen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso || "—";
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const days = (now.getTime() - d.getTime()) / 86_400_000;
+  if (days < 7) return d.toLocaleDateString(undefined, { weekday: "short" }) + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 /** A rail card's top line: status dot, the thread's label (X-09) — auto-titled
@@ -941,6 +1229,146 @@ function ChatPane({
   );
 }
 
+/** A past conversation, read from disk, rendered over the main pane (X-12).
+ *
+ *  Deliberately not a session: opening this creates no `Session`, no rail card,
+ *  and no log record — the rail is untouched and a running turn keeps streaming
+ *  behind it. The composer is simply present, and **typing in it is the
+ *  promotion**: the first message materializes the session server-side. That is
+ *  why there is no "Continue here" button; the thing you'd click it to get is
+ *  the thing you already did.
+ *
+ *  Branch arrows move a *local* leaf — a peek writes nothing, not even an
+ *  `active-leaf` record — and that leaf is what the first message continues
+ *  from, so the branch you are looking at is the branch you resume. */
+function PeekPane({
+  peek,
+  homeDir,
+  speakingId,
+  onSpeak,
+  onInput,
+  onSwitchBranch,
+  onSubmit,
+  onNewThread,
+  onClose,
+}: {
+  peek: PeekState;
+  homeDir?: string;
+  speakingId: string | null;
+  onSpeak: (entryId: string, text: string) => void;
+  onInput: (text: string) => void;
+  onSwitchBranch: (leaf: string) => void;
+  onSubmit: () => void;
+  onNewThread: () => void;
+  onClose: () => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [journal, setJournal] = useState<JournalRecord[]>([]);
+  const entries = peek.conv?.entries ?? [];
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [peek.conv, peek.leaf]);
+
+  const loadJournal = useCallback(() => {
+    void fetchJournal(peek.row.id).then(setJournal).catch(() => {});
+  }, [peek.row.id]);
+
+  const path = pathToLeaf(entries, peek.leaf);
+  const rendered = path.filter(
+    (e) => e.type === "user" || e.type === "tool" || (e.type === "assistant" && (e.text || e.reasoningText)),
+  );
+  const argsByCall = new Map<string, string>();
+  for (const e of path) {
+    if (e.type !== "assistant") continue;
+    for (const call of e.toolCalls ?? []) if (call.id) argsByCall.set(call.id, call.arguments);
+  }
+
+  return (
+    <div className="pane peek">
+      <header className="topbar">
+        <span className="peek-badge" title="read-only — nothing is running">
+          history
+        </span>
+        <span className="pane-model" title={peek.row.workingDir}>
+          {peek.row.title || peek.row.id.slice(0, 12)}
+        </span>
+        <div className="controls">
+          <span className="peek-dir" title={peek.row.workingDir}>
+            {abbreviatePath(peek.row.workingDir, homeDir)}
+          </span>
+          <button className="ghost" onClick={onClose} title="back to the live session">
+            ✕ close
+          </button>
+        </div>
+      </header>
+
+      <div className="thread" ref={scrollRef}>
+        {!peek.conv && !peek.error && <div className="empty">loading…</div>}
+        {peek.conv && rendered.length === 0 && <div className="empty">This thread is empty.</div>}
+        {rendered.map((entry) => {
+          if (entry.type === "tool") {
+            return <ToolBlock key={entry.id} entry={entry} args={entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined} />;
+          }
+          const siblings = childrenOf(entries, entry.parent);
+          const branch =
+            siblings.length > 1
+              ? { index: siblings.findIndex((s) => s.id === entry.id), count: siblings.length, siblings }
+              : null;
+          return (
+            <Message
+              key={entry.id}
+              entry={entry}
+              branch={branch}
+              // Local view move only — no session exists to rewind (X-12).
+              onSwitch={(siblingId) => onSwitchBranch(leafOf(entries, siblingId))}
+              // Edit-forking is a write, and a peek has nothing to write into;
+              // the pencil is suppressed rather than left to fail.
+              readOnly
+              onEdit={() => {}}
+              journal={journal.filter((r) => r.entryId === entry.id)}
+              onNeedJournal={loadJournal}
+              speaking={speakingId === entry.id}
+              onSpeak={onSpeak}
+            />
+          );
+        })}
+        {peek.unrecoverable ? (
+          <div className="notice unrecoverable">
+            <strong>This thread can’t be resumed.</strong> It was recorded before the 2026-07-28 fix
+            (H-04) and its stored reasoning is fragmented, which the model rejects on replay. The log
+            is append-only, so nothing can repair it in place — you can still read it here.
+            <button className="primary" onClick={onNewThread}>
+              Start a fresh thread
+            </button>
+          </div>
+        ) : peek.error ? (
+          <div className="notice">{peek.error}</div>
+        ) : null}
+      </div>
+
+      <footer className="composer">
+        <textarea
+          value={peek.input}
+          placeholder="Continue this thread…  (sending picks it up where you’re looking)"
+          onChange={(e) => onInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+          rows={2}
+          disabled={peek.unrecoverable}
+        />
+        <button onClick={onSubmit} disabled={!peek.input.trim() || peek.sending || peek.unrecoverable}>
+          {peek.sending ? "…" : "Send"}
+        </button>
+      </footer>
+    </div>
+  );
+}
+
 /** Strip the loudest markdown so text-to-speech doesn't read `##`/`*`/backticks. */
 function plainText(md: string): string {
   return md
@@ -1244,6 +1672,7 @@ function Message({
   branch,
   onSwitch,
   onEdit,
+  readOnly = false,
   journal,
   onNeedJournal,
   speaking,
@@ -1253,6 +1682,9 @@ function Message({
   branch: BranchNav | null;
   onSwitch: (siblingId: string) => void;
   onEdit: (entryId: string, text: string) => void;
+  /** A history peek (X-12): reading and branch-walking work, but edit-forking is
+   *  a write with no session to write into, so the pencil is not offered. */
+  readOnly?: boolean;
   journal: JournalRecord[];
   onNeedJournal: () => void;
   speaking: boolean;
@@ -1303,9 +1735,11 @@ function Message({
           <div className="bubble">{entry.text}</div>
           <div className="msg-tools">
             {arrows}
-            <button className="icon" title="edit & fork" onClick={() => { setDraft(entry.text ?? ""); setEditing(true); }}>
-              ✎
-            </button>
+            {!readOnly && (
+              <button className="icon" title="edit & fork" onClick={() => { setDraft(entry.text ?? ""); setEditing(true); }}>
+                ✎
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -514,3 +514,60 @@ so the peek reproduces the reported symptom rather than a synthetic stand-in.
 
 Not exercised visually (covered by tests): the multi-message flush at one boundary,
 and the hold-behind-a-soft-stop.
+
+---
+
+## X-12a — the browser history list · 2026-07-31 · ✅ looked good
+
+**Screenshots:** [`visual/x12-rail.png`](visual/x12-rail.png) ·
+[`visual/x12-peek.png`](visual/x12-peek.png) ·
+[`visual/x12-promoted.png`](visual/x12-promoted.png)
+
+Fake agent driver, isolated config/data dirs, server fenced to a scratch
+workspace. Seeded four threads (one with a real `editFork` branch), then **shut
+the server down and started a new process** — so every thread was genuinely
+history, loaded from disk, with nothing live. Drove the rest through the page.
+Confirmed with my own eyes:
+
+- **The rail carries both lists.** `▾ LIVE 1` over `▾ HISTORY 4`, each with its
+  own scroller. Titles come from X-09 (`How should I structure the`), and a
+  thread recorded before it had one falls back to its short id (`cv_d4d01b768`) —
+  old logs stay untitled rather than being back-filled.
+- **A peek is read-only and creates nothing.** Clicking a row swapped the pane to
+  a `HISTORY`-badged transcript with the thread's title and its `workingDir`; the
+  rail's live card stayed exactly where it was, `GET /sessions` still reported
+  the one auto-created session, and the **pencil is absent** on user messages
+  (edit-fork is a write with nothing to write into).
+- **Branch arrows walk locally.** Stepped `2/2 → 1/2` in the peek: the transcript
+  swapped to the other branch (4 messages instead of 2) while the conversation's
+  **`activeLeaf` on disk never moved** — a peek writes nothing, not even an
+  `active-leaf` record.
+- **Typing is the promotion, and it continues the branch you're looking at.**
+  Typed into the peek composer (real CDP `Input.insertText`) while viewing branch
+  1/2 and sent: the peek closed, **LIVE went 1 → 2 and HISTORY 4 → 3** — the
+  thread moved across the divider, which is the "closing a session leaves it
+  recoverable" story told without words — and the new turn landed on the *viewed*
+  branch (checked on disk: the new entry's parent is that branch's tip, not the
+  persisted leaf).
+- **`all folders` works.** A thread seeded from a second server in a different
+  directory was correctly absent from the default list and appeared under the
+  toggle, tagged `otherproj` against the local rows' `work`.
+- **A stale tab heals.** Restarted the server under the open page: the roster
+  reset to zero, the transcript pane fell back to "No session open" with **no
+  ghost approval card**, and every thread — including the two that had been live
+  — appeared under HISTORY. Reopening one from the list and typing continued it
+  across the process boundary.
+- **Sections collapse and the split persists.** `▸ LIVE 2` collapses to its
+  header (count still visible) and history takes the rail; both flags and the
+  divider position survive a reload via `localStorage` (the X-12 prefs helper).
+- **The divider appears only when it can do something.** With one live card the
+  section shrinks to fit and there is no grip; at three cards against a 170px cap
+  the grip appears, the live list scrolls, and dragging it (real CDP mouse
+  press/move/release) moved the cap and stored it. **Fixed while looking:** the
+  first cut held a fixed 240px band of empty rail above HISTORY, and the second
+  showed a grip that couldn't move anything — both only visible in a browser.
+
+Not exercised visually (covered by tests): the attach-don't-duplicate path for
+two tabs reviving one conversation at once, the symlinked-`workingDir` filter
+fix, and the pre-H-04 `Invalid signature` card (no such log exists to hand — the
+guard is wired to the `/chat` error and unit-tested through its trigger string).

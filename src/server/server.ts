@@ -585,25 +585,55 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       text?: unknown;
       sessionId?: unknown;
       conversationId?: unknown;
+      leaf?: unknown;
     };
     if (typeof body.text !== "string" || body.text.trim() === "") {
       return c.json({ error: "body must include a non-empty 'text'" }, 400);
     }
 
-    let session: Session;
-    if (typeof body.sessionId === "string") {
-      const found = manager.get(body.sessionId);
-      if (!found) return c.json({ error: "no such session" }, 404);
-      session = found;
-    } else {
-      const config = deps.resolveConfig();
-      if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
-      if (typeof body.conversationId === "string") {
+    let session: Session | undefined;
+    let materialized = false; // did this request revive the conversation?
+    if (typeof body.sessionId === "string") session = manager.get(body.sessionId);
+
+    // Fall back to the conversation when the session id misses (X-12). This is
+    // what makes a history peek's first message materialize a session — and what
+    // heals a stale browser tab whose session died with a previous process.
+    if (!session && typeof body.conversationId === "string") {
+      // **Attach, don't duplicate.** A conversation already live in the bag is
+      // reused: two Session objects over independent in-memory copies of one
+      // tree, both appending to one log, is the X-14 hazard. Attaching also
+      // makes revival idempotent, so two stale tabs converge instead of forking.
+      session = manager.list().find((s) => s.conversation.id === body.conversationId);
+      if (!session) {
+        const config = deps.resolveConfig();
+        if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
         const loaded = deps.store.load(body.conversationId);
         if (!loaded) return c.json({ error: "no such conversation" }, 404);
         session = startSession(config, loaded); // resume from disk
-      } else {
-        session = startSession(config); // fresh
+        materialized = true;
+      }
+    }
+
+    if (!session) {
+      if (typeof body.sessionId === "string") return c.json({ error: "no such session" }, 404);
+      const config = deps.resolveConfig();
+      if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
+      session = startSession(config); // fresh
+    }
+
+    // Continue from a chosen branch rather than the persisted leaf (X-12): the
+    // peek's branch arrows are how you find the point you want to continue from,
+    // so the leaf you were *looking at* has to be the one you continue. Refuse
+    // while a turn is in flight — moving the leaf under a running turn re-parents
+    // its reply onto the wrong branch, which is H-05 and is not fixed yet.
+    if (typeof body.leaf === "string" && body.leaf !== session.conversation.activeLeaf) {
+      if (!materialized && session.status !== "idle") {
+        return c.json({ error: "session is busy; cannot switch branch mid-turn" }, 409);
+      }
+      try {
+        session.setActiveLeaf(body.leaf);
+      } catch (err) {
+        return c.json({ error: (err as Error).message }, 400);
       }
     }
 
