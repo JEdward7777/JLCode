@@ -30,6 +30,7 @@ import {
   sendChat,
   type ApprovalPolicy,
   type ApprovalRequest,
+  type ToolPreview,
   type AskUserRequest,
   type BusFrame,
   type ConversationRow,
@@ -2040,6 +2041,63 @@ function primaryArgKey(args: Record<string, unknown>): string | null {
 /** Approval card with the hybrid edit-before-approve editor (D-16): a prominent
  *  field for the primary arg plus a collapsible raw-JSON box for the rest, and
  *  the soft-fence out-of-fence choices (D-19). */
+/**
+ * The unified diff an `apply_edits` batch would produce (D-53) — read-only, so
+ * the raw-JSON box below stays the single editable truth (D-16). Computed
+ * server-side against the real files, which means a batch that *cannot* apply
+ * shows its reason here instead of failing after the user approves it.
+ */
+function DiffPreview({ preview }: { preview: ToolPreview }) {
+  const totals = preview.files.reduce(
+    (t, f) => ({ added: t.added + f.added, removed: t.removed + f.removed, bad: t.bad + (f.error ? 1 : 0) }),
+    { added: 0, removed: 0, bad: 0 },
+  );
+  return (
+    <div className="diff-preview">
+      <div className="diff-head">
+        {preview.files.length} file{preview.files.length === 1 ? "" : "s"}
+        <span className="add">+{totals.added}</span>
+        <span className="del">−{totals.removed}</span>
+        {totals.bad > 0 ? <span className="diff-bad">{totals.bad} cannot apply</span> : null}
+      </div>
+      {preview.files.map((f) => (
+        <details key={f.path} className="diff-file" open={preview.files.length <= 3 || !!f.error}>
+          <summary>
+            <code>{f.path}</code>
+            {f.error ? (
+              <span className="diff-bad">cannot apply</span>
+            ) : (
+              <>
+                <span className="add">+{f.added}</span>
+                <span className="del">−{f.removed}</span>
+                <span className="sites">
+                  {f.sites} site{f.sites === 1 ? "" : "s"}
+                </span>
+              </>
+            )}
+          </summary>
+          {f.error ? (
+            <div className="diff-err">{f.error}</div>
+          ) : (
+            <pre className="diff-body">
+              {f.patch.split("\n").map((line, i) => (
+                <div
+                  key={i}
+                  className={
+                    line.startsWith("+") ? "dl add" : line.startsWith("-") ? "dl del" : line.startsWith("@@") ? "dl hunk" : "dl"
+                  }
+                >
+                  {line || " "}
+                </div>
+              ))}
+            </pre>
+          )}
+        </details>
+      ))}
+    </div>
+  );
+}
+
 function ApprovalCard({
   request,
   onResolve,
@@ -2144,7 +2202,9 @@ function ApprovalCard({
         </label>
       ) : null}
 
-      <details open={rawOpen || !primaryKey} onToggle={(e) => setRawOpen((e.target as HTMLDetailsElement).open)}>
+      {request.preview?.kind === "diff" ? <DiffPreview preview={request.preview} /> : null}
+
+      <details open={rawOpen || (!primaryKey && !request.preview)} onToggle={(e) => setRawOpen((e.target as HTMLDetailsElement).open)}>
         <summary>raw args (JSON)</summary>
         <textarea className="raw" value={rawText} spellCheck={false} rows={Math.min(10, rawText.split("\n").length + 1)} onChange={(e) => onRaw(e.target.value)} />
         {jsonErr ? <div className="json-err">invalid JSON: {jsonErr}</div> : null}

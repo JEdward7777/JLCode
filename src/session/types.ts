@@ -1,5 +1,5 @@
 /** Events a session emits on its stream (the persisted/UI/bus source, §11). */
-import type { ToolKind } from "../tools/types.js";
+import type { ToolKind, ToolPreview } from "../tools/types.js";
 import type { TaskView } from "../tools/task-registry.js";
 import type { Entry } from "../conversation/types.js";
 import type { Usage } from "../llm/types.js";
@@ -123,6 +123,9 @@ export interface ApprovalRequest {
   outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string };
   /** Present when this pause can also settle a guess (D-48). */
   learn?: LearnRequest;
+  /** Richer-than-JSON rendering of the pending call — a unified diff for
+   *  `apply_edits` (D-53). Advisory: the raw `args` stay the editable truth. */
+  preview?: ToolPreview;
 }
 
 /** One question in an ask_user form (D-18). */

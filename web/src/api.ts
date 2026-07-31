@@ -116,6 +116,22 @@ export interface ApprovalRequest {
   reason: string;
   outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string };
   learn?: LearnRequest;
+  /** Richer rendering of the pending call — a unified diff for `apply_edits`
+   *  (D-53). Read-only: the raw args below it stay the editable truth. */
+  preview?: ToolPreview;
+}
+
+/** A tool's own rendering of a pending call (D-53). */
+export interface ToolPreview {
+  kind: "diff";
+  files: {
+    path: string;
+    patch: string;
+    added: number;
+    removed: number;
+    sites: number;
+    error?: string;
+  }[];
 }
 
 /** One MCP server as `GET /mcp` reports it (P7b). */

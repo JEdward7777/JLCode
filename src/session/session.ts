@@ -18,7 +18,7 @@ import { buildWireMessages, pinnedProvider } from "../conversation/wire.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { Tool, ToolGate } from "../tools/types.js";
+import type { Tool, ToolGate, ToolPreview } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
 import { ASK_USER } from "../tools/ask-user.js";
 import { TaskRegistry } from "../tools/task-registry.js";
@@ -1231,6 +1231,17 @@ export class Session {
     escapes: { arg: string; escapedPath: string }[],
     learn?: LearnRequest,
   ): StepOutcome {
+    // A tool may render itself better than its JSON does (D-53 — apply_edits
+    // shows a unified diff). Advisory only, and never allowed to break the
+    // pause: a throwing preview costs the diff, not the approval.
+    let preview: ToolPreview | undefined;
+    if (tool.preview && this.sandbox) {
+      try {
+        preview = tool.preview(args, { sandbox: this.sandbox, tasks: this.tasks });
+      } catch {
+        preview = undefined;
+      }
+    }
     const request: ApprovalRequest = {
       id: newId("appr"),
       tool: tool.name,
@@ -1249,6 +1260,7 @@ export class Session {
           }
         : {}),
       ...(learn ? { learn } : {}),
+      ...(preview ? { preview } : {}),
     };
     this.pendingApproval = { request, call, tool };
     this.emit({ type: "awaiting-approval", request });

@@ -65,6 +65,7 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  * the latest user message so a person can trigger each surface by hand:
  *
  *   write: <path> | <content>   → a write_file call (approval card)
+ *   edit: <path> | <a> => <b>   → an apply_edits batch (unified-diff card, D-53)
  *   run: <command>              → a run_command call (approval card, edit-approve)
  *   read: <path>                → a read_file call
  *   ask: <question>             → a single-question ask_user form
@@ -104,6 +105,27 @@ export function fakeAgentDriver(): LlmDriver {
       const path = (rawPath ?? "note.txt").trim() || "note.txt";
       const content = rest.join("|").trim() || "hello from JLCode\n";
       return toolCall("write_file", { path, content });
+    }
+    // An apply_edits batch (D-53), so the unified-diff approval card is peekable
+    // offline: `edit: a.txt | old => new ; older => newer | b.txt | x => y`
+    if (msg.startsWith("edit:")) {
+      const files = after("edit:")
+        .split("|")
+        .map((s) => s.trim())
+        .filter((s) => s !== "");
+      const out: { path: string; edits: { old_string: string; new_string: string }[] }[] = [];
+      for (const part of files) {
+        if (part.includes("=>")) {
+          const edits = part.split(";").map((pair) => {
+            const [o, n] = pair.split("=>");
+            return { old_string: (o ?? "").trim(), new_string: (n ?? "").trim() };
+          });
+          if (out.length > 0) out[out.length - 1]!.edits.push(...edits);
+        } else {
+          out.push({ path: part, edits: [] });
+        }
+      }
+      return toolCall("apply_edits", { files: out });
     }
     if (msg.startsWith("run:")) return toolCall("run_command", { command: after("run:") || "echo hi" });
     if (msg.startsWith("read:")) return toolCall("read_file", { path: after("read:") || "README.md" });

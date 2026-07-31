@@ -237,7 +237,30 @@ they do not grow a second path**. Peeked in Chrome (VISUAL-LOG "X-12a"), where t
 made that mocks could not have caught: the live section holds a *cap* rather than a fixed height, and
 the divider renders only when there is something to resize.
 
-**351 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (delete as a reversible masking flag +
+**D-53 shipped 2026-07-31 — `apply_edits`, a native anchor-based multi-edit tool.** Joshua found the
+agent writing throwaway Python into `/tmp` to edit files and asked what flexibility it was giving
+itself; the nine recovered scripts (2026-07-30, the discogs bridge) were the design input. The motive
+was cost, not preference: **17** anchored edits to a **107 KB** `shopify_adapter.py`, which through
+whole-file `write_file` is ~27K tokens *per edit*. Every script asserted `src.count(anchor) == 1`
+before writing and used an explicit `count=3` where three sites were meant — **the model invented the
+safety rail**, which is why the native tool takes an integer `expected_count` (default 1) rather than
+a `replace_all` boolean: a file that disagrees is drift the model must see, not something to absorb.
+Shape (Joshua's call — "go for the moon"): one call edits **many anchors across many files**,
+`{files:[{path,edits:[{old_string,new_string,expected_count?}]}]}`, **all-or-nothing across the whole
+batch** — every anchor is located before *any* file is written. Literal anchors only (a config toggle
+stays a `sed` one-liner). Edits apply to an in-memory buffer in order, so a later anchor may match
+what an earlier edit produced. Fenced via `classifyPaths` on the nested `files[].path` (no D-48
+learning — nothing here is a guess). Two gaps closed in the same slice: **`read_file` gained
+`offset`/`limit`** (it capped at 100,000 chars with no paging, so the agent was anchoring into a
+107,227-char file **whose tail it had never seen**), and a new `Tool.preview()` seam renders the
+pending call as a **read-only unified diff** on the approval card (`diff` dep, D-45), with the raw
+JSON still the editable truth (D-16) but now collapsed by default. Planning *is* the preview, so a
+batch that cannot apply shows its reason **before** you approve rather than after. On D-30: this is a
+*replacing* op, and a truncated call stays unparseable JSON that `tryExecute` rejects atomically —
+nothing in the new code repairs partial args. Peeked in Chrome (VISUAL-LOG "D-53"), where approving a
+batch with one bad file was confirmed to write **nothing**.
+
+**376 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (delete as a reversible masking flag +
 rename from a history row — both designed in `DECISIONS.md`, both deliberately cut from X-12a since
 neither is needed to *read* an old thread), **then P7c** — live validation against the real
 `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.

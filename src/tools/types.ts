@@ -34,6 +34,25 @@ export interface ClassifiedPaths {
   unknown: PathCandidate[];
 }
 
+/**
+ * What a tool can show at an approval pause beyond its raw args (D-53). A diff
+ * preview is computed from the *pending* call, so a batch that cannot apply
+ * reports its reason on the card rather than after the user approves it.
+ */
+export interface ToolPreview {
+  kind: "diff";
+  files: {
+    path: string;
+    /** Unified-diff body (`@@` hunks), already trimmed for display. */
+    patch: string;
+    added: number;
+    removed: number;
+    sites: number;
+    /** Why this file couldn't be planned — shown instead of a diff. */
+    error?: string;
+  }[];
+}
+
 export interface Tool {
   name: string;
   kind: ToolKind;
@@ -64,6 +83,9 @@ export interface Tool {
   /** Pre-approved by the user in config (MCP `alwaysAllow`, D-47b) — skips the
    *  approval prompt, but never the mode gate or the `read-only` policy. */
   autoApprove?: boolean;
+  /** Optional richer rendering of a pending call for the approval card (D-53).
+   *  Must be side-effect free — it runs while the call is still unapproved. */
+  preview?(args: Record<string, unknown>, ctx: ToolContext): ToolPreview | undefined;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }
 

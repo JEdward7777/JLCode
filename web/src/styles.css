@@ -935,6 +935,88 @@ body.row-resizing {
   font-size: 12px;
   margin-top: 4px;
 }
+/* Unified-diff preview on an apply_edits approval card (D-53). Read-only —
+   the raw-args box below it stays the editable truth. */
+.diff-preview {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel-2);
+  font-size: 12px;
+  color: var(--muted);
+}
+.diff-preview .add {
+  color: #7fc98a;
+}
+.diff-preview .del {
+  color: var(--danger);
+}
+.diff-preview .sites,
+.diff-preview .diff-bad {
+  color: var(--muted);
+}
+.diff-preview .diff-bad {
+  color: var(--danger);
+}
+.diff-file {
+  border-top: 1px solid var(--border);
+}
+.diff-file > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.diff-file > summary code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.diff-body {
+  margin: 0;
+  padding: 6px 0;
+  /* The diff scrolls in its own box — a long line never scrolls the page. */
+  overflow-x: auto;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.diff-body .dl {
+  padding: 0 10px;
+  white-space: pre;
+}
+.diff-body .dl.add {
+  background: rgba(127, 201, 138, 0.12);
+  color: #a9dcaf;
+}
+.diff-body .dl.del {
+  background: rgba(224, 121, 107, 0.12);
+  color: #f0a99e;
+}
+.diff-body .dl.hunk {
+  color: var(--accent);
+  opacity: 0.75;
+}
+.diff-err {
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .fence {
   border-top: 1px solid var(--border);
   padding-top: 10px;

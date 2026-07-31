@@ -1,10 +1,12 @@
 /**
  * Native, sandboxed file tools (D-03): read / write / delete / list / glob /
- * grep. Every path goes through the workspace fence. Writes are atomic
- * (temp → rename), so a bad/partial write never leaves a half file (D-30).
+ * grep, plus the anchor-based `apply_edits` from `edit-tools.ts` (D-53). Every
+ * path goes through the workspace fence. Writes are atomic (temp → rename), so
+ * a bad/partial write never leaves a half file (D-30).
  */
 import fs from "node:fs";
 import path from "node:path";
+import { editTools } from "./edit-tools.js";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 const MAX_READ_CHARS = 100_000;
@@ -23,6 +25,13 @@ function reqStr(args: Record<string, unknown>, key: string): string | undefined 
   const v = args[key];
   return typeof v === "string" ? v : undefined;
 }
+function reqInt(args: Record<string, unknown>, key: string): number | undefined {
+  const v = args[key];
+  if (typeof v === "number" && Number.isInteger(v)) return v;
+  // Models sometimes stringify numeric args; accept a clean integer string.
+  if (typeof v === "string" && /^\d+$/.test(v.trim())) return Number(v.trim());
+  return undefined;
+}
 
 const readFile: Tool = {
   name: "read_file",
@@ -33,10 +42,17 @@ const readFile: Tool = {
     type: "function",
     function: {
       name: "read_file",
-      description: "Read a UTF-8 text file within the workspace.",
+      description:
+        "Read a UTF-8 text file within the workspace. Large files are capped, so use 'offset' and 'limit' " +
+        "to page through one that doesn't fit — the reply says how many lines the file has and where the " +
+        "returned window sits, so you can always reach the tail.",
       parameters: {
         type: "object",
-        properties: { path: { type: "string", description: "Workspace-relative or absolute path" } },
+        properties: {
+          path: { type: "string", description: "Workspace-relative or absolute path" },
+          offset: { type: "integer", description: "1-based line number to start at (default 1)" },
+          limit: { type: "integer", description: "How many lines to return (default: as many as fit)" },
+        },
         required: ["path"],
       },
     },
@@ -44,13 +60,42 @@ const readFile: Tool = {
   async execute(args, ctx) {
     const p = reqStr(args, "path");
     if (p === undefined) return err("read_file requires a string 'path'");
+    const offset = reqInt(args, "offset");
+    const limit = reqInt(args, "limit");
+    if (offset !== undefined && offset < 1) return err("read_file 'offset' is a 1-based line number");
+    if (limit !== undefined && limit < 1) return err("read_file 'limit' must be at least 1");
     const r = ctx.sandbox.resolve(p);
     if (!r.ok) return err(r.reason);
     try {
       const data = fs.readFileSync(r.path, "utf8");
-      return data.length > MAX_READ_CHARS
-        ? ok(data.slice(0, MAX_READ_CHARS) + `\n[truncated at ${MAX_READ_CHARS} chars]`)
-        : ok(data);
+      // Whole file, unwindowed, within the cap: hand back exactly what's on disk.
+      if (offset === undefined && limit === undefined && data.length <= MAX_READ_CHARS) return ok(data);
+
+      const lines = data.split("\n");
+      const total = lines.length;
+      const from = (offset ?? 1) - 1;
+      if (from >= total) return err(`offset ${offset} is past the end of ${p} (${total} lines)`);
+      const window = lines.slice(from, limit === undefined ? undefined : from + limit);
+
+      // The char cap still applies to whatever window was asked for — a 'limit'
+      // of 100000 lines must not blow the context (D-53: the old unpageable cap
+      // is what left the agent anchoring into a file whose tail it never saw).
+      let text = window.join("\n");
+      let shownLines = window.length;
+      if (text.length > MAX_READ_CHARS) {
+        const kept: string[] = [];
+        let size = 0;
+        for (const line of window) {
+          if (size + line.length + 1 > MAX_READ_CHARS) break;
+          kept.push(line);
+          size += line.length + 1;
+        }
+        text = kept.join("\n");
+        shownLines = kept.length;
+      }
+      const last = from + shownLines;
+      const more = last < total ? ` — continue with offset ${last + 1}` : "";
+      return ok(`${text}\n[lines ${from + 1}-${last} of ${total}${more}]`);
     } catch (e) {
       return err(`read failed: ${(e as Error).message}`);
     }
@@ -234,5 +279,5 @@ const grep: Tool = {
 };
 
 export function fileTools(): Tool[] {
-  return [readFile, writeFile, deleteFile, listDir, glob, grep];
+  return [readFile, writeFile, deleteFile, listDir, glob, grep, ...editTools()];
 }

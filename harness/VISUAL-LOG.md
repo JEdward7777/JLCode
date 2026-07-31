@@ -571,3 +571,45 @@ Not exercised visually (covered by tests): the attach-don't-duplicate path for
 two tabs reviving one conversation at once, the symlinked-`workingDir` filter
 fix, and the pre-H-04 `Invalid signature` card (no such log exists to hand — the
 guard is wired to the `/chat` error and unit-tested through its trigger string).
+
+---
+
+## D-53 — `apply_edits` unified-diff approval card · 2026-07-31 · ✅ looked good
+
+**Screenshots:** [`visual/d53-apply-edits-diff.png`](visual/d53-apply-edits-diff.png) ·
+[`visual/d53-apply-edits-cannot-apply.png`](visual/d53-apply-edits-cannot-apply.png)
+
+Drove the built server with the fake agent driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs, throwaway workspace) using its new **`edit:`** prefix, so a real
+`apply_edits` batch reaches the approval pause with no key/spend. Confirmed with my
+own eyes:
+
+- **The diff is the card.** A two-file batch (a method added to `store.py`, a line
+  added to `NOTES.md`) renders as a real unified diff — `2 files +6 −0` in the
+  header, then per-file rows `store.py +5 −0 1 site` / `NOTES.md +1 −0 1 site`,
+  hunk headers (`@@ -5,6 +5,11 @@`) in accent, added lines green-tinted. The raw
+  JSON is still there, now **collapsed by default** when a preview exists — the
+  args stay editable (D-16), they just stop being the only way to read the call.
+- **Approve wrote both files, in one decision.** Checked on disk afterwards:
+  `store.py` gained `order_cutover_moment()` in the right place and `NOTES.md`
+  gained its bullet. One pause, two files.
+- **All-or-nothing is real, and visible *before* you approve.** A batch whose
+  first file had an anchor matching **3** sites showed `2 files +1 −1  1 cannot
+  apply`, with `adapter.py` marked **cannot apply** and its reason inline
+  (*"anchor found 3 time(s), expected 1 — extend the anchor until it is unique,
+  or set 'expected_count'"*) while the *other* file still rendered its clean diff.
+  Approving it anyway wrote **nothing** — `NOTES.md`'s md5 was unchanged — and the
+  model got the same reason back as the tool result. This is the property the
+  throwaway `/tmp` scripts had and `write_file` never did.
+- **Long content scrolls inside its own box**, not the page (the diff body caps at
+  340px with its own `overflow`), matching the X-11 tool-output rule.
+
+**Found while looking** (mocks could not have caught either): the preview is
+computed server-side against the *real* file, so a malformed batch returns no
+preview at all and the card silently falls back to raw JSON — that is the correct
+behavior but it is only obvious in a browser. And the fake driver's `|`/`;`
+delimiters collide with content containing those characters, which is a peek-harness
+limitation, not a tool one — fixture content must avoid them.
+
+Not exercised visually (covered by tests): `read_file`'s `offset`/`limit` paging
+(headless, no rendered surface), and the per-file write failure mid-batch.
