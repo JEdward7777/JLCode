@@ -212,6 +212,13 @@ so a peek's first message — and a stale browser tab — materializes the sessi
 404ing. A peek itself creates no session and no rail card. Auto-re-titling on drift was split out as
 **X-17** and is explicitly *not* part of this slice.
 
+**Filed 2026-07-31: X-19 — a browser affordance for model presets** (switch the selected preset for
+this workspace; edit a preset's settings). Presets are CLI-only today and `GET /config` is
+read-only, so changing model means leaving the page — impossible under P5f outward bind. Joshua
+raised it, which is the prompting **D-50** asked for; D-50 still governs the *how* (an edit reaches
+new sessions only, and must say so), and the key field stays a hand-edit. Full row in
+[`DECISIONS.md`](DECISIONS.md).
+
 **334 Tier-0/1 green** (+2 replayed Fable). **Next: X-12 (designed above), then P7c** — live
 validation against the real `file_utils` server. Rendered surfaces get a real-browser peek per
 slice, logged in `VISUAL-LOG.md` (through P7b).
