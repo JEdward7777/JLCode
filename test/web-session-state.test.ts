@@ -103,6 +103,21 @@ describe("reduceEvent folds live events", () => {
     expect(s.entries.length).toBe(2);
   });
 
+  it("tracks the branch a streaming turn belongs to (H-05)", () => {
+    let s = newSlice("s1");
+    s = reduceEvent(s, { type: "entry", entry: { id: "u1", parent: null, type: "user", text: "q" } } as unknown as WireEvent);
+    s = reduceEvent(s, { type: "assistant-start", parent: "u1" } as unknown as WireEvent);
+    // On the turn's branch → the overlay is ours to render.
+    expect(s.liveParent).toBe("u1");
+    expect(s.activeLeaf).toBe(s.liveParent);
+    // Read a sibling mid-turn → the overlay no longer belongs to what's on screen.
+    s = reduceEvent(s, { type: "active-leaf", leaf: "other" } as unknown as WireEvent);
+    expect(s.activeLeaf).not.toBe(s.liveParent);
+    // An entry appended to the turn's branch must not drag the pointer back.
+    s = reduceEvent(s, { type: "entry", entry: { id: "a1", parent: "u1", type: "assistant", text: "a" } } as unknown as WireEvent);
+    expect(s.activeLeaf).toBe("other");
+  });
+
   it("tracks spend, cap, cap-reached and tasks", () => {
     let s = newSlice("s1");
     s = reduceEvent(s, { type: "spend", totalUsd: 1.25 } as WireEvent);
@@ -194,7 +209,7 @@ describe("isUnresumable (X-12)", () => {
     // Offering "start a fresh thread" for a transient error would throw away a
     // perfectly good conversation, so this must not over-match.
     expect(isUnresumable("no model config selected for the server directory")).toBe(false);
-    expect(isUnresumable("session is busy; cannot switch branch mid-turn")).toBe(false);
+    expect(isUnresumable("session is busy; queue the message instead")).toBe(false);
     expect(isUnresumable("request failed (500)")).toBe(false);
   });
 });

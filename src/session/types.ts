@@ -176,10 +176,14 @@ export interface ApprovalDecision {
 
 export type SessionEvent =
   | { type: "entry"; entry: Entry } // full tree node, for the persistence projection (D-37)
-  | { type: "active-leaf"; leaf: string } // rewind / branch switch — persisted so resume restores it
+  // Rewind / branch switch — persisted so resume restores it. `null` is the
+  // point above the root, where editing the first message forks (H-05).
+  | { type: "active-leaf"; leaf: string | null }
   | { type: "debug"; record: DebugRecord } // verbose per-turn record for the debug journal (D-15)
   | { type: "user"; entryId: string; text: string }
-  | { type: "assistant-start" }
+  // `parent` is the branch tip this turn is pinned to (H-05), so a viewer can
+  // tell whether the streaming text belongs to the branch it is looking at.
+  | { type: "assistant-start"; parent: string | null }
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
   | { type: "assistant-end"; entryId: string; finishReason: string; truncated: boolean }

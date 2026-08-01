@@ -105,4 +105,43 @@ describe("ConversationStore — persist, load, resume", () => {
     expect(loaded).toBeDefined();
     expect(loaded!.entries.map((e) => e.type)).toEqual(["user", "assistant"]); // torn line dropped
   });
+
+  // The leaf a log replays to (H-05): an `activeLeaf` record is in force until an
+  // append actually continues from it, so a turn writing to its own pinned branch
+  // can't drag the restored pointer across the tree. Written as raw records
+  // because the shapes that matter here include logs from before the fix.
+  describe("replaying the active leaf", () => {
+    const write = (convId: string, records: unknown[]): void =>
+      fs.writeFileSync(
+        path.join(dir, `${convId}.jsonl`),
+        records.map((r) => JSON.stringify(r)).join("\n") + "\n",
+      );
+    const header = { kind: "header", id: "cv_leaf", workingDir: "/w", createdAt: "2026-07-31T00:00:00.000Z" };
+    const entry = (id: string, parent: string | null) => ({ id, parent, type: "user", text: id, ts: header.createdAt });
+
+    it("keeps the navigated leaf when a pinned turn appends elsewhere", () => {
+      write("cv_leaf", [
+        header,
+        entry("u1", null),
+        entry("a1", "u1"),
+        { kind: "activeLeaf", leaf: null }, // edit-fork of the first message
+        entry("u2", null),
+        entry("a2", "u2"),
+        { kind: "activeLeaf", leaf: "a1" }, // reader switches to branch A mid-turn
+        entry("u3", "a2"), // …while the turn keeps building branch B
+        entry("a3", "u3"),
+      ]);
+      const loaded = store.load("cv_leaf")!;
+      expect(loaded.entries).toHaveLength(6);
+      expect(loaded.activeLeaf).toBe("a1");
+    });
+
+    it("still follows a silent fork in a log written before the fix", () => {
+      // Pre-H-05 `editFork` moved the leaf without writing a record, so the only
+      // evidence of the fork is the sibling's `parent`. Follow it, as load always did.
+      write("cv_leaf", [header, entry("u1", null), entry("a1", "u1"), entry("u2", null), entry("a2", "u2")]);
+      const loaded = store.load("cv_leaf")!;
+      expect(loaded.activeLeaf).toBe("a2");
+    });
+  });
 });

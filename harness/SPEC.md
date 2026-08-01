@@ -155,6 +155,13 @@ Nothing project-specific is written into the project folder.
 - **UI affordance:** a **pencil** on a message you wrote. Editing it *is* a fork — the edited
   message appends as a sibling branch off the same parent, the original stays as the other
   sibling. "Edit my message" and "fork" are the same operation.
+- **The active pointer belongs to the reader (D-54).** A running turn is pinned to the branch it
+  started on and appends there whatever the pointer does, so **branch navigation is free while a
+  turn works** — step to a sibling, read it, come back, and the answer is waiting where it was
+  being written. The pointer follows an append only when the append continues the branch it points
+  at; the next message you send continues the branch you are *looking at*. Editing a message is a
+  write, so it is refused mid-turn (queue the message instead) — but the refusal leaves the
+  pointer alone.
 - **Workspace identity in the UI (planned, X-10):** the browser shows **which working directory
   this instance serves**, and the **tab title** carries it too — with several projects open, the
   tabs are otherwise indistinguishable. The dir is already recorded (`IndexRow.workingDir`); it
@@ -585,10 +592,11 @@ scissors" power-user risk**, never a source of internal inconsistency. **Nothing
 
 - **Running two live sessions on two branches of one conversation (X-14)** — *wanted, not built*.
   This is the explicit spawn the rule above describes; today no API can start a session from a
-  chosen *(conversation, leaf)* pair. Blocked on **H-05**: a running turn currently appends wherever
-  `activeLeaf` points *when the stream ends*, so the "at most one live leaf per session" invariant
-  doesn't actually hold under mid-turn navigation. Open design question is whether a forked session
-  copies the tree into its own conversation file or shares one live tree (see X-14).
+  chosen *(conversation, leaf)* pair. Was blocked on **H-05**, where a running turn appended wherever
+  `activeLeaf` pointed *when the stream ended*; since D-54 a turn is pinned to the branch it started
+  on, so "at most one live leaf per session" holds under mid-turn navigation and the leaf is purely
+  what the reader is looking at. Open design question is whether a forked session copies the tree
+  into its own conversation file or shares one live tree (see X-14).
 - **Workspace isolation via git worktrees** — *postponed*. When added, an editing session can take
   its own worktree/branch so concurrent editing is safe (merge after); read-mostly side threads
   still just share the folder.

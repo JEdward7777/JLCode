@@ -53,6 +53,10 @@ export interface SessionSlice {
   treeLoaded: boolean;
   // Live view state.
   live: LiveAssistant | null;
+  /** The branch tip the streaming turn is pinned to (H-05). Read another branch
+   *  mid-turn and the overlay stays on the branch it belongs to rather than
+   *  trailing the reader onto a sibling. */
+  liveParent: string | null;
   working: boolean;
   pendingApproval: ApprovalRequest | null;
   pendingAsk: AskUserRequest | null;
@@ -87,6 +91,7 @@ export function newSlice(id: string, model = ""): SessionSlice {
     conversationId: null,
     treeLoaded: false,
     live: null,
+    liveParent: null,
     working: false,
     pendingApproval: null,
     pendingAsk: null,
@@ -143,7 +148,7 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, entries, activeLeaf, live: entry.type === "assistant" ? null : s.live };
     }
     case "active-leaf":
-      return { ...s, activeLeaf: e.leaf as string };
+      return { ...s, activeLeaf: (e.leaf as string | null) ?? null };
     case "mode":
       return { ...s, mode: e.mode as Mode, approval: e.approval as ApprovalPolicy };
     case "title":
@@ -181,8 +186,15 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, tasks: s.tasks.filter((x) => x.id !== (e.task as TaskView).id) };
     case "assistant-start":
       // The held turn begins → any pre-send compaction pause is resolved (a Skip
-      // emits no `compacted`, so clear it here too).
-      return { ...s, working: true, live: { text: "", reasoning: "" }, pendingCompaction: null };
+      // emits no `compacted`, so clear it here too). `parent` is the branch the
+      // turn is pinned to (H-05) — what decides whether the overlay is ours.
+      return {
+        ...s,
+        working: true,
+        live: { text: "", reasoning: "" },
+        liveParent: (e.parent as string | null) ?? null,
+        pendingCompaction: null,
+      };
     case "reasoning":
       return { ...s, live: { ...(s.live ?? { text: "", reasoning: "" }), reasoning: (s.live?.reasoning ?? "") + (e.delta as string) } };
     case "text":

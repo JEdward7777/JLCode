@@ -177,6 +177,7 @@ overridable by env:
 | `JLCODE_PORT` | `4517` | default `serve` port |
 | `JLCODE_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
 | `JLCODE_FAKE_LLM` | unset | `1` = offline echo driver, no spend |
+| `JLCODE_FAKE_LLM_DELAY_MS` | `0` | ms between fake stream events, so a turn can be watched mid-flight |
 
 `config.json` holds your OpenRouter keys and is written `chmod 600`.
 

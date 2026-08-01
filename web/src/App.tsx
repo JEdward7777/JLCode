@@ -1150,7 +1150,10 @@ function ChatPane({
             />
           );
         })}
-        {slice.live && <LiveMessage live={slice.live} />}
+        {/* Only on the branch the turn is pinned to (H-05) — navigating away
+            mid-turn must not make the stream look like it grows on the sibling
+            you switched to. */}
+        {slice.live && slice.activeLeaf === slice.liveParent && <LiveMessage live={slice.live} />}
         {slice.working && <div className="working">{workWord}</div>}
         {slice.tasks.length > 0 && <TasksPanel tasks={slice.tasks} onKill={(taskId) => onKillTask(id, taskId)} />}
         {slice.pendingApproval && <ApprovalCard request={slice.pendingApproval} onResolve={(d) => onResolveApproval(id, d)} />}

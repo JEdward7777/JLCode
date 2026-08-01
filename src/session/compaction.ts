@@ -178,12 +178,12 @@ export function truncateToolOutputsForSummary(
  *  still preserving the planning Joshua wants carried into the summary. */
 export function buildCrossModelSummaryInput(
   conv: Conversation,
-  opts: { system?: string; capChars?: number } = {},
+  opts: { system?: string; capChars?: number; leafId?: string | null } = {},
 ): ChatMessage[] {
   const system = opts.system?.trim();
   const messages: ChatMessage[] = system ? [{ role: "system", content: system }] : [];
   let body: ChatMessage[] = [];
-  for (const entry of pathToLeaf(conv)) {
+  for (const entry of pathToLeaf(conv, opts.leafId ?? conv.activeLeaf)) {
     switch (entry.type) {
       case "compaction":
         // A prior summary resets the replay, same as the wire builder.

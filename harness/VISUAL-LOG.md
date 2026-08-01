@@ -613,3 +613,48 @@ limitation, not a tool one — fixture content must avoid them.
 
 Not exercised visually (covered by tests): `read_file`'s `offset`/`limit` paging
 (headless, no rendered surface), and the per-file write failure mid-batch.
+
+---
+
+## H-05 — reading another branch while a turn runs · 2026-07-31 · ✅ looked good
+
+**Screenshots:** [`visual/h05-mid-turn-off-branch.png`](visual/h05-mid-turn-off-branch.png) ·
+[`visual/h05-stream-off-branch.png`](visual/h05-stream-off-branch.png) ·
+[`visual/h05-back-on-branch.png`](visual/h05-back-on-branch.png)
+
+Fake agent driver, isolated config/data dirs, server fenced to a scratch
+workspace. Seeded one exchange, edit-forked the opening message into a second
+branch, then drove the rest through the page. The fake driver gained
+`JLCODE_FAKE_LLM_DELAY_MS` for this peek — a turn that settles in one tick cannot
+be screenshotted mid-flight, so the streaming surfaces were otherwise unpeekable.
+Confirmed with my own eyes:
+
+- **Branch arrows are genuinely passive mid-turn.** Approved `run: sleep 12` on
+  branch B, then stepped `2/2 → 1/2` while it ran. The transcript swapped to
+  branch A's two messages and *stayed* two messages; the rail card still read
+  `working…`, Stop was still live, and the **background tasks panel kept counting**
+  (`sleep 12 … 8s`) — the turn never noticed. Before the fix this is the click
+  that re-parented the reply.
+- **Nothing leaks onto the branch you're reading.** The turn ran to completion
+  with branch A on screen: the `run:` message, the `run_command` result and the
+  final answer never appeared there, and A was still exactly two messages when
+  the session went `idle`.
+- **The live overlay stays with its own branch.** Sent a plain message on B and
+  jumped to A mid-stream: `pondering…` and the rail's `working…` still showed
+  (the *session* is busy, and saying so is right), but **no streaming bubble** was
+  drawn on A. Stepping back to B mid-stream picked the overlay right back up,
+  half-written, at the bottom of B.
+- **The tree on disk matches what the screen said.** The log carries
+  `{"kind":"activeLeaf","leaf":"e_8cd49…"}` — the mid-turn hop to A — with the
+  turn's entries still chained onto B's tip either side of it, and a final hop
+  back. Edit-fork now writes its move too (`{"leaf":null}` for a fork of the very
+  first message); it used to mutate the pointer silently, which is why the reply
+  looked lost.
+
+**Found while looking:** nothing broken, but the arrows only render on hover, so
+the affordance for "read the other branch while this one works" is discoverable
+only if you already know it is there. Worth a look when branch nav gets its next
+pass — not filed as a defect.
+
+Not exercised visually (covered by tests): the approval/ask pause holding the pin
+across a resume, and the wire being rebuilt from the pinned branch.

@@ -2,6 +2,11 @@
  * Pure operations over the append-only conversation tree (D-17). Append sets a
  * new entry's parent to the current `activeLeaf` (unless overridden — that's a
  * fork) and advances `activeLeaf`. Rewind just moves `activeLeaf` up.
+ *
+ * `activeLeaf` is the *reader's* pointer, so an append only moves it when the
+ * append continues the branch it already points at (H-05). A turn pinned to the
+ * branch it started on can then keep appending while the reader is off looking
+ * at a sibling, without dragging them back.
  */
 import { newId } from "../util/id.js";
 import type { Conversation, Entry } from "./types.js";
@@ -26,8 +31,11 @@ export function appendEntry(
   const now = new Date().toISOString();
   const parentId = parent !== undefined ? parent : conv.activeLeaf;
   const entry = { ...input, id: newId("e"), parent: parentId, ts: now } as Entry;
+  // Follow the append only when it extends the branch in view; an append onto
+  // any other branch leaves the reader where they are (H-05).
+  const activeLeaf = parentId === conv.activeLeaf ? entry.id : conv.activeLeaf;
   return {
-    conv: { ...conv, entries: [...conv.entries, entry], activeLeaf: entry.id, updatedAt: now },
+    conv: { ...conv, entries: [...conv.entries, entry], activeLeaf, updatedAt: now },
     entry,
   };
 }
@@ -53,7 +61,7 @@ export function pathToLeaf(conv: Conversation, leafId: string | null = conv.acti
   return path;
 }
 
-export function setActiveLeaf(conv: Conversation, leafId: string): Conversation {
+export function setActiveLeaf(conv: Conversation, leafId: string | null): Conversation {
   return { ...conv, activeLeaf: leafId, updatedAt: new Date().toISOString() };
 }
 

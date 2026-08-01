@@ -15,7 +15,7 @@ describe("conversation tree", () => {
     expect(pathToLeaf(conv).map((e) => e.id)).toEqual([a.entry.id, b.entry.id]);
   });
 
-  it("forks a sibling branch when a parent is given explicitly", () => {
+  it("forks a sibling branch when a parent is given explicitly, leaving the leaf put", () => {
     let conv = newConversation();
     const u = appendEntry(conv, { type: "user", text: "q" });
     conv = u.conv;
@@ -26,8 +26,11 @@ describe("conversation tree", () => {
     conv = a2.conv;
 
     expect(childrenOf(conv, u.entry.id)).toHaveLength(2);
-    expect(pathToLeaf(conv).map((e) => e.id)).toEqual([u.entry.id, a2.entry.id]);
-    expect(pathToLeaf(conv, a1.entry.id).map((e) => e.id)).toEqual([u.entry.id, a1.entry.id]);
+    // Both branches exist, but the *reader's* pointer only follows an append
+    // that continues the branch it points at (H-05) — this one didn't.
+    expect(conv.activeLeaf).toBe(a1.entry.id);
+    expect(pathToLeaf(conv).map((e) => e.id)).toEqual([u.entry.id, a1.entry.id]);
+    expect(pathToLeaf(conv, a2.entry.id).map((e) => e.id)).toEqual([u.entry.id, a2.entry.id]);
   });
 
   it("rewinds by moving the active leaf up", () => {

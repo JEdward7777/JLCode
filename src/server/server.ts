@@ -549,6 +549,8 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   });
 
   // Rewind / switch branch: point the active leaf at an existing entry (D-10).
+  // Passive by design (SPEC §27) and safe mid-turn — the running turn appends to
+  // the branch it started on, not to whatever this points at (H-05).
   app.post("/session/:id/rewind", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -623,12 +625,13 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
 
     // Continue from a chosen branch rather than the persisted leaf (X-12): the
     // peek's branch arrows are how you find the point you want to continue from,
-    // so the leaf you were *looking at* has to be the one you continue. Refuse
-    // while a turn is in flight — moving the leaf under a running turn re-parents
-    // its reply onto the wrong branch, which is H-05 and is not fixed yet.
+    // so the leaf you were *looking at* has to be the one you continue. Moving
+    // the leaf is safe under a running turn now (H-05 pins the turn to its own
+    // branch), but *sending* is not — `send()` would refuse below, and a refused
+    // send must not leave the pointer moved. So check before touching it.
     if (typeof body.leaf === "string" && body.leaf !== session.conversation.activeLeaf) {
       if (!materialized && session.status !== "idle") {
-        return c.json({ error: "session is busy; cannot switch branch mid-turn" }, 409);
+        return c.json({ error: "session is busy; queue the message instead" }, 409);
       }
       try {
         session.setActiveLeaf(body.leaf);

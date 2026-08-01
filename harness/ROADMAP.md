@@ -126,11 +126,15 @@ block was stored as several partial ones plus an orphan signature. Found *becaus
 fields showed the provider pin working while the call still failed — which ruled out routing and
 pointed at the payload.
 
-**H-05 is OPEN (found 2026-07-28, not fixed)** — forking or switching branches *while a turn is
-running* re-parents the in-flight reply onto the wrong branch, and the rejected edit still moves
-the pointer. Read the Hardening block before touching `editFork`/`setActiveLeaf`. The agreed fix is
-to **pin the turn's parent at turn start** (not merely to guard against mid-turn navigation), which
-is also the correctness floor under **X-14** — Joshua wants multiple agents live on different forks.
+**H-05 fixed (2026-07-31)** — forking or switching branches *while a turn was running* re-parented
+the in-flight reply, and a rejected edit still moved the pointer. Fixed the agreed way: a turn now
+**pins its parent at turn start** and every entry it appends chains off that pin, so branch
+navigation is genuinely passive (SPEC §27) and you can read a sibling while a turn works. The
+pointer follows an append only when the append continues the branch it points at (`appendEntry`,
+and `load()` mirrors it); `editFork` checks busy *before* moving and routes the move through
+`setActiveLeaf` so it is announced and persisted. The invariant this establishes — *a turn's
+entries belong to the branch that turn started on* — is the correctness floor under **X-14**
+(multiple agents live on different forks), which is now unblocked. See D-54.
 
 **Conversations recorded before H-04 are unrecoverable** — fragmented reasoning is on disk and the
 append-only log isn't rewritten. If one fails on resume with `Invalid signature`, start a new
@@ -639,7 +643,7 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 - **H-05 — a fork or branch-switch *during a running turn* re-parents the in-flight reply; the
   pointer moves even when the edit is rejected.** Found 2026-07-28 by inspection + a scratch
   repro, after Joshua asked what happens if you edit a message while the model is working.
-  **OPEN — not fixed.**
+  **FIXED 2026-07-31** — see the fix section at the end of this entry for what shipped.
   - **Symptom.** Pencil-edit an earlier message mid-stream: the browser shows
     *"Session is busy; queue the message instead."* and then the model's reply **disappears** from
     the transcript. After a reload the transcript can show a single orphaned assistant message
@@ -672,22 +676,31 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   - **Not affected.** The in-flight call is never aborted (only `stop("hard")` touches
     `abortController`), and there is never more than one turn in flight — one loop, one leaf per
     session, and `send()` does refuse while running.
-  - **Preferred fix — Joshua's call: pin the turn's parent at turn start.** Capture the parent when
-    `advance()` begins and pass it explicitly to every `pushEntry` for that turn, so the loop appends
-    where the turn *began* regardless of later pointer moves. That makes branch navigation genuinely
-    passive as SPEC §27 promises ("navigating a branch runs nothing") and lets you read another
-    branch while a turn runs, rather than merely forbidding it. Alongside it: move `editFork`'s busy
-    check **before** the mutation and route that mutation through `setActiveLeaf` so the event is
-    emitted. Disabling the affordances in the UI is then optional polish, **not** the fix — the
-    guard-only variant (reject mid-turn navigation) was considered and is explicitly *not* what's
-    wanted.
-  - **Coverage gap.** `test/fork-rewind.test.ts` covers fork/rewind on an **idle** session only;
-    nothing drives either path mid-turn. A regression test wants the parked-driver shape from the
-    repro (park the stream, act, release, assert the parent).
-  - **Why it matters beyond the bug: X-14.** Joshua wants **multiple agents running on different
+  - **The fix — Joshua's call: pin the turn's parent at turn start** (D-54). `send()` records the
+    active leaf in `Session.turnLeaf` before the first append; `pushEntry` defaults to that pin and
+    advances it, so the turn's entries chain off each other regardless of later pointer moves. The
+    pin outlives an approval / ask_user / compaction pause and a spend-cap block — all of which
+    resume the *same* turn — and is released when the loop settles (an `advance()` wrapper owns
+    that). It is also the leaf every wire build for the turn walks (`buildRequest`, `compact`,
+    the watchdog, auto-title), so a mid-turn switch can't re-shape the request in flight.
+    Alongside it: `appendEntry` moves `activeLeaf` only when the append continues the branch it
+    points at (`load()` mirrors the rule, tolerating pre-fix logs whose edit-fork moved the pointer
+    silently); `editFork` checks busy **before** mutating and routes the move through
+    `setActiveLeaf`, which now accepts `null` for a fork of the first message. The guard-only
+    variant (reject mid-turn navigation) was considered and is explicitly *not* what shipped.
+  - **UI.** The affordances stay enabled — the point is to *allow* reading another branch mid-turn.
+    One change was needed: `assistant-start` now carries the pinned `parent`, and the browser draws
+    the streaming overlay only while the branch in view is the one the turn belongs to. Without it
+    the live text trailed the reader onto whatever sibling they switched to.
+  - **Coverage.** `test/fork-rewind.test.ts` gained the parked-driver shape from the repro (park the
+    stream, act, release, assert the parent): the arrow case, the rejected-edit case, the pin
+    surviving an ask_user pause (asserting the *replayed* branch too), and the persistence replay.
+    Plus store-level tests for both replay rules and a reducer test for the overlay's branch.
+  - **Why it mattered beyond the bug: X-14.** Joshua wants **multiple agents running on different
     forks at the same time**. Pinning the turn's parent is the correctness floor under that — the
     invariant "a turn's entries belong to the branch that turn started on" is exactly what has to
-    hold once more than one live session can touch one conversation tree.
+    hold once more than one live session can touch one conversation tree. **X-14 is unblocked**;
+    its remaining questions (tree copy vs shared instance, rail/UI, spend roll-up) are untouched.
 
 - **H-04 — streamed `reasoning_details` were appended, not merged; every signed thinking block
   was stored malformed.** Found 2026-07-28 (the *second* `Invalid signature` report, after H-02's

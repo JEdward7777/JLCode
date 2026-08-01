@@ -136,8 +136,9 @@ export class ConversationStore {
     return this.log(convId).append(entry);
   }
 
-  /** Record an active-leaf move (rewind / branch switch). */
-  activeLeaf(convId: string, leaf: string): Promise<void> {
+  /** Record an active-leaf move (rewind / branch switch). `null` is the point
+   *  above the root, where editing the first message forks (H-05). */
+  activeLeaf(convId: string, leaf: string | null): Promise<void> {
     return this.log(convId).append({ kind: "activeLeaf", leaf });
   }
 
@@ -178,13 +179,27 @@ export class ConversationStore {
     const entries: Entry[] = [];
     let activeLeaf: string | null = null;
     let title: string | undefined;
+    // An explicit `activeLeaf` record is *in force* until an append actually
+    // continues from it. While it is, a non-matching append is a turn writing to
+    // the branch it was pinned to (H-05) and must not drag the pointer over.
+    // With no record in force we follow every append — which is also how logs
+    // written before H-05 replay, since their edit-fork moved the leaf silently.
+    let pinned = false;
     for (const r of records) {
       if (r.kind === "header") header = r;
-      else if (r.kind === "activeLeaf") activeLeaf = typeof r.leaf === "string" ? r.leaf : activeLeaf;
-      else if (r.kind === "title") title = typeof r.title === "string" ? r.title : title; // newest wins
+      else if (r.kind === "activeLeaf") {
+        if (r.leaf === null || typeof r.leaf === "string") {
+          activeLeaf = r.leaf;
+          pinned = true;
+        }
+      } else if (r.kind === "title") title = typeof r.title === "string" ? r.title : title; // newest wins
       else {
-        entries.push(r as unknown as Entry);
-        if (typeof r.id === "string") activeLeaf = r.id; // mirrors appendEntry
+        const entry = r as unknown as Entry;
+        entries.push(entry);
+        if (typeof entry.id !== "string") continue;
+        const follows = (entry.parent ?? null) === activeLeaf;
+        if (follows || !pinned) activeLeaf = entry.id; // mirrors appendEntry
+        if (follows) pinned = false;
       }
     }
     if (!header || typeof header.id !== "string") return undefined;

@@ -247,6 +247,13 @@ export class Session {
   private pendingNote?: string;
   /** Per-task watchdog timers (30-min out-of-band kill prompt, D-34). */
   private readonly watchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** The tip this turn appends to, pinned when the turn opens and advanced by
+   *  each entry the turn appends (H-05). `undefined` means no turn is in flight,
+   *  so appends follow `activeLeaf` — the reader's pointer. While a turn *is* in
+   *  flight the pointer is free to move (branch arrows are passive, SPEC §27) and
+   *  the turn keeps building where it began, instead of re-parenting its reply
+   *  onto whatever branch the user wandered to. */
+  private turnLeaf: string | null | undefined;
 
   constructor(options: SessionOptions) {
     if (options.tools && !options.sandbox) throw new Error("A tool registry requires a sandbox");
@@ -355,10 +362,13 @@ export class Session {
    *  true once the overlay entry lands; false if there was nothing to compact or
    *  the summary call failed (the caller decides how to proceed). */
   async compact(opts: { forced?: boolean } = {}): Promise<boolean> {
-    const prefix = buildWireMessages(this.conversation, { system: this.systemPrompt });
+    // Compact the branch the turn is building, not whatever the reader has
+    // navigated to since (H-05) — it is that branch's prefix we're about to resend.
+    const leafId = this.workingLeaf;
+    const prefix = buildWireMessages(this.conversation, { system: this.systemPrompt, leafId });
     // Only a system prompt (or nothing) → nothing to summarize.
     if (prefix.every((m) => m.role === "system")) return false;
-    const hasPriorSummary = pathToLeaf(this.conversation).some((e) => e.type === "compaction");
+    const hasPriorSummary = pathToLeaf(this.conversation, leafId).some((e) => e.type === "compaction");
     // Cross-model path (D-29, refined): a *different*, cheaper compactor can't
     // reuse the working model's prompt cache and must not receive its signed
     // reasoning, so send flattened structured messages (readable planning kept,
@@ -369,7 +379,7 @@ export class Session {
     const crossModel = Boolean(compactorId && compactorId !== this.config.model);
     const model = crossModel ? compactorId! : this.config.model;
     const input = crossModel
-      ? buildCrossModelSummaryInput(this.conversation, { system: this.systemPrompt })
+      ? buildCrossModelSummaryInput(this.conversation, { system: this.systemPrompt, leafId })
       : opts.forced
         ? truncateToolOutputsForSummary(prefix)
         : prefix;
@@ -625,7 +635,7 @@ export class Session {
     const elapsedMin = Math.round(this.tasks.elapsedMs(taskId) / 60000);
     const output = this.tasks.output(taskId);
     const tail = output.length > 4000 ? "…" + output.slice(-4000) : output;
-    const messages = buildWireMessages(this.conversation, { system: this.systemPrompt });
+    const messages = buildWireMessages(this.conversation, { system: this.systemPrompt, leafId: this.workingLeaf });
     messages.push({
       role: "user",
       content:
@@ -676,10 +686,15 @@ export class Session {
     this.emit({ type: "mode", mode: this.mode, approval: this.approval });
   }
 
-  /** Rewind / switch branches: point the active leaf at an existing entry.
-   *  The next `send()` will fork a sibling off it (D-10, D-17). Persisted. */
-  setActiveLeaf(entryId: string): void {
-    if (!this.conversation.entries.some((e) => e.id === entryId)) {
+  /** Rewind / switch branches: point the active leaf at an existing entry (null
+   *  = above the root, where an edit of the first message forks). The next
+   *  `send()` will fork a sibling off it (D-10, D-17). Persisted.
+   *
+   *  Deliberately unguarded while a turn runs: navigating is passive (SPEC §27),
+   *  and the running turn is pinned to the branch it started on (H-05), so this
+   *  moves what you're *reading* and nothing else. */
+  setActiveLeaf(entryId: string | null): void {
+    if (entryId !== null && !this.conversation.entries.some((e) => e.id === entryId)) {
       throw new Error(`No such entry: ${entryId}`);
     }
     this.conversation = treeSetActiveLeaf(this.conversation, entryId);
@@ -691,16 +706,33 @@ export class Session {
   async editFork(entryId: string, text: string): Promise<void> {
     const entry = this.conversation.entries.find((e) => e.id === entryId);
     if (!entry) throw new Error(`No such entry: ${entryId}`);
-    // Point at the edited entry's parent so send() appends a sibling; the new
-    // entry's own `parent` records the fork, so no active-leaf record is needed.
-    this.conversation = { ...this.conversation, activeLeaf: entry.parent };
+    // Refuse *before* touching the pointer (H-05): `send()` rejects a busy
+    // session, and a rejected edit used to leave the leaf moved anyway.
+    this.assertCanSend();
+    // Point at the edited entry's parent so send() appends a sibling. Routed
+    // through setActiveLeaf so the move is announced and persisted like any
+    // other — a silent mutation is what made the reply look lost.
+    this.setActiveLeaf(entry.parent);
     await this.send(text);
   }
 
-  /** Append an entry to the tree and emit it for the persistence projection. */
+  /** Where the next append goes: the turn's pinned tip while a turn is in
+   *  flight, else the reader's active leaf (H-05). Also the branch every wire
+   *  build for the turn walks, so a mid-turn branch switch can't re-shape the
+   *  request the turn is in the middle of making. */
+  private get workingLeaf(): string | null {
+    return this.turnLeaf !== undefined ? this.turnLeaf : this.conversation.activeLeaf;
+  }
+
+  /** Append an entry to the tree and emit it for the persistence projection.
+   *  With a turn in flight the parent defaults to the turn's pin (and advances
+   *  it), so the turn's entries chain off each other regardless of where the
+   *  active leaf has since moved. */
   private pushEntry(input: EntryInput, parent?: string | null): Entry {
-    const { conv, entry } = appendEntry(this.conversation, input, parent);
+    const at = parent !== undefined ? parent : this.workingLeaf;
+    const { conv, entry } = appendEntry(this.conversation, input, at);
     this.conversation = conv;
+    if (this.turnLeaf !== undefined) this.turnLeaf = entry.id;
     this.emit({ type: "entry", entry });
     return entry;
   }
@@ -737,7 +769,7 @@ export class Session {
   buildRequest(): ChatRequest {
     const req: ChatRequest = {
       model: this.config.model,
-      messages: buildWireMessages(this.conversation, { system: this.systemPrompt }),
+      messages: buildWireMessages(this.conversation, { system: this.systemPrompt, leafId: this.workingLeaf }),
     };
     if (this.tools) req.tools = this.tools.defs();
     const s = this.config.sampling;
@@ -750,13 +782,14 @@ export class Session {
     // replay (D-49/H-02). `allow_fallbacks:false` makes it binding: a failover
     // to another provider would 400 on the signatures anyway, so surfacing "that
     // provider is unavailable" beats an opaque `Invalid signature` error.
-    const pin = pinnedProvider(this.conversation);
+    const pin = pinnedProvider(this.conversation, this.workingLeaf);
     if (pin) req.provider = { order: [pin], allow_fallbacks: false };
     return req;
   }
 
-  /** Send a user message and run until the session settles or needs the user. */
-  async send(text: string): Promise<void> {
+  /** Whether a new user message can open a turn right now; throws the reason if
+   *  not. Split out so `editFork` can ask *before* it moves the leaf (H-05). */
+  private assertCanSend(): void {
     if (this.status === "halted") throw new Error("Session is halted (too many consecutive failures).");
     if (this.status === "awaiting-persistence") {
       throw new Error("Session is stopped: a conversation record could not be saved. Retry or discard it first.");
@@ -771,7 +804,16 @@ export class Session {
     if (this.status === "running") {
       throw new Error("Session is busy; queue the message instead.");
     }
+  }
+
+  /** Send a user message and run until the session settles or needs the user. */
+  async send(text: string): Promise<void> {
+    this.assertCanSend();
     this.stopScope = null; // a fresh message clears any prior stop flag
+    // Pin the turn to the branch in view (H-05) before the first append, so
+    // everything this turn produces chains off here no matter where the reader
+    // navigates while it runs.
+    this.turnLeaf = this.conversation.activeLeaf;
     const entry = this.pushEntry({ type: "user", text });
     this.emit({ type: "user", entryId: entry.id, text });
     this.pendingToolCalls = [];
@@ -869,7 +911,25 @@ export class Session {
     for (const m of pending) this.appendUserText(m.text);
   }
 
+  /** Run the loop, then release the turn's branch pin unless the turn is merely
+   *  suspended and will be resumed (H-05). An approval / question / compaction
+   *  pause — and a spend-cap block, which settles to `idle` but resumes on
+   *  `setSpendCap` — all continue the *same* turn, so the pin has to outlive
+   *  them; anything else has ended the turn. */
   private async advance(): Promise<void> {
+    try {
+      await this.runLoop();
+    } finally {
+      const suspended =
+        this.status === "awaiting-approval" ||
+        this.status === "awaiting-input" ||
+        this.status === "awaiting-compaction" ||
+        this.capReached;
+      if (!suspended) this.turnLeaf = undefined;
+    }
+  }
+
+  private async runLoop(): Promise<void> {
     this.status = "running";
     if (this.pendingToolCalls.length === 0) this.flushPendingUser();
     for (let iter = 0; iter < this.maxToolIterations; iter++) {
@@ -966,7 +1026,7 @@ export class Session {
     const req: ChatRequest = {
       model: this.config.model,
       messages: [
-        ...buildWireMessages(this.conversation, { system: this.systemPrompt }),
+        ...buildWireMessages(this.conversation, { system: this.systemPrompt, leafId: this.workingLeaf }),
         { role: "user", content: buildTitleInstruction() },
       ],
       tool_choice: "none",
@@ -1071,7 +1131,7 @@ export class Session {
     const events: StreamEvent[] = [];
     const startedAt = Date.now();
     const toolNames = (req.tools ?? []).map((t) => t.function.name);
-    this.emit({ type: "assistant-start" });
+    this.emit({ type: "assistant-start", parent: this.workingLeaf });
     this.abortController = new AbortController();
     try {
       for await (const ev of this.driver.streamChat(req, { signal: this.abortController.signal })) {

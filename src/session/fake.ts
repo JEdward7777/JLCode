@@ -5,13 +5,27 @@
 import zlib from "node:zlib";
 import type { ChatRequest, LlmDriver, StreamEvent } from "../llm/types.js";
 
+/** Milliseconds to hold between fake stream events (`JLCODE_FAKE_LLM_DELAY_MS`).
+ *  Zero — the default, and what every test runs at — streams the whole reply in
+ *  one tick. A nonzero value is for **looking at** the browser: a turn that
+ *  settles instantly can't be screenshotted mid-flight, so the streaming surfaces
+ *  (the live overlay, its branch pinning under H-05) are otherwise unpeekable. */
+function fakeDelayMs(): number {
+  const raw = Number(process.env.JLCODE_FAKE_LLM_DELAY_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
 export function scriptedDriver(
   script: StreamEvent[] | ((req: ChatRequest) => StreamEvent[]),
 ): LlmDriver {
   return {
     async *streamChat(req) {
       const events = typeof script === "function" ? script(req) : script;
-      for (const ev of events) yield ev;
+      const delay = fakeDelayMs();
+      for (const ev of events) {
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        yield ev;
+      }
     },
   };
 }
