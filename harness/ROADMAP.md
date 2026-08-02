@@ -264,10 +264,24 @@ batch that cannot apply shows its reason **before** you approve rather than afte
 nothing in the new code repairs partial args. Peeked in Chrome (VISUAL-LOG "D-53"), where approving a
 batch with one bad file was confirmed to write **nothing**.
 
-**376 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (delete as a reversible masking flag +
-rename from a history row — both designed in `DECISIONS.md`, both deliberately cut from X-12a since
-neither is needed to *read* an old thread), **then P7c** — live validation against the real
-`file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+**Filed 2026-08-02: X-12b now has its own row in [`DECISIONS.md`](DECISIONS.md)** — it was only a
+parenthetical on the X-12a row, which reads as done when only the *decision* is done. Joshua, from
+real use: *"the History items do not have an X to delete them… we decided they are not actually
+deleted but just marked in the index as deleted. But there isn't any way that I can see to do that
+marking."* Confirmed: none of the masking is code — `IndexRow` has no `deleted` field, `list()` folds
+newest-wins for `title` only, and the server has no mutating conversation-scoped route. The slice is
+three parts: (1) **delete = the reversible masking flag** (index only, so there's one flag to
+hand-flip), with a hover `×` on the row and a confirm that names the thread; (2) **rename from a
+history row** (`POST /conversation/:id/title`, routed through a live session if one holds that id, or
+the rail card goes stale); (3) **an empty session shouldn't join history at all** — `startSession`
+writes the index row eagerly at construction (`server.ts:223`), so closing a thread you never typed
+into leaves an untitled stub. Prefer deferring `create()` to the first entry over masking-on-close;
+audit what reads the index during the live-but-silent window first.
+
+**376 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
+row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
+X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
+real `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 ---
 
