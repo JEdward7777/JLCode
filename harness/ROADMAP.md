@@ -351,6 +351,35 @@ one; (2) this overlaps the in-flight D-57 retry work, which is already editing `
 `session-state.ts` — same failure family (a request that didn't land), so land it after D-57 and
 consider whether the reconnect/re-sync belongs in one place rather than per call site.
 
+**Filed 2026-08-04: X-22 — a requested-but-not-yet-run tool call is not durable, and the log it
+leaves behind cannot be replayed.** Raised by Joshua while reading X-21, asking whether the real
+defect is that we have no way to represent "this has already happened but hasn't been LLM'd yet".
+Close, and worth stating precisely, because one of the two boundaries is fine and the other is not.
+**Fine:** *tool ran, model hasn't answered yet.* `tool` is a first-class entry type with its own
+`parent` link, written as the result lands, and `buildWireMessages` (`src/conversation/wire.ts:40`)
+replays it as a `role:"tool"` message — kill the process there and resume simply owes an LLM call.
+**Not fine:** *model asked for a tool and it hasn't run yet.* Two gaps. (1) **The intent is
+in-memory only** — `pendingToolCalls` and `pendingApproval` (`src/session/session.ts:216`) are
+plain fields; nothing in `src/persist/` has ever heard of them, so a kill loses the queue of
+un-run calls and keeps only the assistant entry that requested them. (2) **What survives is
+unreplayable**: verified by running `buildWireMessages` over a conversation whose leaf is an
+assistant entry with `toolCalls` and no matching `tool` entry — it emits `assistant(tool_calls)`
+followed by the next `user` message, with nothing synthesizing the missing result, and every
+provider requires each `tool_use` to be answered by a `tool_result`. Nothing repairs this on load.
+A live fixture exists: `cv_9c76e3ad2172` sits in exactly this state on disk. Same *shape* as X-12's
+`Invalid signature` trap — a log that reads fine and cannot be picked back up. Two directions,
+probably both: **(a) repair on read** — close a dangling call at *wire-build* time with a synthetic
+`tool_result` ("not run — session ended"), which makes every existing log replayable and, being a
+wire-build concern, rewrites nothing (the log is append-only by design and X-12 already committed to
+never rewriting it); **(b) persist the pending batch and its approval** as a durable record so
+resume re-raises the approval instead of discarding the work. (a) is the floor that stops data
+loss from becoming a dead thread; (b) is what actually resumes it. **Do (b) with the id** —
+`appr_…`/tool-call id in the record — because that is also the structural fix for X-21: reconnect,
+page reload, process restart and a duplicate POST all collapse into one idempotent operation (read
+the pending record, compare ids, act at most once) instead of four separately-handled cases. X-21
+is this same gap seen from the browser; it can be fixed first and cheaply, but this row is the one
+that makes it impossible.
+
 **422 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
 row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
 X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
