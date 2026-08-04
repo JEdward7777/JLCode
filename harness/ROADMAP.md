@@ -309,6 +309,48 @@ first, so the button is reserved for what a machine cannot fix; the client now t
 `HttpError` to keep that split off message-regexes. `POST /session/:id/retry`; peeked in the
 browser across all four surfaces (`VISUAL-LOG.md`).
 
+**Filed 2026-08-04: X-21 — a failed approve/answer POST strands the browser out of sync with the
+session.** From real use (Joshua, session `sess_f430000fc69c`): a network error while resolving an
+approval, then every subsequent message bounced with *"Session is waiting for input; resolve it
+before sending."* and no card on screen to resolve. The server was right and the browser was wrong.
+`resolveApproval` (`web/src/App.tsx:399`) clears the card **optimistically** —
+`patch: { pendingApproval: null, working: true }` — then `await apiApprove(...)`, and its `catch`
+only paints `notice`; it never restores `pendingApproval`. So a POST that fails leaves the server in
+`awaiting-approval` with the client believing nothing is pending: the composer re-enables, `/chat`
+relays `assertCanSend`'s throw (`src/session/session.ts:828`) and the user is told to resolve
+something the UI has stopped showing. Nothing re-syncs, because the failure was on the POST and the
+SSE bus stayed up — no fresh `roster` frame arrives to correct the slice. Verified live: the running
+npx build had `status:"awaiting-approval"` holding a `write_file` on
+`FeatureFlagsDiagnostics.tsx`, its conversation log ended on an assistant entry with a tool call and
+no result, and the shipped bundle (`dist/web/assets/index-*.js`) carries the same optimistic clear.
+**`submitAnswer` (`App.tsx:421`) has the identical hole** for `ask_user`/`pendingAsk`. Fix on the
+`catch` path: **re-fetch `GET /session/:id` and `applyState` the response** rather than restoring
+the local copy — the POST may have landed with only the reply lost, and resurrecting a card the
+session already consumed is its own bug; the server's settled state is the only honest answer, and
+`applyState` (`web/src/session-state.ts`) already folds `approvalRequest`/`question` back in, which
+is why a plain page reload cures it today. **Second defect, found by Joshua while reading this row —
+`/approve` is not addressed to a request.** The route (`src/server/server.ts:681`) checks only
+`session.status !== "awaiting-approval"` and then applies the decision to whatever is pending *at
+arrival*; the server mints `appr_…` (`session.ts:1306`) and ships it to the browser, but the browser
+never sends it back, and `/answer` is the same (no question id). So a duplicate or late-delivered
+decision can land on **a different tool call than the one the user read** — and since `/approve`
+runs the tool inline before responding, a network error genuinely can mean *the patch applied and
+the reply was lost*. The re-fetch above keeps the user from re-approving a call that already ran,
+but it cannot make the POST itself safe: **send the `appr_…` id with the decision and 409 when it
+doesn't match the pending request** (same for `/answer`). That makes double-submit safe by
+construction and turns "did my decision land?" into an answerable question. Don't lean on the tools
+being idempotent — `apply_edits` would probably fail its anchor match on a re-run and `write_file`
+overwrites the same bytes, but `run_command` is not idempotent at all, and no fix should require the
+user to reason about the race (*"click Deny this time"* is not a fix). Related UI call: when the
+re-fetch shows the **next** request in a batch right after a failed click, the card must read as a
+new request, not as the retry of the one that just errored — otherwise the reflex click approves
+something unread. Two more notes for whoever picks it up: (1) `/chat`'s message
+says *"waiting for input"* for an **approval** pause too, which sends you hunting for a question
+that was never asked — the three awaiting states are distinguishable and the copy should say which
+one; (2) this overlaps the in-flight D-57 retry work, which is already editing `App.tsx` and
+`session-state.ts` — same failure family (a request that didn't land), so land it after D-57 and
+consider whether the reconnect/re-sync belongs in one place rather than per call site.
+
 **422 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
 row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
 X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
