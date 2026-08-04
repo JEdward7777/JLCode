@@ -13,6 +13,7 @@ import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
+import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages, pinnedProvider } from "../conversation/wire.js";
 import type { Conversation, Entry } from "../conversation/types.js";
@@ -60,6 +61,11 @@ export interface SessionOptions {
   driver: LlmDriver;
   systemPrompt?: string;
   maxConsecutiveFailures?: number;
+  /** How many times a *transient* provider failure is re-sent automatically
+   *  before the user is asked to decide (D-57). 0 disables auto-retry. */
+  maxAutoRetries?: number;
+  /** Backoff between automatic attempts. Injectable so tests don't sleep. */
+  autoRetryDelay?: (err: unknown, attempt: number) => number;
   tools?: ToolRegistry;
   sandbox?: Sandbox;
   /** A static gate (tests). For a live-switchable gate, pass `buildGate`. */
@@ -180,6 +186,12 @@ export class Session {
   /** True once a cap breach has blocked the next LLM call, until the cap is
    *  raised. Nothing is killed — the loop just declines to continue (D-33). */
   capReached = false;
+  /** True when the last turn ended somewhere a Retry can act on (D-57): the
+   *  request failed (or the breaker tripped) and the branch was left exactly as
+   *  that request found it — a user message with no answer under it. Re-running
+   *  the loop rebuilds the identical prefix, so retrying costs nothing but the
+   *  call. Cleared the moment a turn succeeds or a new message is sent. */
+  retryable = false;
   /** True once ground-truth usage says the next request would exceed the budget
    *  (D-44). Detection only in P6a — the loop still proceeds (accepting the one
    *  accepted overshoot turn); the actual compaction engine is P6b. */
@@ -228,6 +240,15 @@ export class Session {
   /** Set by a turn that hit the over-window hard wall (D-44b) so the loop can
    *  compact-and-retry instead of failing. Cleared once handled. */
   private overWindow = false;
+  /** A Retry that arrived while a request was in flight (D-57): abandon the
+   *  attempt and send the identical prefix again. Deliberately *not* a stop —
+   *  nothing is killed, no failure is counted, the turn just gets another go. */
+  private restartRequested = false;
+  /** True while an LLM request is actually streaming. What makes a mid-flight
+   *  Retry meaningful: with no request in flight there is nothing to abandon. */
+  private streaming = false;
+  private readonly maxAutoRetries: number;
+  private readonly autoRetryDelay: (err: unknown, attempt: number) => number;
   /** The known-prefix size from the last budget-crossing evaluation (D-44), shown
    *  on the pre-send compaction pause card (P6c). Informational only. */
   private lastPrefixTokens = 0;
@@ -261,6 +282,8 @@ export class Session {
     this.config = options.config;
     this.driver = options.driver;
     this.maxFailures = options.maxConsecutiveFailures ?? 3;
+    this.maxAutoRetries = options.maxAutoRetries ?? 3;
+    this.autoRetryDelay = options.autoRetryDelay ?? retryDelayMs;
     this.tools = options.tools;
     this.sandbox = options.sandbox;
     this.mode = options.mode ?? options.config.defaultMode;
@@ -504,6 +527,9 @@ export class Session {
    *  LLM turn. If the loop is running it observes the flag and settles itself. */
   stop(scope: "hard" | "soft"): void {
     this.stopScope = scope;
+    // A stop outranks a Retry that was mid-flight: the user changed their mind
+    // about wanting this turn at all, so don't let the restart flag resurrect it.
+    this.restartRequested = false;
     if (scope === "hard") {
       this.abortController?.abort();
       this.tasks?.killAll("stop");
@@ -810,6 +836,7 @@ export class Session {
   async send(text: string): Promise<void> {
     this.assertCanSend();
     this.stopScope = null; // a fresh message clears any prior stop flag
+    this.retryable = false; // ...and supersedes any failed turn waiting on a Retry
     // Pin the turn to the branch in view (H-05) before the first append, so
     // everything this turn produces chains off here no matter where the reader
     // navigates while it runs.
@@ -986,7 +1013,7 @@ export class Session {
         // suggest / manual: proceed uncompacted — compaction is UI-driven out-of-band.
       }
 
-      const result = await this.assistantTurnWithCompaction();
+      const result = await this.assistantTurnWithRestart();
       if (!result) {
         if (this.stopScope) this.settleStopped(); // aborted by a hard stop
         return; // else error/halt/over-window already handled
@@ -1126,50 +1153,168 @@ export class Session {
     return retry;
   }
 
+  /** Run one assistant turn, honoring a Retry that arrives while it is in flight
+   *  (D-57). The abort surfaces as an empty turn with `restartRequested` set, and
+   *  we send the identical prefix again — same shape as the over-window
+   *  compact-and-retry it wraps, and bounded the same way: each click sets the
+   *  flag once, so this loops exactly as often as the user asks it to. */
+  private async assistantTurnWithRestart(): Promise<AssistantResult | undefined> {
+    for (;;) {
+      const result = await this.assistantTurnWithCompaction();
+      if (!this.restartRequested) return result;
+      this.restartRequested = false;
+      // The abandoned attempt landed anyway — it finished in the gap between the
+      // click and the abort. Its entry is already in the tree, so take it rather
+      // than asking the model the same thing twice.
+      if (result) return result;
+    }
+  }
+
+  /** Wait between automatic attempts without going deaf: a Stop or a manual
+   *  Retry during the backoff cuts it short, rather than making the user watch
+   *  out a countdown they have already decided against. False → interrupted. */
+  private async backOff(ms: number): Promise<boolean> {
+    const step = 100;
+    for (let waited = 0; waited < ms; waited += step) {
+      if (this.stopScope || this.restartRequested) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(step, ms - waited)));
+    }
+    return !this.stopScope && !this.restartRequested;
+  }
+
+  /**
+   * Re-attempt the current turn (D-57) — the Retry button.
+   *
+   * One act with three doors into it, because the work is identical in all
+   * three: a failed or abandoned attempt appends **nothing** to the tree, so
+   * re-running the loop rebuilds the very same wire prefix from the very same
+   * leaf. Retry never edits history; it just asks again.
+   *
+   *  - **idle after an error** — send it again.
+   *  - **`halted`** — the breaker counts *consecutive* failures, and a person
+   *    deliberately asking again is the discontinuity that count is measuring;
+   *    reset it and send.
+   *  - **running** — the request looks hung: abort the stream and re-send.
+   *    Only the LLM request is aborted. Background tasks keep running and the
+   *    queue is untouched — killing those is Stop's job (D-34), and someone who
+   *    wanted that would have reached for the red button.
+   *
+   * Retries the branch **in view**: the failed turn released its pin when it
+   * ended, so the reader's pointer is the honest answer to "which turn?" (D-54).
+   */
+  async retry(): Promise<void> {
+    if (this.status === "running") {
+      if (!this.streaming) {
+        throw new Error("No model request is in flight — a tool or command is running. Use Stop, or kill the task.");
+      }
+      this.restartRequested = true;
+      this.abortController?.abort();
+      return; // the in-flight turn observes the flag and re-sends itself
+    }
+    if (this.status !== "idle" && this.status !== "halted") {
+      throw new Error(`Cannot retry while ${this.status}.`);
+    }
+    if (!this.retryable) throw new Error("Nothing to retry — the last turn did not fail.");
+    this.retryable = false;
+    this.consecutiveFailures = 0;
+    this.stopScope = null;
+    this.turnLeaf = this.conversation.activeLeaf;
+    await this.advance();
+  }
+
   private async oneAssistantTurn(): Promise<AssistantResult | undefined> {
     const req = this.buildRequest();
-    const events: StreamEvent[] = [];
-    const startedAt = Date.now();
     const toolNames = (req.tools ?? []).map((t) => t.function.name);
-    this.emit({ type: "assistant-start", parent: this.workingLeaf });
-    this.abortController = new AbortController();
-    try {
-      for await (const ev of this.driver.streamChat(req, { signal: this.abortController.signal })) {
-        events.push(ev);
-        if (ev.type === "text") this.emit({ type: "text", delta: ev.delta });
-        else if (ev.type === "reasoning") this.emit({ type: "reasoning", delta: ev.delta });
-      }
-    } catch (err) {
-      // A hard stop aborts the request mid-stream (D-34): discard the turn
-      // without counting it as a failure — advance() settles the loop.
-      if (this.stopScope === "hard" || (err as Error).name === "AbortError") return undefined;
-      // Over-window hard-wall fallback (D-44b): a single turn's new content blew
-      // the whole buffer, so the provider rejected `prompt > context_length`.
-      // Flag it and unwind; `assistantTurnWithCompaction` compacts and retries.
-      if (isOverWindowError(err)) {
-        this.overWindow = true;
+    // Attempt loop (D-57). A *transient* failure — rate limited, gateway blip,
+    // socket reset — is re-sent automatically rather than surfaced as something
+    // the user has to click through: the request was fine, the provider merely
+    // wasn't. Failures that say something true about the request or the account
+    // (402 no credits, 401, 400) fall straight through on the first attempt,
+    // because retrying a fact does not change it.
+    let events: StreamEvent[] = [];
+    // Per-attempt, so each journal record times the attempt it belongs to rather
+    // than the whole retried sequence.
+    let startedAt = Date.now();
+    for (let attempt = 1; ; attempt++) {
+      events = [];
+      startedAt = Date.now();
+      // Re-announced per attempt: `assistant-start` resets the browser's live
+      // overlay, so a re-send starts from an empty bubble instead of appending
+      // to the half-streamed text of the attempt we just abandoned.
+      this.emit({ type: "assistant-start", parent: this.workingLeaf });
+      this.abortController = new AbortController();
+      this.streaming = true;
+      try {
+        for await (const ev of this.driver.streamChat(req, { signal: this.abortController.signal })) {
+          events.push(ev);
+          if (ev.type === "text") this.emit({ type: "text", delta: ev.delta });
+          else if (ev.type === "reasoning") this.emit({ type: "reasoning", delta: ev.delta });
+        }
+        break; // streamed clean — fall through to accumulate it
+      } catch (err) {
+        // A Retry landed while this request was in flight (D-57) — the user
+        // called it hung. The abort is a restart, not a failure: unwind with
+        // nothing counted and let the wrapper send the identical prefix again.
+        if (this.restartRequested) return undefined;
+        // A hard stop aborts the request mid-stream (D-34): discard the turn
+        // without counting it as a failure — advance() settles the loop.
+        if (this.stopScope === "hard" || (err as Error).name === "AbortError") return undefined;
+        // Over-window hard-wall fallback (D-44b): a single turn's new content blew
+        // the whole buffer, so the provider rejected `prompt > context_length`.
+        // Flag it and unwind; `assistantTurnWithCompaction` compacts and retries.
+        if (isOverWindowError(err)) {
+          this.overWindow = true;
+          return undefined;
+        }
+        if (attempt <= this.maxAutoRetries && isTransientError(err)) {
+          const delayMs = this.autoRetryDelay(err, attempt);
+          this.emit({
+            type: "retrying",
+            attempt,
+            of: this.maxAutoRetries,
+            delayMs,
+            message: (err as Error).message,
+          });
+          this.emit({
+            type: "debug",
+            record: {
+              kind: "llm",
+              ms: Date.now() - startedAt,
+              model: req.model,
+              messages: req.messages.length,
+              tools: toolNames,
+              error: `[transient — auto-retry ${attempt}/${this.maxAutoRetries} in ${delayMs}ms] ${(err as Error).message}`,
+            },
+          });
+          if (await this.backOff(delayMs)) continue;
+          return undefined; // a stop or a manual Retry cut the wait short
+        }
+        this.consecutiveFailures++;
+        // Nothing was appended, so the branch still ends at the message this
+        // request was answering: a Retry can send it again as-is (D-57).
+        this.retryable = true;
+        this.emit({ type: "error", message: (err as Error).message, retryable: true });
+        this.emit({
+          type: "debug",
+          record: {
+            kind: "llm",
+            ms: Date.now() - startedAt,
+            model: req.model,
+            messages: req.messages.length,
+            tools: toolNames,
+            error: (err as Error).message,
+          },
+        });
+        if (this.consecutiveFailures >= this.maxFailures) {
+          this.status = "halted";
+          this.emit({ type: "halted", reason: `${this.consecutiveFailures} consecutive failures`, retryable: true });
+        } else {
+          this.status = "idle";
+        }
         return undefined;
+      } finally {
+        this.streaming = false;
       }
-      this.consecutiveFailures++;
-      this.emit({ type: "error", message: (err as Error).message });
-      this.emit({
-        type: "debug",
-        record: {
-          kind: "llm",
-          ms: Date.now() - startedAt,
-          model: req.model,
-          messages: req.messages.length,
-          tools: toolNames,
-          error: (err as Error).message,
-        },
-      });
-      if (this.consecutiveFailures >= this.maxFailures) {
-        this.status = "halted";
-        this.emit({ type: "halted", reason: `${this.consecutiveFailures} consecutive failures` });
-      } else {
-        this.status = "idle";
-      }
-      return undefined;
     }
 
     const result = accumulate(events);
@@ -1206,6 +1351,7 @@ export class Session {
       },
     });
     this.consecutiveFailures = 0;
+    this.retryable = false; // a turn landed — there is no failed attempt to redo
     const turnUsd = computeCost(result.usage, this.pricing);
     this.spendUsd += turnUsd;
     this.emit({ type: "spend", totalUsd: this.spendUsd, turnUsd, usage: result.usage });

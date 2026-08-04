@@ -299,7 +299,17 @@ decide the cap/exclusion story for both tools at once rather than twice — D-55
 (no file cap, `.git` only) means a repo-root search now reads all of `node_modules`, which is
 ~8s cold on this repo and scales with the tree.
 
-**398 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
+**Landed 2026-08-04: D-57 — a Retry button.** From real use: an OpenRouter *out of credits* error
+ended a turn with no way to resume it. A failed attempt appends nothing, so re-running the loop
+rebuilds an identical prefix — which makes Retry one act (*throw away this attempt and make it
+again*) with three doors: after an error, after the breaker tripped (resetting it), and against a
+**running** request that has gone silent for 20s, where it aborts only the LLM stream and leaves
+tasks/queue alone. Transient failures (429/408/5xx/network) are re-sent automatically with backoff
+first, so the button is reserved for what a machine cannot fix; the client now throws a typed
+`HttpError` to keep that split off message-regexes. `POST /session/:id/retry`; peeked in the
+browser across all four surfaces (`VISUAL-LOG.md`).
+
+**422 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
 row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
 X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
 real `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.

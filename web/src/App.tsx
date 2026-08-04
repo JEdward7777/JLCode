@@ -13,6 +13,7 @@ import {
   resolvePersistence as apiResolvePersistence,
   setCap as apiSetCap,
   stopSession as apiStop,
+  retryTurn as apiRetry,
   killTask as apiKillTask,
   queueMessage as apiQueue,
   setQueue as apiSetQueue,
@@ -65,6 +66,10 @@ const WORKING = ["percolating…", "pondering…", "noodling…", "whirring…",
 const MODES: Mode[] = ["ask", "plan", "code"];
 const POLICIES: ApprovalPolicy[] = ["manual", "auto-safe", "full-auto", "read-only"];
 const TRIGGER_MODES: TriggerMode[] = ["auto", "manual", "suggest", "cancelable", "hard"];
+/** How long a running turn must go completely silent before we offer to abandon
+ *  and re-send it (D-57). Long enough that a model thinking hard, or a slow
+ *  first token on a cold route, never trips it. */
+const HUNG_AFTER_MS = 20_000;
 
 /** The bag of live sessions, keyed by id (D-43). One multiplexed bus feeds every
  *  slice, so background sessions stay current while another is focused. */
@@ -451,6 +456,21 @@ export function App() {
     [notify],
   );
 
+  // Re-attempt the current turn (D-57). Clearing the notice first matters: the
+  // error we are retrying is the only thing on screen saying anything is wrong,
+  // and leaving it up through a successful retry reads as a second failure.
+  const retry = useCallback(
+    async (id: string) => {
+      dispatch({ t: "patch", id, patch: { notice: null, retryable: false } });
+      try {
+        await apiRetry(id);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
+
   const killOne = useCallback(
     async (id: string, taskId: string) => {
       try {
@@ -615,6 +635,7 @@ export function App() {
           onSubmitAnswer={submitAnswer}
           onChangeCap={changeCap}
           onStop={stop}
+          onRetry={retry}
           onKillTask={killOne}
           onCancelQueued={cancelQueued}
           onSwitchBranch={switchBranch}
@@ -987,6 +1008,7 @@ function ChatPane({
   onSubmitAnswer,
   onChangeCap,
   onStop,
+  onRetry,
   onKillTask,
   onCancelQueued,
   onSwitchBranch,
@@ -1015,6 +1037,7 @@ function ChatPane({
   onSubmitAnswer: (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => void;
   onChangeCap: (id: string, v: number | null) => void;
   onStop: (id: string, scope: "hard" | "soft") => void;
+  onRetry: (id: string) => void;
   onKillTask: (id: string, taskId: string) => void;
   onCancelQueued: (id: string, qid: string) => void;
   onSwitchBranch: (id: string, siblingId: string) => void;
@@ -1035,6 +1058,19 @@ function ChatPane({
     const t = setInterval(() => setWorkWord(WORKING[++i % WORKING.length]!), 1400);
     return () => clearInterval(t);
   }, [slice.working]);
+
+  // "It looks hung" (D-57): a running turn that has emitted nothing for a long
+  // stretch. Tick only while working — when the stream is healthy the tokens
+  // themselves re-render us, and when it really is wedged a 2s tick costs
+  // nothing. Gating the button on silence is the point: it can't be fat-fingered
+  // into throwing away a stream that is busy answering.
+  const [quietSince, setQuietSince] = useState(0);
+  useEffect(() => {
+    if (!slice.working) return setQuietSince(0);
+    const t = setInterval(() => setQuietSince(Date.now() - slice.lastEventAt), 2000);
+    return () => clearInterval(t);
+  }, [slice.working, slice.lastEventAt]);
+  const looksHung = slice.working && quietSince > HUNG_AFTER_MS;
 
   // Keep the newest message / prompt in view.
   useEffect(() => {
@@ -1180,7 +1216,32 @@ function ChatPane({
           <CompactionBanner onCompact={() => onCompact(id)} />
         )}
         {slice.capReached && <CapBanner spendUsd={slice.spendUsd} capUsd={slice.capUsd} onRaise={(v) => onChangeCap(id, v)} />}
-        {slice.notice && <div className="notice">{slice.notice}</div>}
+        {/* A request that has gone quiet (D-57). Offered only after real silence,
+            and it abandons just the model request — tasks and queue keep going. */}
+        {looksHung && (
+          <div className="notice hung">
+            <span>No response for {Math.round(quietSince / 1000)}s. The request may be stuck.</span>
+            <button className="ghost" onClick={() => onRetry(id)} title="abandon this request and send it again">
+              ↻ Retry
+            </button>
+          </div>
+        )}
+        {/* `retryable` without a notice is a *reloaded* tab: the failure arrived
+            as a live event this page never saw, but the settled state still says
+            the turn is re-sendable. Offer it anyway with a generic line — the
+            button is the point, and losing it to an F5 would be its own bug. */}
+        {(slice.notice || slice.retryable) && (
+          <div className="notice">
+            <span>{slice.notice ?? "The last turn failed before it was answered."}</span>
+            {/* Nothing was written, so this re-sends the same prefix — the fix
+                for "I topped up my credits, now what?" (D-57). */}
+            {slice.retryable && (
+              <button className="ghost" onClick={() => onRetry(id)} title="send this turn again">
+                ↻ Retry
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {slice.queue.length > 0 && (

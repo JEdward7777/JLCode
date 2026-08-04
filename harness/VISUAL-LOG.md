@@ -658,3 +658,52 @@ pass — not filed as a defect.
 
 Not exercised visually (covered by tests): the approval/ask pause holding the pin
 across a resume, and the wire being rebuilt from the pinned branch.
+
+---
+
+## D-57 — Retry: re-attempting a turn · 2026-08-04 · ✅ looked good
+
+**Screenshots:** [`visual/d57-retry-live-error.png`](visual/d57-retry-live-error.png) ·
+[`visual/d57-retry-recovered.png`](visual/d57-retry-recovered.png) ·
+[`visual/d57-retry-error.png`](visual/d57-retry-error.png) ·
+[`visual/d57-auto-retrying.png`](visual/d57-auto-retrying.png) ·
+[`visual/d57-hung.png`](visual/d57-hung.png) ·
+[`visual/d57-hung-recovered.png`](visual/d57-hung-recovered.png)
+
+Fake agent driver, isolated config/data dirs, scratch workspace. The driver grew
+three failure prefixes for this (`fail:` a 402, `flaky:` two 503s, `hang:` a
+request that never answers) — each misbehaves once and then works, because what
+needs looking at is the recovery, not the failure. Confirmed with my own eyes:
+
+- **The reported bug, and its fix.** `OpenRouter 402 Payment Required:
+  Insufficient credits` in red with **↻ Retry** sitting on the same line. Clicked
+  it: the error and the button vanished, the answer streamed in **under the
+  original message**, and the log on disk holds four entries —
+  `user | assistant | user | assistant` — with **no "continue" message** invented
+  to restart the thread. That is the whole feature in one screenshot pair.
+- **A reload does not lose the button.** Opening `/?session=<id>` fresh, after a
+  failure the tab never witnessed, still offers Retry — the settled state carries
+  `retryable`, with a generic line standing in for the error text the page missed.
+  *(Found while looking: it didn't, at first. The button was nested inside the
+  live-event notice, so F5 threw the only way out of a failed turn away.)*
+- **An automatic retry says so.** Mid-backoff: `percolating…` still spinning above
+  `Provider failed (OpenRouter 503 Service Unavailable: upstream is busy) —
+  retrying 1/3 in 1s…`. It reads as *working*, not stalled — which is the point,
+  since a user who thinks it is wedged will retry by hand on top of the retry
+  already in flight. *(Found while looking: the notice outlived its own success,
+  leaving a red provider-failure line hanging over a perfectly good answer. It is
+  now retired when the turn lands.)*
+- **A hung request is a warning, not an error.** After 26s of silence: the
+  half-streamed `Let me think about` still on screen, `percolating…` still going,
+  and a **muted grey** `No response for 26s. The request may be stuck. ↻ Retry` —
+  visibly a different weight from the red 402. **Stop stays lit right beside it**,
+  which is the distinction that matters: Retry abandons the request, Stop
+  abandons everything.
+- **Retrying a hung turn keeps it a turn.** Clicked Retry on the wedged request:
+  the abandoned half-reply was discarded (not concatenated onto the new one — the
+  overlay resets per attempt), the real answer landed, and the tree again held
+  exactly four entries.
+
+Not exercised visually (covered by tests): the breaker-reset path from `halted`,
+the 20s gate itself (waited it out rather than faking the clock), and the refusal
+when no request is in flight.

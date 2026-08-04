@@ -166,6 +166,7 @@ function stateOf(session: Session): Record<string, unknown> {
     queue: session.queuedMessages,
     triggerMode: session.triggerMode, // live compaction trigger mode (D-27, P6c)
     needsCompaction: session.needsCompaction, // budget crossed (drives the suggest banner)
+    retryable: session.retryable, // the last turn failed and can be re-sent as-is (D-57)
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };
   // `approval` is the policy (above); the pending request rides separately so the
@@ -502,6 +503,21 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const body = (await c.req.json().catch(() => ({}))) as { scope?: unknown };
     const scope = body.scope === "soft" ? "soft" : "hard"; // default to the big red button
     session.stop(scope);
+    return c.json(stateOf(session));
+  });
+
+  // Re-attempt the current turn (D-57) — the Retry button. Valid after a failed
+  // turn, after the breaker tripped, and against a request that looks hung; the
+  // session decides which and rejects the rest. Nothing is appended either way,
+  // so this is safe to fire twice.
+  app.post("/session/:id/retry", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    try {
+      await session.retry();
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 409);
+    }
     return c.json(stateOf(session));
   });
 

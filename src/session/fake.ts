@@ -4,6 +4,7 @@
  */
 import zlib from "node:zlib";
 import type { ChatRequest, LlmDriver, StreamEvent } from "../llm/types.js";
+import { HttpError } from "../llm/errors.js";
 
 /** Milliseconds to hold between fake stream events (`JLCODE_FAKE_LLM_DELAY_MS`).
  *  Zero — the default, and what every test runs at — streams the whole reply in
@@ -93,7 +94,44 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  * (the latest message is no longer the user's), it gives a short final answer.
  */
 export function fakeAgentDriver(): LlmDriver {
-  return scriptedDriver((req) => {
+  // Failure shapes, so the Retry surfaces (D-57) are drivable offline: `fail:`
+  // is a dead end a retry fixes, `flaky:` a blip it rides out on its own, and
+  // `hang:` a request that never answers. Each misbehaves once and then works,
+  // because what needs looking at is the *recovery*, not the failure.
+  const spent = new Set<string>();
+  const scripted = scriptedDriver(fakeAgentScript);
+  return {
+    async *streamChat(req, opts): AsyncGenerator<StreamEvent> {
+      const last = req.messages[req.messages.length - 1];
+      const msg = last?.role === "user" && typeof last.content === "string" ? last.content.trim() : "";
+      const mode = /^(fail|flaky|hang):/.exec(msg)?.[1];
+      if (mode && !spent.has(mode)) {
+        if (mode !== "flaky") spent.add(mode); // flaky clears itself once its retries run out
+        if (mode === "fail") throw new HttpError(402, "OpenRouter 402 Payment Required: Insufficient credits");
+        if (mode === "flaky") {
+          flakyLeft -= 1;
+          if (flakyLeft <= 0) spent.add("flaky");
+          throw new HttpError(503, "OpenRouter 503 Service Unavailable: upstream is busy");
+        }
+        yield { type: "text", delta: "Let me think about " };
+        await new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        });
+      }
+      yield* scripted.streamChat(req, opts);
+    },
+  };
+}
+
+/** Attempts `flaky:` fails before it settles down — two, so the "retrying 2/2"
+ *  notice is reachable without a long wait. */
+let flakyLeft = 2;
+
+function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     const last = req.messages[req.messages.length - 1];
     // A tool result (or anything non-user) just settled → wrap up the turn.
     if (!last || last.role !== "user") return textReply("Done — the tool ran and reported back.");
@@ -176,8 +214,7 @@ export function fakeAgentDriver(): LlmDriver {
         ],
       });
     }
-    return echoReply(msg);
-  });
+  return echoReply(msg);
 }
 
 /** A solid-colour PNG as a data URI — a clean, offline `<img src>` for the peek

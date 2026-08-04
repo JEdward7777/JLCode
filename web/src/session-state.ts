@@ -68,7 +68,19 @@ export interface SessionSlice {
   /** A stalled persistence write the session is stopped on (D-46). Blocks the
    *  composer: nothing may proceed until it is retried or explicitly discarded. */
   persistenceFault: PersistenceFault | null;
+  /** The last turn failed and left the branch untouched, so it can simply be
+   *  sent again (D-57). Drives the Retry button beside the error notice. */
+  retryable: boolean;
+  /** When this session last showed any sign of life, as `Date.now()`. A running
+   *  turn that has gone quiet for a long stretch is how "it looks hung" is
+   *  actually detected — there is no other signal, since a wedged provider
+   *  socket looks exactly like a model thinking hard. */
+  lastEventAt: number;
   notice: string | null;
+  /** What put the current notice up. Only "retrying" is distinguished, because
+   *  it is the one notice that becomes a lie the moment the turn succeeds —
+   *  every other notice is about something that really did happen. */
+  noticeKind: "retrying" | null;
   input: string;
 }
 
@@ -99,7 +111,10 @@ export function newSlice(id: string, model = ""): SessionSlice {
     needsCompaction: false,
     pendingCompaction: null,
     persistenceFault: null,
+    retryable: false,
+    lastEventAt: Date.now(),
     notice: null,
+    noticeKind: null,
     input: "",
   };
 }
@@ -132,11 +147,15 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (typeof state.needsCompaction === "boolean") next.needsCompaction = state.needsCompaction;
   next.pendingCompaction = state.compactionRequest ?? null;
   next.persistenceFault = state.persistenceFault ?? null;
+  if (typeof state.retryable === "boolean") next.retryable = state.retryable;
   return next;
 }
 
 /** Fold one live wire event into a slice (the per-session bus reducer). */
 export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
+  // Any event at all is a sign of life, and that is exactly what the hung
+  // detector wants: silence is the symptom, not any particular event's absence.
+  s = { ...s, lastEventAt: Date.now() };
   switch (e.type) {
     case "entry": {
       // Live tree growth (D-37): append new nodes, advance the active leaf along
@@ -194,13 +213,23 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
         live: { text: "", reasoning: "" },
         liveParent: (e.parent as string | null) ?? null,
         pendingCompaction: null,
+        retryable: false, // an attempt is under way; there is nothing to re-send
       };
     case "reasoning":
       return { ...s, live: { ...(s.live ?? { text: "", reasoning: "" }), reasoning: (s.live?.reasoning ?? "") + (e.delta as string) } };
     case "text":
       return { ...s, live: { ...(s.live ?? { text: "", reasoning: "" }), text: (s.live?.text ?? "") + (e.delta as string) } };
     case "assistant-end":
-      return { ...s, working: false, live: null };
+      // The turn landed. If a backoff notice is still up it has been overtaken
+      // by events — retiring it is the difference between "that resolved" and a
+      // warning left hanging over a perfectly good answer.
+      return {
+        ...s,
+        working: false,
+        live: null,
+        notice: s.noticeKind === "retrying" ? null : s.notice,
+        noticeKind: s.noticeKind === "retrying" ? null : s.noticeKind,
+      };
     case "trigger-mode":
       return { ...s, triggerMode: e.mode as TriggerMode };
     case "needs-compaction":
@@ -226,10 +255,27 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, working: false, live: null, pendingAsk: e.question as AskUserRequest };
     case "truncation":
       return { ...s, notice: e.message as string };
+    case "retrying": {
+      // Still working — the session is mid-backoff, not stalled. Saying so keeps
+      // an automatic retry from reading as a hang and getting "helpfully" retried
+      // by hand on top of the retry already in flight (D-57).
+      const secs = Math.max(1, Math.round((e.delayMs as number) / 1000));
+      return {
+        ...s,
+        notice: `Provider failed (${e.message as string}) — retrying ${e.attempt as number}/${e.of as number} in ${secs}s…`,
+        noticeKind: "retrying",
+      };
+    }
     case "error":
-      return { ...s, notice: e.message as string, working: false, live: null };
+      return { ...s, notice: e.message as string, noticeKind: null, working: false, live: null, retryable: Boolean(e.retryable) };
     case "halted":
-      return { ...s, notice: `halted: ${e.reason as string}`, working: false, live: null };
+      return {
+        ...s,
+        notice: `halted: ${e.reason as string}`,
+        working: false,
+        live: null,
+        retryable: Boolean(e.retryable),
+      };
     default:
       return s;
   }

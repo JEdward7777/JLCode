@@ -210,6 +210,7 @@ export interface SessionState {
   needsCompaction?: boolean; // budget crossed — drives the suggest banner (D-44)
   compactionRequest?: CompactionRequest; // pending pre-send compaction pause (D-27)
   persistenceFault?: PersistenceFault; // a write failed; session stopped on it (D-46)
+  retryable?: boolean; // the last turn failed and can be re-sent as-is (D-57)
 }
 
 /** A session event as it arrives over SSE (subset the UI acts on; see session/types.ts). */
@@ -462,6 +463,13 @@ export async function setCap(id: string, capUsd: number | null): Promise<void> {
  *  "soft" lets running commands finish but takes no further LLM turn. */
 export async function stopSession(id: string, scope: "hard" | "soft"): Promise<void> {
   await postJson(`/session/${id}/stop`, { scope });
+}
+
+/** Re-attempt the current turn (D-57) — after a failure, after the breaker
+ *  tripped, or against a request that has gone quiet. Appends nothing to the
+ *  conversation: the same prefix is simply sent again. */
+export async function retryTurn(id: string): Promise<SessionState> {
+  return (await postJson(`/session/${id}/retry`, {})) as SessionState;
 }
 
 /** Kill one background task (D-34). */

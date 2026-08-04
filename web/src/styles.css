@@ -484,6 +484,23 @@ body.row-resizing {
 .notice {
   color: var(--danger);
   font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* Retry sits on the notice it undoes (D-57), so the error and the way out of it
+   are one thing to look at rather than two. */
+.notice > button.ghost {
+  flex: none;
+  color: var(--text);
+  border-color: var(--danger);
+}
+/* A running turn gone silent — a warning, not a failure: it may still land. */
+.notice.hung {
+  color: var(--muted);
+}
+.notice.hung > button.ghost {
+  border-color: var(--muted);
 }
 /* A pre-H-04 log the model refuses to replay (X-12): readable, not resumable. */
 .notice.unrecoverable {

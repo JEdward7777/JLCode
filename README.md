@@ -82,6 +82,15 @@ itself after the first exchange (rename it with the ✎ on its rail card), and t
 tab title reads `<thread> — <project folder>`, so two instances in two projects
 stay tellable apart.
 
+When a turn fails, **↻ Retry** sits on the error. A failed attempt writes nothing
+to the thread, so retrying re-sends exactly what was sent before — go top up your
+OpenRouter credits, come back, click it, and the answer lands under the message
+you already sent, with no "continue" typed in to restart things. The same button
+appears if a running request goes quiet for 20s: that one abandons the model
+request only, leaving background commands and your queued messages alone (Stop is
+still there for everything else). Blips you never see — a rate limit or a 5xx is
+re-sent automatically, with the backoff shown as it happens.
+
 Past threads are in the rail too, under **HISTORY** below the live ones — filtered
 to the folder you're serving, with an *all folders* toggle. Clicking one **peeks**
 at it: the transcript renders read-only from disk, with branch arrows to walk it,

@@ -5,6 +5,7 @@
  * is testable offline (D-24). Nothing here interprets reasoning.
  */
 import { streamSSE, chunkToEvents } from "./stream.js";
+import { HttpError } from "./errors.js";
 import type { ChatRequest, LlmDriver, StreamEvent, StreamOptions } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
@@ -58,7 +59,9 @@ export class OpenRouterClient implements LlmDriver {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      throw new Error(`OpenRouter ${res.status} ${res.statusText}: ${detail.slice(0, 500)}`);
+      throw new HttpError(res.status, `OpenRouter ${res.status} ${res.statusText}: ${detail.slice(0, 500)}`, {
+        retryAfter: res.headers.get("retry-after") ?? undefined,
+      });
     }
     if (!res.body) throw new Error("OpenRouter response had no body");
 

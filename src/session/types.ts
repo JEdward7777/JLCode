@@ -233,7 +233,14 @@ export type SessionEvent =
   | { type: "task-update"; task: TaskView } // a task changed (e.g. kill requested)
   | { type: "task-end"; task: TaskView } // a task finished / was killed
   | { type: "truncation"; message: string }
-  | { type: "error"; message: string }
-  | { type: "halted"; reason: string };
+  // A transient provider failure is being re-sent automatically (D-57), so the
+  // wait has a story attached instead of looking like a stall.
+  | { type: "retrying"; attempt: number; of: number; delayMs: number; message: string }
+  // `retryable` marks a failure the Retry button can act on: nothing was
+  // appended, so the same prefix can simply be sent again (D-57). Absent on the
+  // errors where asking again cannot help — an over-window wall, a failed
+  // compaction — so the UI never offers a button that would just fail twice.
+  | { type: "error"; message: string; retryable?: boolean }
+  | { type: "halted"; reason: string; retryable?: boolean };
 
 export type SessionListener = (event: SessionEvent) => void;

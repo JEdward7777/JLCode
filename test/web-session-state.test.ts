@@ -213,3 +213,51 @@ describe("isUnresumable (X-12)", () => {
     expect(isUnresumable("request failed (500)")).toBe(false);
   });
 });
+
+describe("retry state (D-57)", () => {
+  it("lights the Retry button only on a failure the button can fix", () => {
+    let s = reduceEvent(newSlice("s1"), { type: "error", message: "402 Insufficient credits", retryable: true } as unknown as WireEvent);
+    expect(s.retryable).toBe(true);
+    expect(s.working).toBe(false);
+    // An over-window wall or a failed compaction sends a bare error: offering a
+    // button there would just fail twice and blame the user for clicking.
+    s = reduceEvent(newSlice("s1"), { type: "error", message: "context length exceeded" } as unknown as WireEvent);
+    expect(s.retryable).toBe(false);
+  });
+
+  it("keeps the button on a tripped breaker, and takes it away once a turn starts", () => {
+    let s = reduceEvent(newSlice("s1"), { type: "halted", reason: "3 consecutive failures", retryable: true } as unknown as WireEvent);
+    expect(s.retryable).toBe(true);
+    s = reduceEvent(s, { type: "assistant-start", parent: null } as unknown as WireEvent);
+    expect(s.retryable).toBe(false);
+    expect(s.working).toBe(true);
+  });
+
+  it("reads an automatic retry as still-working, not as a stall", () => {
+    // The user must not "helpfully" retry by hand on top of a retry already in
+    // flight, so the backoff says what it is instead of going quiet.
+    const s = reduceEvent(newSlice("s1"), {
+      type: "retrying",
+      attempt: 2,
+      of: 3,
+      delayMs: 4000,
+      message: "503 upstream unavailable",
+    } as unknown as WireEvent);
+    expect(s.notice).toMatch(/retrying 2\/3 in 4s/);
+    expect(s.retryable).toBe(false);
+  });
+
+  it("stamps a sign of life on every event, for the hung detector", () => {
+    // Silence is the only symptom available: a wedged socket looks exactly like
+    // a model thinking hard, so what's timed is "anything at all arriving".
+    const before = newSlice("s1");
+    before.lastEventAt = 0;
+    const s = reduceEvent(before, { type: "text", delta: "hi" } as unknown as WireEvent);
+    expect(s.lastEventAt).toBeGreaterThan(0);
+  });
+
+  it("takes `retryable` off a settled snapshot, so a reloaded tab still offers it", () => {
+    expect(applyState(newSlice("s1"), { retryable: true }).retryable).toBe(true);
+    expect(applyState(newSlice("s1"), { status: "idle" }).retryable).toBe(false);
+  });
+});
