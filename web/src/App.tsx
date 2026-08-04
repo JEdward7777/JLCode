@@ -14,6 +14,7 @@ import {
   setCap as apiSetCap,
   stopSession as apiStop,
   retryTurn as apiRetry,
+  fetchSessionState as apiSessionState,
   killTask as apiKillTask,
   queueMessage as apiQueue,
   setQueue as apiSetQueue,
@@ -47,6 +48,7 @@ import {
   type CompactionRequest,
   type PersistenceFault,
   type SessionDescriptor,
+  type SessionState,
   type TaskView,
   type TriggerMode,
 } from "./api";
@@ -80,6 +82,9 @@ type SliceAction =
   | { t: "removed"; id: string }
   | { t: "event"; id: string; event: import("./api").WireEvent }
   | { t: "tree"; id: string; entries: EntryView[]; activeLeaf: string | null; conversationId: string | null }
+  // Believe the server over our own copy (X-21/D-57) — the settled state,
+  // pauses included, after a request we can no longer account for.
+  | { t: "state"; id: string; state: SessionState }
   | { t: "patch"; id: string; patch: Partial<SessionSlice> };
 
 /** A read-only look at a persisted conversation (X-12). Deliberately *not* a
@@ -127,6 +132,11 @@ function slicesReducer(state: SliceMap, action: SliceAction): SliceMap {
         ...state,
         [action.id]: { ...slice, entries: action.entries, activeLeaf: action.activeLeaf, conversationId: action.conversationId, treeLoaded: true, live: null },
       };
+    }
+    case "state": {
+      const slice = state[action.id];
+      if (!slice) return state;
+      return { ...state, [action.id]: applyState(slice, action.state) };
     }
     case "patch": {
       const slice = state[action.id];
@@ -456,6 +466,25 @@ export function App() {
     [notify],
   );
 
+  /**
+   * Re-read the session's settled state and believe it over our own copy.
+   *
+   * The seam for every "my POST didn't land" recovery (X-21/D-57). A failed
+   * request leaves the browser holding a guess: it may have been applied with
+   * only the reply lost, or never have arrived at all, and the two are
+   * indistinguishable from here. So don't reason about it — ask. The server's
+   * settled state is the only honest answer, and restoring a *local* copy
+   * instead would risk resurrecting a card the session already consumed.
+   */
+  const resync = useCallback(async (id: string) => {
+    try {
+      dispatch({ t: "state", id, state: await apiSessionState(id) });
+    } catch {
+      // The re-sync itself failed — the connection is properly down, and the SSE
+      // bus will deliver a fresh roster when it returns. Leave the notice up.
+    }
+  }, []);
+
   // Re-attempt the current turn (D-57). Clearing the notice first matters: the
   // error we are retrying is the only thing on screen saying anything is wrong,
   // and leaving it up through a successful retry reads as a second failure.
@@ -466,9 +495,12 @@ export function App() {
         await apiRetry(id);
       } catch (err) {
         notify(id, (err as Error).message);
+        // We just cleared `retryable` optimistically. If the POST never landed,
+        // that clear was a lie and it would take the button away with it.
+        await resync(id);
       }
     },
-    [notify],
+    [notify, resync],
   );
 
   const killOne = useCallback(

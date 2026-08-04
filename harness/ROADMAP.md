@@ -307,7 +307,9 @@ again*) with three doors: after an error, after the breaker tripped (resetting i
 tasks/queue alone. Transient failures (429/408/5xx/network) are re-sent automatically with backoff
 first, so the button is reserved for what a machine cannot fix; the client now throws a typed
 `HttpError` to keep that split off message-regexes. `POST /session/:id/retry`; peeked in the
-browser across all four surfaces (`VISUAL-LOG.md`).
+browser across all four surfaces (`VISUAL-LOG.md`). Carries the **re-sync seam** X-21 needs —
+`GET /session/:id/state` + `resync(id)` — since retry's own failed-POST path has the same
+"did that land?" problem; see the correction in the X-21 row.
 
 **Filed 2026-08-04: X-21 — a failed approve/answer POST strands the browser out of sync with the
 session.** From real use (Joshua, session `sess_f430000fc69c`): a network error while resolving an
@@ -324,11 +326,20 @@ npx build had `status:"awaiting-approval"` holding a `write_file` on
 `FeatureFlagsDiagnostics.tsx`, its conversation log ended on an assistant entry with a tool call and
 no result, and the shipped bundle (`dist/web/assets/index-*.js`) carries the same optimistic clear.
 **`submitAnswer` (`App.tsx:421`) has the identical hole** for `ask_user`/`pendingAsk`. Fix on the
-`catch` path: **re-fetch `GET /session/:id` and `applyState` the response** rather than restoring
+`catch` path: **re-fetch the settled state and `applyState` the response** rather than restoring
 the local copy — the POST may have landed with only the reply lost, and resurrecting a card the
 session already consumed is its own bug; the server's settled state is the only honest answer, and
 `applyState` (`web/src/session-state.ts`) already folds `approvalRequest`/`question` back in, which
-is why a plain page reload cures it today. **Second defect, found by Joshua while reading this row —
+is why a plain page reload cures it today. **Correction (D-57, 2026-08-04): not from `GET
+/session/:id`** — that route answers with the *tree* (entries + leaf) and carries no
+`approvalRequest`/`question`, so folding it through `applyState` sets `pendingApproval = null`,
+which is precisely the state the stranded browser is already stuck in: the fix as originally written
+would look right and do nothing. A page reload cures it because the pause arrives on the SSE
+`ready`/roster frame (built by `stateOf`), not from that GET. The seam now exists — **`GET
+/session/:id/state` → `stateOf(session)`**, with `api.fetchSessionState` and an App-level
+`resync(id)` dispatching `{t:"state"}` — landed with D-57, which needed it for its own failed-POST
+path. X-21 is then the two remaining call sites (`resolveApproval`, `submitAnswer`) calling
+`resync`, plus the `appr_…` addressing below, which is the substantive half. **Second defect, found by Joshua while reading this row —
 `/approve` is not addressed to a request.** The route (`src/server/server.ts:681`) checks only
 `session.status !== "awaiting-approval"` and then applies the decision to whatever is pending *at
 arrival*; the server mints `appr_…` (`session.ts:1306`) and ships it to the browser, but the browser
@@ -380,7 +391,7 @@ the pending record, compare ids, act at most once) instead of four separately-ha
 is this same gap seen from the browser; it can be fixed first and cheaply, but this row is the one
 that makes it impossible.
 
-**422 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
+**423 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
 row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
 X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
 real `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.

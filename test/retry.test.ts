@@ -364,4 +364,24 @@ describe("the /retry route (D-57)", () => {
     const app = makeApp(scriptedDriver(textEvents("x")));
     expect((await post(app, "/session/sess_nope/retry", {})).status).toBe(404);
   });
+
+  it("GET /state answers with the pauses, which GET /session does not (X-21 seam)", async () => {
+    // The re-sync seam a client uses when its own copy is no longer trustworthy.
+    // `GET /session/:id` is the *tree* endpoint: folding its response through
+    // `applyState` would clear `pendingApproval`, which is the state a stranded
+    // browser is already stuck in — so re-syncing through it would look like a
+    // fix and do nothing. These two must not be confused; hence the assertion.
+    const app = makeApp(flakyDriver(99, () => new HttpError(402, "no credits")));
+    const id = (await post(app, "/session", {})).json.sessionId as string;
+    await post(app, "/chat", { sessionId: id, text: "hi" });
+
+    const state = (await (await app.request(`/session/${id}/state`)).json()) as any;
+    expect(state.retryable).toBe(true);
+    expect(state.status).toBe("idle");
+    expect("approvalRequest" in state || state.status !== "awaiting-approval").toBe(true);
+
+    const tree = (await (await app.request(`/session/${id}`)).json()) as any;
+    expect(tree.entries).toBeDefined(); // the tree endpoint's job
+    expect(tree.retryable).toBeUndefined(); // ...and not this one's
+  });
 });

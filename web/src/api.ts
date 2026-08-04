@@ -465,6 +465,18 @@ export async function stopSession(id: string, scope: "hard" | "soft"): Promise<v
   await postJson(`/session/${id}/stop`, { scope });
 }
 
+/** The session's settled state, pauses included — what to believe when a POST
+ *  failed and the local copy can no longer be trusted (X-21/D-57). Distinct from
+ *  `loadTree`'s `GET /session/:id`, which answers with the tree and no pause. */
+export async function fetchSessionState(id: string): Promise<SessionState> {
+  const res = await fetch(`/session/${id}/state`);
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `request failed (${res.status})`);
+  }
+  return (await res.json()) as SessionState;
+}
+
 /** Re-attempt the current turn (D-57) — after a failure, after the breaker
  *  tripped, or against a request that has gone quiet. Appends nothing to the
  *  conversation: the same prefix is simply sent again. */

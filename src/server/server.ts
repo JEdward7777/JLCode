@@ -414,6 +414,19 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     });
   });
 
+  // The session's settled state on demand — the same shape every action response
+  // and roster frame carries, pauses included. `GET /session/:id` deliberately
+  // answers with the *tree* (entries + leaf) and omits the pending request, so it
+  // cannot be used to re-sync a browser that has lost track of a pause: folding
+  // it through `applyState` would clear the very card you are trying to recover.
+  // This is that seam — one authoritative answer to "what is actually true?",
+  // for a client whose POST failed and no longer trusts its own copy (X-21/D-57).
+  app.get("/session/:id/state", (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(stateOf(session));
+  });
+
   // Switch capability mode / approval policy for a live session (D-07/D-08). The
   // session re-gates immediately; the change is also persisted as the config's
   // new default (per Joshua's call) so it sticks for the next session here.
