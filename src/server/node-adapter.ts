@@ -58,10 +58,62 @@ async function handle(fetchHandler: FetchHandler, req: IncomingMessage, res: Ser
   }
 }
 
-export function startNodeServer(
+/** How many consecutive ports the default (unrequested) port scans before
+ *  handing the choice to the OS. */
+export const PORT_SCAN_COUNT = 10;
+
+/** Bind one port. Rejects (rather than crashing on an unhandled 'error') when
+ *  the port is taken, so a caller can decide whether to try the next one. */
+function listenOnce(server: Server, host: string, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (err: Error) => {
+      server.removeListener("listening", onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.removeListener("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
+}
+
+/**
+ * Start the server, optionally walking past a busy port.
+ *
+ * With `fallback` (the default port's case — see serve-command), a taken port
+ * is not fatal: we try the next {@link PORT_SCAN_COUNT} ports in turn and, if
+ * the whole block is occupied, ask the OS for any free port (port 0) so `serve`
+ * always comes up. Without it — an explicitly requested `--port`/`$JLCODE_PORT`
+ * — EADDRINUSE is reported to the caller, because a port you asked for by name
+ * is one you had a reason to want.
+ *
+ * We bind-and-catch rather than probe-then-bind: a probe would leave a window
+ * for another process to claim the port between the check and the real listen.
+ */
+export async function startNodeServer(
   fetchHandler: FetchHandler,
-  options: { host: string; port: number },
+  options: { host: string; port: number; fallback?: boolean },
 ): Promise<Server> {
   const server = createServer((req, res) => void handle(fetchHandler, req, res));
-  return new Promise((resolve) => server.listen(options.port, options.host, () => resolve(server)));
+  const candidates = options.fallback
+    ? [...Array.from({ length: PORT_SCAN_COUNT }, (_, i) => options.port + i), 0]
+    : [options.port];
+
+  for (const [index, port] of candidates.entries()) {
+    try {
+      await listenOnce(server, options.host, port);
+      return server;
+    } catch (err) {
+      const last = index === candidates.length - 1;
+      if (last || (err as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+        server.close();
+        throw err;
+      }
+    }
+  }
+  /* c8 ignore next -- unreachable: the loop always returns or throws */
+  throw new Error("unreachable");
 }

@@ -119,6 +119,13 @@ A single-use sign-in URL is always printed so the first login is one click.
 Other flags: `--port <n>` (default `4517`, or `$JLCODE_PORT`) and
 `--config <name>` to pin a config regardless of the directory binding.
 
+**A busy port isn't fatal — for the default.** With no `--port`, `serve` walks
+up from `4517` to the first free port (through `4526`, then any port the OS
+offers) and prints where it actually landed, so a second instance in another
+workspace just starts. A port you *asked* for is bound as asked: if `--port
+4000` (or `$JLCODE_PORT`) is taken, `serve` says so and exits rather than
+quietly answering somewhere else.
+
 ### Talking to it without a browser
 
 The same server is a plain JSON API — handy for scripts and for driving tests:
@@ -174,7 +181,7 @@ overridable by env:
 |-----|-----------------|-------|
 | `JLCODE_CONFIG_DIR` | `~/.config/jlcode` | `config.json` (model configs, bindings, auth) |
 | `JLCODE_DATA_DIR` | `~/.local/share/jlcode` | conversations + logs |
-| `JLCODE_PORT` | `4517` | default `serve` port |
+| `JLCODE_PORT` | `4517` | `serve` port — set, it's binding (no scan-on-busy) |
 | `JLCODE_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
 | `JLCODE_FAKE_LLM` | unset | `1` = offline echo driver, no spend |
 | `JLCODE_FAKE_LLM_DELAY_MS` | `0` | ms between fake stream events, so a turn can be watched mid-flight |

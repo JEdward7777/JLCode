@@ -126,7 +126,16 @@ export async function runServe(args: string[]): Promise<number> {
     return 1;
   }
 
-  const port = Number(flagString(flags, "port") ?? process.env.JLCODE_PORT ?? DEFAULT_PORT);
+  // A port you asked for (--port or $JLCODE_PORT) is bound as asked and fails
+  // loudly if it's taken; the default is free to walk to the next open one
+  // (see startNodeServer). Joshua's call: an explicit port is usually explicit
+  // because something else — a bookmark, a proxy — expects it there.
+  const requestedPort = flagString(flags, "port") ?? process.env.JLCODE_PORT;
+  const port = Number(requestedPort ?? DEFAULT_PORT);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    process.stderr.write(`Invalid port ${JSON.stringify(requestedPort)} — expected an integer 0-65535.\n`);
+    return 1;
+  }
   // Bind seam (D-40): localhost by default; --host selects the bind scope. An
   // outward (non-loopback) bind requires auth (provisioned just below).
   const host = flagString(flags, "host") ?? DEFAULT_HOST;
@@ -138,7 +147,7 @@ export async function runServe(args: string[]): Promise<number> {
   // is given but a password is already stored, reuse it. A one-hit setup URL is
   // always printed so first login is frictionless even for a chosen password.
   let auth: AuthGuard | undefined;
-  let oneHitUrl: string | undefined;
+  let oneHitToken: string | undefined;
   let generatedPassword: string | undefined;
   if (outward) {
     const provided = flagString(flags, "password");
@@ -172,9 +181,8 @@ export async function runServe(args: string[]): Promise<number> {
       );
       return 1;
     }
-    const oneHit = randomToken();
-    auth = createAuthGuard({ secrets, oneHitToken: oneHit });
-    oneHitUrl = `http://${host}:${port}/?token=${oneHit}`;
+    oneHitToken = randomToken();
+    auth = createAuthGuard({ secrets, oneHitToken });
   }
   // eslint-disable-next-line prefer-const
   let closeServer = (): void => {};
@@ -220,7 +228,24 @@ export async function runServe(args: string[]): Promise<number> {
       saveConfig({ ...current, modelConfigs: configs }, paths);
     },
   });
-  const server = await startNodeServer((req) => app.fetch(req), { host, port });
+  let server;
+  try {
+    server = await startNodeServer((req) => app.fetch(req), { host, port, fallback: !requestedPort });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    process.stderr.write(
+      code === "EADDRINUSE"
+        ? `Port ${port} is already in use. Pick another with --port <n>, or drop --port to let JLCode find a free one.\n`
+        : `Could not listen on ${host}:${port} — ${(err as Error).message}\n`,
+    );
+    await mcp.close();
+    return 1;
+  }
+  // The bound port may not be the one we asked for (the default walks past a
+  // busy port), so every URL we print below comes from the socket, not the flag.
+  const address = server.address();
+  const boundPort = typeof address === "object" && address ? address.port : port;
+  if (boundPort !== port) process.stderr.write(`port ${port} is in use — using ${boundPort} instead\n`);
   // One teardown for both `/shutdown` and Ctrl-C (H-03) — see shutdown.ts for
   // why the sockets have to be forced closed as well as flushed.
   const { shutdown, isShuttingDown } = createShutdown({
@@ -233,7 +258,8 @@ export async function runServe(args: string[]): Promise<number> {
   });
   closeServer = () => shutdown(() => process.exit(process.exitCode ?? 0));
 
-  const base = `http://${host}:${port}`;
+  const base = `http://${host}:${boundPort}`;
+  const oneHitUrl = oneHitToken ? `${base}/?token=${oneHitToken}` : undefined;
   const client = staticDir() ? `open ${base}/  in your browser` : `browser client not built — run \`npm run build\``;
   // Auth banner (D-40): outward binds print the one-hit sign-in URL (always, even
   // for a chosen password — Joshua's call) and any generated password.
