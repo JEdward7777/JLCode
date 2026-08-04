@@ -19,8 +19,24 @@ const MAX_GREP_FILE_BYTES = 512 * 1024;
  * of files searched — capping that made grep answer "no matches" for files it never opened.
  */
 const MAX_GREP_SCAN_BYTES = 128 * 1024 * 1024;
+/**
+ * A single *matched line* is capped too, not just the match count (D-59). A generated
+ * `.js.map` is one line holding the whole file, so 3 matches in `node_modules` once returned
+ * 706KB — ~347k tokens that then rode every later request in the conversation.
+ */
+const MAX_GREP_LINE_CHARS = 500;
+/** Total output budget, matching `read_file`: the transcript is the scarce resource. */
+const MAX_GREP_OUTPUT_CHARS = MAX_READ_CHARS;
 /** Dot-directories that are machine state rather than source, so grep never walks into them. */
 const GREP_EXCLUDED_DIRS = new Set([".git"]);
+/**
+ * Dependency and build trees: not the user's code, enormous, and usually generated. Skipped by
+ * default and **always reported** as skipped, so D-55's rule holds — grep may decline to look,
+ * but it may never let that read as a verified absence. `include_ignored: true` searches them.
+ */
+const GREP_NOISE_DIRS = new Set(["node_modules", "dist", "build", ".venv", "__pycache__", ".next"]);
+/** Generated/minified files: single-line, token-dense, and never worth reading as source. */
+const GREP_NOISE_FILE = /\.(min\.(js|css)|map|bundle\.js|lock)$|^package-lock\.json$/;
 
 /**
  * Depth-first walk yielding every file under `root`, relative-path style.
@@ -31,7 +47,8 @@ const GREP_EXCLUDED_DIRS = new Set([".git"]);
  */
 function* walkFiles(
   root: string,
-  stats: { unreadableDirs: number },
+  stats: { unreadableDirs: number; skippedNoiseDirs: number; skippedNoiseFiles: number },
+  includeIgnored: boolean,
   rel = "",
 ): Generator<{ abs: string; display: string }> {
   let dirents: fs.Dirent[];
@@ -45,8 +62,16 @@ function* walkFiles(
     const childRel = rel ? path.join(rel, dirent.name) : dirent.name;
     if (dirent.isDirectory()) {
       if (GREP_EXCLUDED_DIRS.has(dirent.name)) continue;
-      yield* walkFiles(root, stats, childRel);
+      if (!includeIgnored && GREP_NOISE_DIRS.has(dirent.name)) {
+        stats.skippedNoiseDirs++;
+        continue;
+      }
+      yield* walkFiles(root, stats, includeIgnored, childRel);
     } else if (dirent.isFile()) {
+      if (!includeIgnored && GREP_NOISE_FILE.test(dirent.name)) {
+        stats.skippedNoiseFiles++;
+        continue;
+      }
       yield { abs: path.join(root, childRel), display: childRel };
     }
   }
@@ -266,12 +291,22 @@ const grep: Tool = {
     type: "function",
     function: {
       name: "grep",
-      description: "Search files for a regular expression within the workspace.",
+      description:
+        "Search files for a regular expression within the workspace. Dependency/build trees " +
+        "(node_modules, dist, build, .venv) and generated files (*.min.js, *.map, lockfiles) " +
+        "are skipped by default and reported as skipped; set include_ignored to search them.",
       parameters: {
         type: "object",
         properties: {
           pattern: { type: "string" },
           path: { type: "string", description: "File or directory to search; default '.'" },
+          include_ignored: {
+            type: "boolean",
+            description:
+              "Search dependency/build directories and generated files too. Default false. " +
+              "These are large and token-dense, so only set this when the answer is genuinely " +
+              "expected inside a dependency.",
+          },
         },
         required: ["pattern"],
       },
@@ -281,6 +316,7 @@ const grep: Tool = {
     const pattern = reqStr(args, "pattern");
     if (pattern === undefined) return err("grep requires a string 'pattern'");
     const searchPath = reqStr(args, "path") ?? ".";
+    const includeIgnored = args.include_ignored === true || args.include_ignored === "true";
     const r = ctx.sandbox.resolve(searchPath);
     if (!r.ok) return err(r.reason);
     let re: RegExp;
@@ -303,11 +339,13 @@ const grep: Tool = {
       }
 
       let entries: Iterable<{ abs: string; display: string }>;
-      const walk = { unreadableDirs: 0 };
+      const walk = { unreadableDirs: 0, skippedNoiseDirs: 0, skippedNoiseFiles: 0 };
       if (target.isFile()) {
+        // An explicitly named file is always searched — the default ignores are about
+        // not *wandering* into generated trees, never about refusing what was asked for.
         entries = [{ abs: r.path, display: searchPath }];
       } else if (target.isDirectory()) {
-        entries = walkFiles(r.path, walk);
+        entries = walkFiles(r.path, walk, includeIgnored);
       } else {
         return err(`grep: path is neither a file nor a directory: ${searchPath}`);
       }
@@ -319,6 +357,9 @@ const grep: Tool = {
       let hitMatchCap = false;
       let bytesRead = 0;
       let hitByteBudget = false;
+      let truncatedLines = 0;
+      let outputChars = 0;
+      let hitOutputCap = false;
 
       for (const { abs, display } of entries) {
         // Only the *match* cap ends the scan early: matches cost output, and output is the
@@ -357,13 +398,28 @@ const grep: Tool = {
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i]!)) {
-            out.push(`${display}:${i + 1}: ${lines[i]!.trim()}`);
+            // Cap the *line*, not just the match count. A generated one-line file
+            // (`.js.map`, minified bundle) makes a single "match" hundreds of KB wide,
+            // which is how 15 matches once became 706KB of transcript.
+            let body = lines[i]!.trim();
+            if (body.length > MAX_GREP_LINE_CHARS) {
+              body = `${body.slice(0, MAX_GREP_LINE_CHARS)}… [line truncated, ${body.length} chars]`;
+              truncatedLines++;
+            }
+            const line = `${display}:${i + 1}: ${body}`;
+            if (outputChars + line.length > MAX_GREP_OUTPUT_CHARS) {
+              hitOutputCap = true;
+              break;
+            }
+            out.push(line);
+            outputChars += line.length + 1;
             if (out.length >= MAX_GREP_MATCHES) {
               hitMatchCap = true;
               break;
             }
           }
         }
+        if (hitOutputCap) break;
       }
 
       // Anything the search could not cover is stated outright. An unqualified "no matches" is
@@ -381,6 +437,24 @@ const grep: Tool = {
       if (skippedUnreadable > 0) notes.push(`${skippedUnreadable} file(s) skipped: unreadable`);
       if (walk.unreadableDirs > 0) {
         notes.push(`${walk.unreadableDirs} director(ies) skipped: unreadable`);
+      }
+      // The default ignores are the one skip a caller might not expect, so they name
+      // the flag that undoes them. D-55: grep may decline to look, but it may never
+      // let that silence read as a verified absence.
+      if (walk.skippedNoiseDirs > 0 || walk.skippedNoiseFiles > 0) {
+        const parts: string[] = [];
+        if (walk.skippedNoiseDirs > 0) parts.push(`${walk.skippedNoiseDirs} dependency/build dir(s)`);
+        if (walk.skippedNoiseFiles > 0) parts.push(`${walk.skippedNoiseFiles} generated file(s)`);
+        notes.push(`${parts.join(" and ")} NOT searched — set include_ignored:true to include them`);
+      }
+      if (truncatedLines > 0) {
+        notes.push(`${truncatedLines} matched line(s) truncated at ${MAX_GREP_LINE_CHARS} chars`);
+      }
+      if (hitOutputCap) {
+        notes.push(
+          `stopped at ${MAX_GREP_OUTPUT_CHARS / 1000}k chars of output — results are INCOMPLETE, ` +
+            `narrow 'pattern' or 'path'`,
+        );
       }
       if (hitMatchCap) notes.push(`stopped at ${MAX_GREP_MATCHES} matches; more may exist`);
       const suffix = notes.length > 0 ? `\n[grep: ${notes.join("; ")}]` : "";
