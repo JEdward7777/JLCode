@@ -11,9 +11,46 @@ import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 const MAX_READ_CHARS = 100_000;
 const MAX_GLOB = 500;
-const MAX_GREP_FILES = 2000;
 const MAX_GREP_MATCHES = 200;
 const MAX_GREP_FILE_BYTES = 512 * 1024;
+/**
+ * Backstop against a pathological tree, not a search limit: grep reads every file it is asked
+ * about, because a non-matching file costs no output. There is deliberately no cap on the *number*
+ * of files searched — capping that made grep answer "no matches" for files it never opened.
+ */
+const MAX_GREP_SCAN_BYTES = 128 * 1024 * 1024;
+/** Dot-directories that are machine state rather than source, so grep never walks into them. */
+const GREP_EXCLUDED_DIRS = new Set([".git"]);
+
+/**
+ * Depth-first walk yielding every file under `root`, relative-path style.
+ *
+ * Hand-rolled rather than `fs.globSync`: `**` never descends into dot-directories (verified —
+ * `**\/.*` and `**\/.*\/**` both return `[]`), which silently hid `.github/`, `.env` and friends
+ * from every search. Symlinked directories are not followed, so a cycle cannot hang the walk.
+ */
+function* walkFiles(
+  root: string,
+  stats: { unreadableDirs: number },
+  rel = "",
+): Generator<{ abs: string; display: string }> {
+  let dirents: fs.Dirent[];
+  try {
+    dirents = fs.readdirSync(path.join(root, rel), { withFileTypes: true });
+  } catch {
+    stats.unreadableDirs++;
+    return;
+  }
+  for (const dirent of dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    const childRel = rel ? path.join(rel, dirent.name) : dirent.name;
+    if (dirent.isDirectory()) {
+      if (GREP_EXCLUDED_DIRS.has(dirent.name)) continue;
+      yield* walkFiles(root, stats, childRel);
+    } else if (dirent.isFile()) {
+      yield { abs: path.join(root, childRel), display: childRel };
+    }
+  }
+}
 
 function ok(content: string): ToolResult {
   return { content };
@@ -232,7 +269,10 @@ const grep: Tool = {
       description: "Search files for a regular expression within the workspace.",
       parameters: {
         type: "object",
-        properties: { pattern: { type: "string" }, path: { type: "string", description: "Dir to search; default '.'" } },
+        properties: {
+          pattern: { type: "string" },
+          path: { type: "string", description: "File or directory to search; default '.'" },
+        },
         required: ["pattern"],
       },
     },
@@ -250,28 +290,103 @@ const grep: Tool = {
       return err(`invalid regex: ${(e as Error).message}`);
     }
     try {
-      const files = fs.globSync("**/*", { cwd: r.path }).slice(0, MAX_GREP_FILES);
+      // The target has to be classified before searching. `globSync` answers `[]` — never an
+      // error — for a cwd that is a file or does not exist, and `sandbox.resolve` deliberately
+      // admits not-yet-existing paths so `write_file` can create them. Without this check an
+      // unsearched target comes back as "no matches", which reads as a *verified absence* and is
+      // the one wrong answer grep must never give.
+      let target: fs.Stats;
+      try {
+        target = fs.statSync(r.path);
+      } catch {
+        return err(`grep: path does not exist: ${searchPath}`);
+      }
+
+      let entries: Iterable<{ abs: string; display: string }>;
+      const walk = { unreadableDirs: 0 };
+      if (target.isFile()) {
+        entries = [{ abs: r.path, display: searchPath }];
+      } else if (target.isDirectory()) {
+        entries = walkFiles(r.path, walk);
+      } else {
+        return err(`grep: path is neither a file nor a directory: ${searchPath}`);
+      }
+
       const out: string[] = [];
-      for (const rel of files) {
-        if (out.length >= MAX_GREP_MATCHES) break;
-        const abs = path.join(r.path, rel);
+      let searched = 0;
+      let skippedLarge = 0;
+      let skippedUnreadable = 0;
+      let hitMatchCap = false;
+      let bytesRead = 0;
+      let hitByteBudget = false;
+
+      for (const { abs, display } of entries) {
+        // Only the *match* cap ends the scan early: matches cost output, and output is the
+        // scarce resource. A file that does not match costs nothing, so there is no honest
+        // reason to stop reading files — stopping there would report "no matches" for a corpus
+        // the tool simply declined to look at.
+        if (out.length >= MAX_GREP_MATCHES) {
+          hitMatchCap = true;
+          break;
+        }
+        if (bytesRead >= MAX_GREP_SCAN_BYTES) {
+          hitByteBudget = true;
+          break;
+        }
         let stat: fs.Stats;
         try {
           stat = fs.statSync(abs);
         } catch {
+          skippedUnreadable++;
           continue;
         }
-        if (!stat.isFile() || stat.size > MAX_GREP_FILE_BYTES) continue;
-        const text = fs.readFileSync(abs, "utf8");
+        if (!stat.isFile()) continue;
+        if (stat.size > MAX_GREP_FILE_BYTES) {
+          skippedLarge++;
+          continue;
+        }
+        let text: string;
+        try {
+          text = fs.readFileSync(abs, "utf8");
+        } catch {
+          skippedUnreadable++;
+          continue;
+        }
+        searched++;
+        bytesRead += stat.size;
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i]!)) {
-            out.push(`${rel}:${i + 1}: ${lines[i]!.trim()}`);
-            if (out.length >= MAX_GREP_MATCHES) break;
+            out.push(`${display}:${i + 1}: ${lines[i]!.trim()}`);
+            if (out.length >= MAX_GREP_MATCHES) {
+              hitMatchCap = true;
+              break;
+            }
           }
         }
       }
-      return ok(out.length > 0 ? out.join("\n") : "(no matches)");
+
+      // Anything the search could not cover is stated outright. An unqualified "no matches" is
+      // reserved for the case where every requested file really was read end to end.
+      const notes: string[] = [];
+      if (hitByteBudget) {
+        notes.push(
+          `stopped after reading ${MAX_GREP_SCAN_BYTES / (1024 * 1024)}MB — results are INCOMPLETE, ` +
+            `narrow 'path' or search a subdirectory`,
+        );
+      }
+      if (skippedLarge > 0) {
+        notes.push(`${skippedLarge} file(s) skipped: larger than ${MAX_GREP_FILE_BYTES / 1024}KB`);
+      }
+      if (skippedUnreadable > 0) notes.push(`${skippedUnreadable} file(s) skipped: unreadable`);
+      if (walk.unreadableDirs > 0) {
+        notes.push(`${walk.unreadableDirs} director(ies) skipped: unreadable`);
+      }
+      if (hitMatchCap) notes.push(`stopped at ${MAX_GREP_MATCHES} matches; more may exist`);
+      const suffix = notes.length > 0 ? `\n[grep: ${notes.join("; ")}]` : "";
+
+      if (out.length > 0) return ok(out.join("\n") + suffix);
+      return ok(`(no matches; searched ${searched} file(s))${suffix}`);
     } catch (e) {
       return err(`grep failed: ${(e as Error).message}`);
     }
