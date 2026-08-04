@@ -278,7 +278,28 @@ writes the index row eagerly at construction (`server.ts:223`), so closing a thr
 into leaves an untitled stub. Prefer deferring `create()` to the first entry over masking-on-close;
 audit what reads the index during the live-but-silent window first.
 
-**376 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
+**Landed 2026-08-04: D-55 (grep) and D-56 (serve ports)** — two small correctness slices, both from
+real use. **D-55**: `grep` no longer reports an absence it did not verify — a file may be named as
+`path`, a missing path is an error rather than an empty result, the 2000-file scan cap is gone (a
+cap on *matches* is honest; a cap on *files* just stops the tool looking and then answers "no
+matches" for files it never opened), and every uncovered case is stated in the result. Enumeration
+moved off `fs.globSync` onto a `walkFiles` generator, because `**` does not descend into
+dot-directories. **D-56**: `serve` walks past a busy *default* port (4517 → the block above it →
+an OS-assigned port) instead of dying on an unhandled `EADDRINUSE`, while a port you asked for by
+name still fails loudly; banner URLs now come from `server.address()`, not the flag.
+
+**Filed 2026-08-04: X-20 — `glob` is still blind to dot-directories.** D-55 fixed this for `grep`
+and deliberately scoped itself there, but `glob` is still `fs.globSync(pattern)`
+(`src/tools/file-tools.ts`), so `**/*` cannot see `.github/`, `.env`, `.vscode/` or any other
+dot-path — verified in this repo, where `**/*.yml` answers `[]` while `.github/workflows/ci.yml`
+sits right there. Same defect, same silent-false-negative shape, and `walkFiles` now exists to fix
+it. Open
+question to settle first: `glob` also carries a 500-match cap and no `node_modules` exclusion, so
+decide the cap/exclusion story for both tools at once rather than twice — D-55's answer for `grep`
+(no file cap, `.git` only) means a repo-root search now reads all of `node_modules`, which is
+~8s cold on this repo and scales with the tree.
+
+**398 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
 row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
 X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
 real `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
