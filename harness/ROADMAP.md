@@ -20,8 +20,19 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-Built, tested (**194 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
+Built, tested (**437 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
+
+> **Cost (2026-08-04, D-58/D-59).** Two compounding defects found by reading the debug journal of a
+> real **$120.84** conversation. (1) **D-26 was never implemented** — `cachedTokens` was `0` on every
+> call of every conversation JLCode had ever run, so 23.9M prompt tokens billed at full price;
+> breakpoints now ship, **live-verified** against `anthropic/claude-opus-5` on Amazon Bedrock
+> (cold call wrote 20,314 tokens at the 1.25x premium, warm call read 20,312 at the 0.1x rate —
+> **12.3x cheaper**). (2) **`grep` capped match count but not output size** — three single-line
+> `.js.map` files in `node_modules` produced one 706KB (~347k-token) tool result that the
+> append-only transcript then re-sent 58 times; it *was* the huge prefix. Same search on the same
+> tree now returns 54.8KB. Neither defect ever errored, which is why both survived to production —
+> an uncached request is a *correct* request that costs 8x more.
 
 - **P0** scaffold (npx `jlcode` bin, config/data dirs, rotating diagnostic logger, CI).
 - **P1** config store + folder-aware model selection (`config list/which/use/clone/add/set/remove`;
