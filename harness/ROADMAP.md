@@ -402,10 +402,213 @@ the pending record, compare ids, act at most once) instead of four separately-ha
 is this same gap seen from the browser; it can be fixed first and cheaply, but this row is the one
 that makes it impossible.
 
-**423 Tier-0/1 green** (+2 replayed Fable). **Next: X-12b** (above — delete-masking, rename from a
+**Filed 2026-08-04: H-06 — no window is known in `serve`, so auto-compaction has never fired in real
+use.** Found while filing X-27 below, and it is the missing third leg of the $120 conversation
+(D-58/D-59): that thread was never going to compact. P6a made the context window **injected**
+(`Session` `contextWindow`, with `config.compaction.contextLength` as the only fallback) and stated
+"no window known → no trigger" — a sound call for a headless Tier-0 slice. But **nothing injects it
+outside the tests**: `newSession` in `src/server/serve-command.ts:91` passes `config`, `driver`,
+`tools`, `sandbox`, gate and `autoTitle`, and **neither `contextWindow` nor `compactorWindow`**; a
+`grep` for `contextWindow` across `src/server/` and `src/cli*` returns nothing. So the fallback is
+the whole mechanism in production, and `jlcode config add` writes `compaction: { auto: true }` with
+no `contextLength` (`src/config/commands.ts:178`). Confirmed against Joshua's own
+`~/.config/jlcode/config.json`: the two presets he actually works under — `MM - Opus` and
+`OmegaMusic-Opus`, both `anthropic/claude-opus-5` — carry `{auto:false, triggerModes:["suggest"]}`
+and **no `contextLength`**, so `budget()` never gets a window and `needs-compaction` can never be
+emitted. Only `Fable — Live` has one (1,000,000), hand-set for the live tests. The consequence is
+that every compaction surface built in P6a–P6c — the trigger, the suggest banner, the cancelable
+pause, the whole safe-harbor engine — is **dead code in real use**, and a conversation grows until
+the provider rejects it over-window (D-44b's hard-wall hook is the only path that still fires,
+because it keys off the *error*, not a budget). Note this is a defect of wiring, not of design: the
+fix is to give the instance a window. Order of preference — (1) the deferred **OpenRouter `/models`
+fetch-and-cache** (D-44c) so the real `context_length` is known per model id, which is the answer
+P6a always intended; (2) failing that, a conservative default in `serve` keyed off the model id, and
+**say in the banner which window it assumed** — a silently wrong window is how this hid for a month;
+(3) either way `config add` should write a `contextLength` so the fallback is populated for existing
+presets too, and `jlcode config which` should show the effective window. Whoever takes this must
+also add the test that would have caught it: an assertion at the **`serve` wiring level** that a
+session built by `newSession` has a budget, not just a `Session` unit test that injects one.
+
+**Filed 2026-08-04: X-23 — `write_file` shows no preview but raw JSON, so a file write is unreadable
+at the moment you're asked to approve it.** Joshua, from real use. The mechanism to fix it already
+exists and `write_file` simply doesn't use it: `ToolPreview` (`src/tools/types.ts:38`, D-53) lets a
+tool render something richer than its arguments at the pause, and **`apply_edits` is the only tool
+that implements `preview()`** (`src/tools/edit-tools.ts:256`) — which is why an edit batch gets the
+unified-diff card (`DiffPreview`, `web/src/App.tsx:2146`) with per-file +/− counts and a
+"cannot apply" reason computed server-side. `write_file` (`src/tools/file-tools.ts:167`) has no
+`preview`, so the approval card falls back to `primaryArgKey` — which picks `path` — and dumps
+everything else into the raw-JSON box (`JSON.stringify(request.args, null, 2)`, `App.tsx:2270`).
+A 300-line file therefore renders as **one JSON string with `\n` escapes**: you can see *that* it is
+long, not *what* it says. The transcript has the same gap after the fact — `ToolBlock` renders args
+through `prettyArgs` (`web/src/tool-view.ts`), which is `JSON.stringify(…, null, 2)` again. Shape of
+the fix: `write_file.preview()` returns a `kind:"diff"` against the file **as it exists on disk**,
+which is the honest framing — an overwrite of an existing file is a diff (and often a *small* diff
+the raw JSON hides completely), and a new file is a diff against empty. `createTwoFilesPatch` from
+`diff` is already a dependency (`edit-tools.ts:27`). Decisions to make and record: (a) **what a new
+file shows** — a full-body `+` diff is honest but a 500-line all-green wall is noise; consider
+falling back to a rendered body with a line/byte count above it, and cap it the way the diff card
+already caps; (b) **the transcript half is a separate call** — after the write, the args are the
+only record of what was written, so the same preview belongs in `ToolBlock`; decide whether the
+entry stores the computed diff (durable, but the diff is against a file that has since changed) or
+the transcript just pretty-prints `content` as text rather than JSON (cheap, honest, no
+plumbing) — **recommend the latter**, since the post-hoc diff is a lie waiting to happen;
+(c) **`delete_file` has the same silence** and is strictly more destructive — decide whether it
+gets a preview (the file's size + first lines) in the same slice; (d) don't break D-16 — the
+raw-JSON box stays the single **editable** truth, and the preview stays read-only, exactly as
+`apply_edits` established.
+
+**Filed 2026-08-04: X-24 — there is no context-usage meter; you can't see how full the window is.**
+Joshua, from real use: the page shows whole-tree **spend** in the corner (`SpendChip`,
+`web/src/App.tsx:1479`) and nothing at all about context. The numbers exist and are already
+authoritative — after each turn the session compares the just-finished response's `prompt_tokens`
+against the budget (`evaluate()`/`knownPrefixTokens`, `src/session/compaction.ts:76`, D-44) — but
+they surface **only at the moment it's too late to matter**: the `CompactionCard` computes
+`Math.round(prefixTokens / window * 100)` (`App.tsx:1688`) and is the sole place a percentage is
+ever rendered. So the user learns the window is nearly full when the loop stops on it. Wanted: the
+same figure, continuously — a small bar or percentage beside the spend chip. Decisions to make and
+record: (a) **it must not lie when the window is unknown** — which today is *always* in real use
+(**H-06** above); a meter reading 0% because no window is configured is worse than no meter, so it
+either renders an explicit "window unknown" state or the fix lands after H-06; (b) **the reading is
+one turn stale by construction** (D-44 deliberately uses authoritative usage rather than counting
+tokens, and there is no tokenizer) — the number jumps at turn end and does not creep during a
+turn, which is fine but should be labeled so it doesn't read as broken; (c) **what the percentage is
+*of*** — the budget (`window − buffer`, the line where compaction actually fires) or the raw window;
+they differ by ~20K and the card already uses the raw window while the *trigger* uses the budget;
+pick one, and consider showing the trigger point as a mark on the bar rather than choosing;
+(d) **per session, not per instance** — with N live sessions (D-43) each has its own prefix, so it
+belongs on the session slice beside `spendUsd`, not in the instance header; (e) `SessionSlice`
+carries no token fields today, so this needs the number on the roster/state frame (`stateOf`) —
+a small server change, not a UI-only one. Composes with **X-27**: once a threshold is configurable,
+the meter is where you see it approaching.
+
+**Filed 2026-08-04: X-25 — JLCode never tells the model what day it is, so it writes wrong dates
+into files. Joshua's call: stamp each user turn, not the system prompt.** From real use: *"JLCode
+was leaving notes with the wrong date in them."* Confirmed — the system prompt is `BASE_SYSTEM` =
+"You are JLCode, a helpful coding agent." plus the optional per-config `systemPromptAddendum`
+(`src/session/session.ts:109`, `:298`) and **contains no date**; nothing else on the wire carries
+one either (`buildWireMessages`, `src/conversation/wire.ts:16`, replays each entry's `role`/
+`content` only — the `ts` every entry already carries is persistence metadata and has never been
+sent). A model with a training cutoff and no clock dates a changelog entry to whenever it thinks
+"now" is.
+
+**Joshua's design call (2026-08-04), and it is the better one:** don't put a date in the base
+prompt — *feed it as things go along, so the model can notice the passage of time*. A one-shot date
+in the system prompt answers "what day is it" and destroys "you started this thread yesterday
+morning"; a per-turn stamp answers both. He asked how KiloCode does it, since coming back the next
+day it remarks on the gap. **Checked both KiloCode generations against source:**
+- **Classic 5.11.0 (what Joshua runs; read out of the shipped `dist/extension.js`)** — every user
+  turn gets an `<environment_details>` block appended, containing
+  `# Current Time / Current time in ISO 8601 UTC format: <ISO> / User time zone: <IANA>, UTC±H:MM`
+  (behind an `includeCurrentTime` setting, default on) alongside `# Current Cost`, `# Current Mode`,
+  `# Recently Modified Files`, terminal output and optional `# Git Status`. Decisively, the block is
+  **baked into the stored user message** — `addToApiConversationHistory({role:"user", content:[…,
+  envDetails]})` — so **every historical user turn carries its own timestamp** and the model can
+  diff them. That is exactly the behaviour Joshua remembers. (It strips any pre-existing
+  `<environment_details>` from the content first, so a retried turn isn't stamped twice.)
+- **v2 / 7.4.20 (the current rewrite, cloned to scratch)** — `injectEditorContext`
+  (`packages/opencode/src/kilocode/session/prompt.ts:363`) appends the same block as a **synthetic,
+  unstored part on the *last* user message only**, memoized per user-message id so "repeated loop
+  iterations produce byte-identical messages (prompt caching)" — their comment. Newest-only: it
+  answers "what time is it" and gives up the elapsed-time comparison classic had. A deliberate
+  cache-driven trade, and worth knowing before copying the newer code.
+
+**JLCode can have both properties for free, and more cleanly than either**, because `UserEntry`
+already stores `ts` (`src/conversation/types.ts:15`) — verified in real logs: the most recent
+conversation's user turns read `16:16:37`, `16:26:55`, `18:38:21`, so the gaps are already on disk,
+just never rendered. So the implementation is **a rendering change in `buildWireMessages`, not a
+storage change**: emit each `user` message with its own recorded `ts`. That gets (a) **retroactive**
+— every existing conversation gains timestamps with no migration and no log rewrite (the log is
+append-only by design, X-12/X-22); (b) **cache-safe by construction** — the stamp is frozen at
+append time, so the replayed prefix stays byte-identical across turns *and* across the tool-loop
+iterations inside a turn, which is the property v2 has to reimplement with a memo; and (c) the
+system prompt stays clean, so D-26's breakpoint (1) over tools+system
+(`src/llm/cache-breakpoints.ts:93`) keeps hitting. Note the trap being avoided: a date rendered into
+the *system* message would re-render every turn and invalidate the entire cached prefix — the exact
+defect D-58 just fixed at a measured 12.3x, so this is not a hypothetical.
+
+Decisions the implementer still owns and must record: (a) **format** — recommend classic's shape
+(ISO 8601 UTC + IANA zone + offset from `Intl.DateTimeFormat().resolvedOptions().timeZone`), since
+UTC is unambiguous and the zone is what makes it actionable; (b) **where the text goes** — prefix
+line on the user content, or a wrapping block; a wrapper (`<environment_details>`) is the extensible
+choice, because this is the natural seam for the cwd/mode/cost lines KiloCode also carries, and it
+lets the model tell *our* framing from the user's words; (c) **stamp only `user` turns** — assistant
+and tool entries also carry `ts`, but stamping everything triples the noise and the user turns
+already fix every gap worth seeing; (d) **compaction drops the stamps it folds** —
+`compact()` re-emits one summary user message (`src/session/compaction.ts:184`), so decide whether
+the summary carries the covered date range (recommend yes: "conversation from X to Y"), or a
+compacted thread silently loses its history of time; (e) **opt-out** — KiloCode gates it with a
+setting; a `compaction`-style config flag is cheap, but default it **on**, since silent wrong dates
+are the failure being fixed; (f) **the very first turn of a resumed thread** is where this pays off
+most — check the rendered prefix once by hand, in the journal, to confirm an overnight gap actually
+reads as one; (g) this shares an injection seam with **X-15** (`AGENTS.md` — the *static* half,
+which belongs in the system prompt exactly as KiloCode splits `staticEnvLines` from
+`environmentDetails`); do them together or make sure the second doesn't rewrite the first's seam.
+
+**Filed 2026-08-04: X-26 — no sound when a session needs attention.** Joshua: *"when JLCode has a
+prompt it needs attention it needs to play a little blip sound."* Nothing in the client makes noise
+today except TTS — `grep` for `new Audio|AudioContext|\.wav|\.mp3` across `web/src/` returns
+**nothing**; the only audio path is `speechSynthesis` behind the per-message 🔊 button. Distinct from
+its two neighbors and should not be folded into either: **X-13** (TTS auto-read) *speaks the reply*,
+which is a much bigger, more intrusive act, and **P-02** (external push) reaches you when you are
+away from the machine. This is the small one — you are at the desk with the tab in the background and
+you want to know the agent stopped. The trigger is the same settled-and-waiting state all three
+share: `awaiting-input`, `awaiting-approval`, `awaiting-compaction`, a cap breach, and arguably
+plain `idle` (a finished answer is also "your turn"). Decisions to make and record: (a) **where the
+sound comes from** — a short embedded/generated tone (a `WebAudio` oscillator blip needs no asset
+and no bundling) beats shipping a `.wav`, unless a real sound is wanted; (b) **autoplay policy** —
+browsers gate audio behind a user gesture exactly as they gate `speechSynthesis` (see X-13's note),
+so the toggle must be a real click and the `AudioContext` created/resumed from it, not restored
+silently on load; (c) **the preference belongs in `web/src/prefs.ts`** — the shared browser-side
+prefs helper X-12a landed; X-13 and X-16 are already told to add keys there, and this makes three,
+which is a good argument for grouping them into one small "notifications" cluster in the UI rather
+than three scattered checkboxes; (d) **N sessions must not clatter** — with D-43's multiplexed bus,
+several sessions can settle at once; debounce, or play once per settle-batch, and decide whether a
+*background* session pings at all (recommend yes — that is the whole point, and it is the same
+argument X-13(a) records); (e) **don't blip for a state the user caused** — a pause the user is
+already looking at, or a settle that lands while the tab is focused and the session is the one on
+screen, is noise; keying off `document.hidden` plus "not the focused session" is the cheap rule;
+(f) consider whether the **tab title** gets a marker at the same time (`document.title` is already
+computed by `tabTitle()`, X-10) — a badge is the silent half of this feature and costs almost
+nothing once the trigger exists.
+
+**Filed 2026-08-04: X-27 — a compaction threshold you can actually set (KiloCode condenses at
+171.5k).** Joshua: *"KiloCode condenses at 171.5k, so we should probably have a preset for
+condensing at the same size. Shooting past by one turn is fine"* — the last clause is already how
+JLCode works (D-44's accepted one-turn overshoot, since the trigger reads authoritative usage after
+the turn). Today the threshold is **derived, not set**: `budget = window − bufferTokens`
+(`src/session/compaction.ts:36`, D-44c), where `bufferTokens` defaults to ~20K. So asking for 171.5k
+on a 200k model means computing `bufferTokens: 28500` by hand *and* hand-setting
+`compaction.contextLength`, because **no window is known otherwise** — that is **H-06**, and this
+row is blocked behind it in practice: a threshold is meaningless until a budget exists. What's
+wanted on top: (a) an **absolute threshold** (`compaction.thresholdTokens: 171500`) or a
+**fraction** (`compaction.thresholdFraction: 0.86`) as an alternative to expressing it as headroom
+— absolute is what Joshua asked for and is legible; fractional survives a model swap. Recommend
+supporting absolute and keeping `bufferTokens` as the derivation when it is absent, so nothing
+existing changes meaning; state the precedence explicitly (threshold wins over buffer) and keep the
+**compactor-fit guard** (D-44a `min(working, compactor)`) applying *after* it — a threshold above
+what the summarizer itself can read must still tighten, or compaction fails at the moment it is
+needed; (b) "preset" in Joshua's sense means **it should be reachable without hand-editing JSON** —
+today `compaction` has no `config set` surface at all (`src/config/commands.ts`), and per **X-19**
+the browser cannot edit preset settings either, so decide whether this ships as a `config set`
+field, part of X-19's editor, or both; (c) the value pairs naturally with **X-24**'s meter — the
+threshold is the mark on the bar; (d) sanity-check the value against the window and refuse a
+threshold above it rather than silently never firing, which is the failure mode H-06 just
+demonstrated is easy to miss.
+
+**Already filed — re-confirmed 2026-08-04 from real use: `AGENTS.md` auto-read is X-15.** Joshua
+raised it again ("JLCode needs to auto read AGENTS.md on start"); the row already exists in
+[`DECISIONS.md`](DECISIONS.md) with the filename-precedence, search-scope, composition-order,
+read-once-for-cache, size-cap and self-modification calls spelled out. Nothing has changed in the
+code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
+reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
+
+**437 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-04, 51 files — the trailer had drifted to
+the pre-D-58/D-59 count). **Next: X-12b** (above — delete-masking, rename from a
 row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
 X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
 real `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+**H-06 arguably jumps the queue** — it is a live cost defect on the same footing as D-58/D-59, and
+X-24/X-27 both sit behind it.
 
 ---
 
@@ -954,6 +1157,11 @@ build; see the X-12 design note in `DECISIONS.md`)** ·
 **auto-read the workspace's `AGENTS.md` into the system prompt (X-15)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
+**a `write_file` preview instead of raw JSON (X-23)** ·
+**a context-usage meter beside the spend chip (X-24)** ·
+**per-user-turn timestamps so the model knows the date and feels elapsed time (X-25)** ·
+**a blip when a session needs attention (X-26)** ·
+**a settable compaction threshold, e.g. 171.5k (X-27 — behind H-06)** ·
 Notifications (external push, P-02) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·
