@@ -37,8 +37,6 @@ export interface ChatMessage {
   name?: string;
   /** Opaque provider reasoning, replayed byte-for-byte (D-14). */
   reasoning_details?: unknown;
-  /** Prompt-cache breakpoint marker (D-26); mapped to the provider field on send. */
-  cache_control?: { type: "ephemeral" };
 }
 
 export interface ChatRequest {

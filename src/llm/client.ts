@@ -6,6 +6,7 @@
  */
 import { streamSSE, chunkToEvents } from "./stream.js";
 import { HttpError } from "./errors.js";
+import { applyCacheBreakpoints } from "./cache-breakpoints.js";
 import type { ChatRequest, LlmDriver, StreamEvent, StreamOptions } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
@@ -44,8 +45,13 @@ export class OpenRouterClient implements LlmDriver {
 
     // `usage.include` asks OpenRouter to report authoritative per-call `cost`
     // (cache-aware) so spend accounting doesn't have to price tokens itself (D-33).
+    //
+    // Breakpoints go on *this* copy only (D-26). `req.messages` stays untouched,
+    // so the caller's transcript — and the D-24 request signature derived from it —
+    // never sees a marker that can't change the model's output anyway.
     const body = JSON.stringify({
       ...req,
+      messages: applyCacheBreakpoints(req.messages, req.model),
       stream: true,
       stream_options: { include_usage: true },
       usage: { include: true },
