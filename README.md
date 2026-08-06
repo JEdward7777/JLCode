@@ -66,6 +66,36 @@ directly — no clone, no cache, no round trip:
 node /path/to/JLCode/dist/cli.js serve
 ```
 
+### On Windows
+
+`VAR=value command` is POSIX shell syntax and does **not** work in PowerShell or
+`cmd` — the variable has to be set as its own statement first. The throwaway-cache
+launch above becomes:
+
+```powershell
+# PowerShell
+$env:npm_config_cache = Join-Path $env:TEMP ("jlcode-" + [guid]::NewGuid())
+npx github:JEdward7777/JLCode serve
+```
+
+```bat
+:: cmd.exe
+set "npm_config_cache=%TEMP%\jlcode-%RANDOM%"
+npx github:JEdward7777/JLCode serve
+```
+
+npm creates the cache directory itself, so neither form needs to make it first.
+Note that `$env:` / `set` persist for the rest of that shell session — open a new
+shell (or set it back) when you want npm's normal cache again. The same pattern
+applies to every other `VAR=1 npx …` line in this README, `JLCODE_FAKE_LLM=1`
+included.
+
+Two Windows differences worth knowing: config and data land under `%APPDATA%` and
+`%LOCALAPPDATA%` rather than the XDG paths (see [Locations](#locations)), and the
+`chmod 600` that protects `config.json` on POSIX has no real effect on Windows —
+your OpenRouter key sits in a file with ordinary user permissions, so treat the
+account it lives in as the security boundary.
+
 To try it without spending money or configuring a key, use the built-in fake
 echo driver:
 
@@ -188,6 +218,9 @@ help            Show this help
 ## Requirements
 
 - Node.js **≥ 20** (developed on 24).
+- Any OS Node runs on. Development and the visual checks happen on Linux, so the
+  Windows paths above are written from the code's platform branches rather than
+  from daily use — if something there is wrong, it is a bug worth reporting.
 
 ## Develop
 
@@ -207,16 +240,23 @@ live models; see [`harness/TESTING.md`](harness/TESTING.md) before running them.
 JLCode keeps nothing in your project. Config and data live in OS-level stores,
 overridable by env:
 
-| Env | Default (Linux) | Holds |
-|-----|-----------------|-------|
-| `JLCODE_CONFIG_DIR` | `~/.config/jlcode` | `config.json` (model configs, bindings, auth) |
-| `JLCODE_DATA_DIR` | `~/.local/share/jlcode` | conversations + logs |
-| `JLCODE_PORT` | `4517` | `serve` port — set, it's binding (no scan-on-busy) |
-| `JLCODE_LOG_LEVEL` | `info` | `error` \| `warn` \| `info` \| `debug` |
-| `JLCODE_FAKE_LLM` | unset | `1` = offline echo driver, no spend |
-| `JLCODE_FAKE_LLM_DELAY_MS` | `0` | ms between fake stream events, so a turn can be watched mid-flight |
+| Env | Default (Linux/macOS) | Default (Windows) | Holds |
+|-----|-----------------------|-------------------|-------|
+| `JLCODE_CONFIG_DIR` | `~/.config/jlcode` | `%APPDATA%\jlcode` | `config.json` (model configs, bindings, auth) |
+| `JLCODE_DATA_DIR` | `~/.local/share/jlcode` | `%LOCALAPPDATA%\jlcode` | conversations + logs |
+| `JLCODE_PORT` | `4517` | `4517` | `serve` port — set, it's binding (no scan-on-busy) |
+| `JLCODE_LOG_LEVEL` | `info` | `info` | `error` \| `warn` \| `info` \| `debug` |
+| `JLCODE_FAKE_LLM` | unset | unset | `1` = offline echo driver, no spend |
+| `JLCODE_FAKE_LLM_DELAY_MS` | `0` | `0` | ms between fake stream events, so a turn can be watched mid-flight |
 
-`config.json` holds your OpenRouter keys and is written `chmod 600`.
+The data dir also holds `models.json`, a cached copy of OpenRouter's model list
+(refetched daily) — it is what tells JLCode how big each model's context window
+is, and therefore when to compact. Delete it and it comes back on the next
+`serve`.
+
+`config.json` holds your OpenRouter keys and is written `chmod 600` — which is
+real protection on Linux and macOS and effectively none on Windows, where the
+file keeps ordinary user permissions.
 
 ## License
 
