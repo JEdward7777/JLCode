@@ -39,12 +39,39 @@ What it handles, so you don't rediscover it:
 - **CDP, with a real wait.** Chrome's `--virtual-time-budget` screenshot stalls on
   the long-lived SSE connection the client holds open, so the tool drives a real
   page and waits (`--wait ms`, default 2500).
-- **It never touches your browser.** It launches Chrome on a *deliberately
-  unconventional* CDP port (9411, not 9222) with a throwaway `--user-data-dir`,
-  and it **refuses to attach** to a listening port it didn't start rather than
-  risk driving a real profile with real cookies and open tabs. It also opens its
-  own tab instead of navigating whichever page is first in the target list.
-  (Both hazards were real: the first version reused any browser on 9222.)
+- **It never touches your browser — unless you ask.** By default it launches
+  Chrome on a *deliberately unconventional* CDP port (9411, not 9222) with a
+  throwaway `--user-data-dir`, **refuses to attach** to a listening port it
+  didn't start, and opens its own tab instead of navigating whichever page is
+  first in the target list. (Both hazards were real: the first version reused
+  any browser on 9222.)
+
+### `--attach` — screenshotting the browser *you* are looking at
+
+The opposite default, opt-in per command (Joshua's call, 2026-08-06): sometimes
+the useful thing is "grab what's on my screen". `--attach` makes that possible
+without making it possible *by accident* — it is never sticky, never a fallback
+from a failed launch, and has to be typed every time.
+
+```bash
+google-chrome --remote-debugging-port=9222     # you start this
+node harness/peek/peek.mjs tabs --attach       # read-only: what's open
+node harness/peek/peek.mjs shot look --attach --tab 2
+```
+
+In attach mode peek **navigates nothing and resizes nothing** (your tab is
+captured as-is, at whatever size it is), opens no tab and closes none, and
+records no pid — so `down` can never kill your browser. With several tabs open,
+ambiguity is an **error listing them**, not a guess: silently capturing the wrong
+window is the failure that actually matters. Named crops (`topbar`) are refused,
+since they're measured against peek's own viewport; give `x,y,w,h` instead.
+Captures land in `/tmp/jlcode-peek/`, **not** `harness/visual/` — they're ad-hoc,
+may hold anything that was on screen, and must not drift into a commit.
+
+*Caveat worth knowing before you try it:* a Chrome that is **already running**
+can't be opted in after the fact. `google-chrome --remote-debugging-port=9222`
+against a live Chrome just opens a window in the existing process and drops the
+flag. Quit it first, or start a separate profile with `--user-data-dir=<dir>`.
 
 ---
 
