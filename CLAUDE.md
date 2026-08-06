@@ -81,9 +81,12 @@ These are automatic — don't wait to be reminded:
   and let Joshua decide; don't quietly skip the push.
 - **Pushing is not the same as reaching npx.** npx caches by *spec string*, not by resolved
   commit: `github:JEdward7777/JLCode` keeps serving `~/.npm/_npx/<hash>/node_modules/jlcode`
-  from the first fetch. After a push that Joshua needs to run, tell him to bust the cache
-  (`rm -rf ~/.npm/_npx/<hash>`) or pin the sha (`github:JEdward7777/JLCode#<sha>`). For
-  driving *this* working copy, `node <repo>/dist/cli.js` skips the whole round trip.
+  from the first fetch. **Joshua launches with a throwaway cache**, which sidesteps this
+  entirely and is what to remind him of after a push he needs to run:
+  `npm_config_cache=$(mktemp -d) npx github:JEdward7777/JLCode serve`. Pinning the sha
+  (`github:JEdward7777/JLCode#<sha>`) is the alternative when a *known* build matters more
+  than the newest. For driving *this* working copy, `node <repo>/dist/cli.js` skips the
+  whole round trip.
 
 ## Related project
 

@@ -38,11 +38,32 @@ npx github:JEdward7777/JLCode serve               # → http://127.0.0.1:4517
 
 Then **open <http://127.0.0.1:4517/> in a browser** — that is the interface.
 
-Pin a revision instead of tracking `main` with the usual git suffix
-(`#main`, a tag, or a commit SHA):
+### Getting the *latest* code, not the first copy npx ever fetched
+
+**npx caches by spec string, not by resolved commit.** `github:JEdward7777/JLCode`
+keeps serving whatever it downloaded the first time, out of
+`~/.npm/_npx/<hash>/node_modules/jlcode` — so a fix that is pushed is still not a
+fix you are running. The reliable launch, and the one in daily use here, hands
+npx a throwaway cache so it always resolves the current `main`:
 
 ```bash
-npx github:JEdward7777/JLCode#main serve
+npm_config_cache=$(mktemp -d) npx github:JEdward7777/JLCode serve
+```
+
+The trade is that every launch re-clones and rebuilds (tens of seconds) and
+leaves a temp dir behind in `/tmp`. The alternatives are to clear the cache entry
+by hand (`rm -rf ~/.npm/_npx/<hash>`) or to pin an exact revision, which is
+worth doing when you want a *known* build rather than the newest one:
+
+```bash
+npx github:JEdward7777/JLCode#main serve     # branch, tag, or commit SHA
+```
+
+If you are working on JLCode itself, skip npx entirely and run the build
+directly — no clone, no cache, no round trip:
+
+```bash
+node /path/to/JLCode/dist/cli.js serve
 ```
 
 To try it without spending money or configuring a key, use the built-in fake
