@@ -21,6 +21,8 @@ import {
   rewind as apiRewind,
   editFork as apiEditFork,
   closeSession as apiClose,
+  renameConversation as apiRenameConversation,
+  deleteConversation as apiDeleteConversation,
   createSession,
   fetchConfig,
   fetchJournal,
@@ -161,6 +163,8 @@ export function App() {
   const [history, setHistory] = useState<ConversationRow[]>([]);
   const [showAllDirs, setShowAllDirs] = useState(() => readBoolPref("history.allDirs", false));
   const [peek, setPeek] = useState<PeekState | null>(null);
+  // A failed rename/delete has no session slice to carry its `notice` (X-12b).
+  const [historyNotice, setHistoryNotice] = useState<string | null>(null);
 
   const focusedRef = useRef<string | null>(null);
   focusedRef.current = focusedId;
@@ -221,6 +225,7 @@ export function App() {
   // ---- Persisted history (X-12). ----
 
   const refreshHistory = useCallback(async () => {
+    setHistoryNotice(null);
     setHistory(await listConversations(showAllDirs ? "all" : undefined).catch(() => []));
   }, [showAllDirs]);
 
@@ -249,6 +254,37 @@ export function App() {
         setPeek((p) => (p?.row.id === row.id ? { ...p, error: (err as Error).message } : p)),
       );
   }, []);
+
+  /** Rename a past thread from its row (X-12b). Addressed by conversation, so it
+   *  works on a thread with no session behind it. */
+  const renameHistory = useCallback(
+    async (id: string, title: string) => {
+      setHistory((rows) => rows.map((r) => (r.id === id ? { ...r, title } : r))); // optimistic
+      try {
+        await apiRenameConversation(id, title);
+      } catch (err) {
+        setHistoryNotice((err as Error).message);
+        void refreshHistory(); // the optimistic label was a guess; take the server's
+      }
+    },
+    [refreshHistory],
+  );
+
+  /** Delete a past thread (X-12b). The server masks it rather than unlinking, so
+   *  this hides a row — it does not destroy the log. */
+  const deleteHistory = useCallback(
+    async (id: string) => {
+      setHistory((rows) => rows.filter((r) => r.id !== id));
+      setPeek((p) => (p?.row.id === id ? null : p)); // never leave a deleted thread open
+      try {
+        await apiDeleteConversation(id);
+      } catch (err) {
+        setHistoryNotice((err as Error).message);
+        void refreshHistory();
+      }
+    },
+    [refreshHistory],
+  );
 
   /** Promote a peek: the first message materializes the session (X-12). The
    *  server attaches to a live session on this conversation if one exists, so
@@ -625,6 +661,7 @@ export function App() {
         connected={connected}
         instance={instance}
         history={pastConversations}
+        historyNotice={historyNotice}
         showAllDirs={showAllDirs}
         peekId={peek?.row.id ?? null}
         onFocus={focus}
@@ -632,6 +669,8 @@ export function App() {
         onClose={(id) => void closeOne(id)}
         onRename={(id, title) => void rename(id, title)}
         onPeek={openPeek}
+        onRenameHistory={(id, title) => void renameHistory(id, title)}
+        onDeleteHistory={(id) => void deleteHistory(id)}
         onToggleAllDirs={toggleAllDirs}
         onRefreshHistory={() => void refreshHistory()}
       />
@@ -703,6 +742,7 @@ function SessionRail({
   connected,
   instance,
   history,
+  historyNotice,
   showAllDirs,
   peekId,
   onFocus,
@@ -710,6 +750,8 @@ function SessionRail({
   onClose,
   onRename,
   onPeek,
+  onRenameHistory,
+  onDeleteHistory,
   onToggleAllDirs,
   onRefreshHistory,
 }: {
@@ -718,6 +760,7 @@ function SessionRail({
   connected: boolean;
   instance: InstanceConfig | null;
   history: ConversationRow[];
+  historyNotice: string | null;
   showAllDirs: boolean;
   peekId: string | null;
   onFocus: (id: string) => void;
@@ -725,6 +768,8 @@ function SessionRail({
   onClose: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onPeek: (row: ConversationRow) => void;
+  onRenameHistory: (id: string, title: string) => void;
+  onDeleteHistory: (id: string) => void;
   onToggleAllDirs: () => void;
   onRefreshHistory: () => void;
 }) {
@@ -877,9 +922,12 @@ function SessionRail({
                     showDir={showAllDirs}
                     homeDir={instance?.homeDir}
                     onOpen={() => onPeek(row)}
+                    onRename={(title) => onRenameHistory(row.id, title)}
+                    onDelete={() => onDeleteHistory(row.id)}
                   />
                 ))}
               </div>
+              {historyNotice && <div className="rail-notice">{historyNotice}</div>}
               <div className="rail-history-foot">
                 <label className="all-dirs" title="show conversations from every folder (D-09)">
                   <input type="checkbox" checked={showAllDirs} onChange={onToggleAllDirs} /> all folders
@@ -896,22 +944,91 @@ function SessionRail({
   );
 }
 
-/** One persisted thread in the rail's history section (X-12). Read-only by
- *  nature: clicking peeks. The label is the X-09 title when there is one —
- *  older logs simply stay untitled and fall back to their short id. */
+/** One persisted thread in the rail's history section (X-12). Clicking peeks; the
+ *  ✎ and ✕ (X-12b) are the two writes a past thread accepts. The label is the
+ *  X-09 title when there is one — older logs stay untitled and fall back to their
+ *  short id, which is also why the confirm below names the thread the same way. */
 function HistoryRow({
   row,
   active,
   showDir,
   homeDir,
   onOpen,
+  onRename,
+  onDelete,
 }: {
   row: ConversationRow;
   active: boolean;
   showDir: boolean;
   homeDir?: string;
   onOpen: () => void;
+  onRename: (title: string) => void;
+  onDelete: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const label = row.title || row.id.slice(0, 12);
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(row.title ?? "");
+    setEditing(true);
+  };
+  const commit = () => {
+    setEditing(false);
+    const next = draft.trim();
+    if (next && next !== row.title) onRename(next);
+  };
+
+  if (editing) {
+    return (
+      <div className="rail-item history" onClick={(e) => e.stopPropagation()}>
+        <input
+          className="rail-rename"
+          value={draft}
+          autoFocus
+          spellCheck={false}
+          placeholder="name this thread"
+          onFocus={(e) => e.target.select()}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") setEditing(false);
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Confirm in the row rather than in a browser dialog: it names the thread (a
+  // bare id makes for a reflexive confirm), and it keeps the decision where the
+  // thing being deleted is, so you can still read the row you are acting on.
+  if (confirming) {
+    return (
+      <div className="rail-item history confirming" onClick={(e) => e.stopPropagation()}>
+        <div className="rail-confirm-text">
+          Delete “{label}”? It leaves the list, but stays on disk.
+        </div>
+        <div className="rail-confirm-actions">
+          <button
+            className="danger"
+            onClick={() => {
+              setConfirming(false);
+              onDelete();
+            }}
+          >
+            Delete
+          </button>
+          <button className="ghost" onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`rail-item history ${active ? "focused" : ""}`}
@@ -922,7 +1039,24 @@ function HistoryRow({
       title={row.title ? `${row.title} — ${row.workingDir}` : row.workingDir}
     >
       <div className="rail-item-top">
-        <span className="rail-model">{row.title || row.id.slice(0, 12)}</span>
+        <span className="rail-model">{label}</span>
+        <button className="rail-icon" title="rename this thread" onClick={startEdit}>
+          ✎
+        </button>
+        {/* Not offered on the row you are reading: deleting the thread open in
+            the pane would pull it out from under you. Close the peek first. */}
+        {!active && (
+          <button
+            className="rail-close"
+            title="remove from history (the log stays on disk)"
+            onClick={(e) => {
+              e.stopPropagation();
+              setConfirming(true);
+            }}
+          >
+            ✕
+          </button>
+        )}
       </div>
       <div className="rail-item-meta">
         <span className="rail-when">{formatWhen(row.createdAt)}</span>

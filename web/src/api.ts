@@ -278,6 +278,24 @@ export async function loadConversation(id: string): Promise<LoadedConversation> 
   return { id: data.id, activeLeaf: data.activeLeaf ?? null, entries: data.entries ?? [] };
 }
 
+/** Rename a thread from its history row (X-12b). Addressed by *conversation*, so
+ *  a thread nobody has open can still be named; the server routes through a live
+ *  session when one holds it, so the rail card can't go stale. */
+export async function renameConversation(id: string, title: string): Promise<void> {
+  await postJson(`/conversation/${id}/title`, { title });
+}
+
+/** Remove a thread from the history list (X-12b). The server masks it with a
+ *  reversible flag in the index rather than unlinking anything, so the files
+ *  stay on disk and recovery by id keeps working. */
+export async function deleteConversation(id: string): Promise<void> {
+  const res = await fetch(`/conversation/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `could not delete conversation (${res.status})`);
+  }
+}
+
 /** Create a fresh live session; returns its id. */
 export async function createSession(): Promise<string> {
   const res = await fetch("/session", { method: "POST" });

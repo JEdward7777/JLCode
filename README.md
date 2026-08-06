@@ -149,8 +149,11 @@ while whatever was running keeps running behind you. Nothing is created by
 looking — **typing is what picks the thread back up**, from the branch you're
 looking at, and the card moves up into LIVE. That also means a browser tab left
 open across a restart heals itself: the session it knew is gone, but the thread
-is right there in the list. Screenshots of each slice are in
-[`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md).
+is right there in the list. A past row takes the same ✎ to rename it and an ✕ to
+drop it from the list; the ✕ only hides it — the conversation stays on disk, so
+an oops is one hand-edited flag in `index.jsonl` away from coming back. Open a
+session and never type in it and it doesn't join the list at all. Screenshots of
+each slice are in [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md).
 
 MCP tools pass the same gate and fence as native ones. JLCode can't take a
 third-party server's word for what its tools do, so it assumes the worst — the

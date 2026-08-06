@@ -142,6 +142,20 @@ export class ConversationStore {
     return this.log(convId).append({ kind: "activeLeaf", leaf });
   }
 
+  /** Hide a conversation from the history list (X-12b). A **masking flag**, not
+   *  a tombstone and never an unlink: the files stay on disk, so `load()` still
+   *  reads a masked thread and recovery by id works before any dumpster diving.
+   *  Written to the index **only** — `list()` is the only reader — so there is
+   *  exactly one file and one flag to flip back by hand when it was an oops.
+   *
+   *  Masking also sidesteps the trap a hard delete carried: this store and
+   *  `DebugJournal` each memoize an `AppendLog` per conversation id, so an
+   *  unlink without evicting those handles lets a queued append recreate the
+   *  file. */
+  setDeleted(convId: string, deleted = true): Promise<void> {
+    return this.index.append({ kind: "deleted", id: convId, deleted, ts: new Date().toISOString() });
+  }
+
   /** Name a conversation (X-09). Append-only like everything else: the newest
    *  title record wins, so a rename is just another append and old logs (which
    *  have none) simply stay untitled. Written to the conversation log *and* the
@@ -224,6 +238,7 @@ export class ConversationStore {
     }
     const rows: IndexRow[] = [];
     const titles = new Map<string, string>(); // later title records win (X-09)
+    const deleted = new Map<string, boolean>(); // …as do later delete flags (X-12b)
     // Compare canonical dirs, not raw strings (X-12). Rows written before
     // `create()` normalized are the reason this resolves each row rather than
     // only the filter; the cache keeps that to one syscall per distinct dir.
@@ -232,6 +247,10 @@ export class ConversationStore {
     for (const r of ConversationStore.parseLines(text)) {
       if (r.kind === "title") {
         if (typeof r.id === "string" && typeof r.title === "string") titles.set(r.id, r.title);
+        continue;
+      }
+      if (r.kind === "deleted") {
+        if (typeof r.id === "string") deleted.set(r.id, r.deleted !== false);
         continue;
       }
       if (typeof r.id !== "string" || typeof r.workingDir !== "string") continue;
@@ -246,7 +265,7 @@ export class ConversationStore {
       const title = titles.get(row.id);
       if (title !== undefined) row.title = title;
     }
-    return rows.reverse();
+    return rows.filter((row) => !deleted.get(row.id)).reverse();
   }
 
   async flush(): Promise<void> {

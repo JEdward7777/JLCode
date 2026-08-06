@@ -865,3 +865,63 @@ observed-item as the H-06 peek.
 Not exercised visually: the meter under `auto`/`hard`/`cancelable` (same
 component, same props), and its reset across a real compaction — the post-compact
 `—` is covered by tests but was not screenshotted.
+
+---
+
+## X-12b — deleting and renaming a past thread · 2026-08-06 · ✅ looked good
+
+**Screenshots:** [`visual/x12b-row-hover.png`](visual/x12b-row-hover.png) (the two
+affordances) · [`visual/x12b-confirm.png`](visual/x12b-confirm.png) ·
+[`visual/x12b-renamed.png`](visual/x12b-renamed.png) (both writes landed) ·
+[`visual/x12b-peeked-row.png`](visual/x12b-peeked-row.png) (no ✕ on the row you
+are reading)
+
+Posed by seeding three threads through the fake driver and closing each session,
+so they fall to HISTORY. The hover and click states are not something
+`peek.mjs shot` can reach on its own — the affordances are `opacity: 0` until
+hover and the confirm is a click deeper — so this peek drove `Input.dispatchMouseEvent`
+over the same CDP session the tool opens. Worth folding into the tool if a third
+slice needs it; two is not yet a pattern.
+
+Confirmed with my own eyes:
+
+- **The row now has the same two affordances as a live card**, revealed on hover
+  in the same place (✎ then ✕), and the ✕ reddens under the cursor. A past thread
+  reading as a quieter version of a live one was X-12a's call; keeping the
+  affordances identical is what stops "quieter" from meaning "different".
+- **The confirm names the thread, in the row.** *Delete "Compaction budget math"?
+  It leaves the list, but stays on disk.* Deliberately not a browser `confirm()`:
+  a native dialog can't be screenshotted, and it would take the name out of the
+  place the name is. The full title wraps rather than truncating — the row above
+  it truncates at `Compaction budget…`, which is exactly what a confirm must not
+  do.
+- **The second clause is the honest one.** *Stays on disk* is literally true, and
+  it is what makes the ✕ a safe thing to click. Verified underneath: after the
+  delete, `index.jsonl` carries one new line —
+  `{"kind":"deleted","id":"cv_91c4b9d81997","deleted":true,"ts":…}` — the
+  conversation log is byte-for-byte unchanged and 619 bytes on disk, and
+  `GET /conversation/<id>` still answers **200**.
+- **The hand-flip recovery path works.** Editing that one line to
+  `"deleted":false` and re-listing brought the row back, titled. That is Joshua's
+  stated recovery ("go dumpster diving in the json file and flip the flag back"),
+  and it is the reason this is a flag rather than a tombstone.
+- **Rename from a row lands everywhere.** ✎ opens the same in-place input the rail
+  card uses, pre-selected; Enter committed, the row relabelled, and
+  `GET /conversations` agreed on the new title. No reload.
+- **The peeked row does not offer ✕** while the other rows still do (asserted in
+  the DOM, not just by eye: `pencil:true close:false` on the open row,
+  `close:true` on both others). Deleting the thread rendered in the pane beside
+  you would pull it out from under you.
+- **An abandoned session leaves no trace at all.** Opening a session, typing
+  nothing, and closing it left the history count at 3 and wrote **no**
+  `cv_….jsonl` — the stub is gone at the source rather than masked after the
+  fact.
+
+*Environment note for whoever peeks next in a container:* headless Chrome needs
+`/dev/shm` at `1777` or it dies before CDP comes up (its own error message says
+so), and without a font package the rail's ✎/✕ render as `□`. Neither is a JLCode
+defect — but a peek that shows boxes where the glyphs should be is not a peek.
+
+Not exercised visually: the failed-write `.rail-notice` (the rename/delete error
+path has no session card to report into, so it renders in the history section);
+it is styled but was not provoked in the browser.

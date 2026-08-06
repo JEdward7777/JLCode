@@ -222,6 +222,46 @@ body.row-resizing {
 .rail-item.history .rail-model {
   font-weight: 500;
 }
+/* Delete confirm, inline in the row it is about (X-12b). */
+.rail-item.history.confirming {
+  border-style: solid;
+  border-color: var(--danger);
+  cursor: default;
+}
+.rail-confirm-text {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text);
+}
+.rail-confirm-actions {
+  display: flex;
+  gap: 6px;
+}
+.rail-confirm-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rail-confirm-actions .danger {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+.rail-confirm-actions .danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+/* A history rename/delete that failed has no session card to report into. */
+.rail-notice {
+  margin: 0 8px 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--danger);
+  border-radius: 7px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .rail-when,
 .rail-dir {
   color: var(--muted);

@@ -275,7 +275,8 @@ batch that cannot apply shows its reason **before** you approve rather than afte
 nothing in the new code repairs partial args. Peeked in Chrome (VISUAL-LOG "D-53"), where approving a
 batch with one bad file was confirmed to write **nothing**.
 
-**Filed 2026-08-02: X-12b now has its own row in [`DECISIONS.md`](DECISIONS.md)** — it was only a
+**Filed 2026-08-02, FIXED 2026-08-06 — see the X-12b block in the status section above: X-12b now has
+its own row in [`DECISIONS.md`](DECISIONS.md)** — it was only a
 parenthetical on the X-12a row, which reads as done when only the *decision* is done. Joshua, from
 real use: *"the History items do not have an X to delete them… we decided they are not actually
 deleted but just marked in the index as deleted. But there isn't any way that I can see to do that
@@ -626,11 +627,33 @@ read-once-for-cache, size-cap and self-modification calls spelled out. Nothing h
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
 reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
 
-**474 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 54 files). **H-06 is fixed (D-60)** and
-**X-24 is fixed (D-61)**. **Next: X-12b** (above — delete-masking, rename from a row, no history stub
-for an empty session; all designed in `DECISIONS.md` and deliberately cut from X-12a since none of it
-is needed to *read* an old thread), **then P7c** — live validation against the real `file_utils`
-server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+**487 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 55 files). **H-06 is fixed (D-60)**,
+**X-24 is fixed (D-61)** and **X-12b is DONE**. **Next: P7c** — live validation against the real
+`file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+
+**X-12b shipped 2026-08-06 — a past thread can now be renamed and removed.** The three parts the row
+named, all of which X-12a designed and cut. (1) **Delete is a reversible masking flag**: `DELETE
+/conversation/:id` appends `{kind:"deleted", id, deleted:true, ts}` to `index.jsonl` **only**, and
+`list()` folds it out with the same newest-wins Map it already used for titles. Nothing is ever
+unlinked — the log stays byte-for-byte on disk, `GET /conversation/:id` still answers 200, and
+flipping that one line to `"deleted":false` brings the row back (verified by hand, since that is
+Joshua's stated recovery path). Masking also sidesteps the trap a hard delete carried: this store and
+`DebugJournal` each memoize an `AppendLog` per conversation id, so an unlink without evicting those
+handles lets a queued append recreate the file. The row's hover `✕` opens an **inline confirm naming
+the thread** — *"Delete 'Compaction budget math'? It leaves the list, but stays on disk"* — and is not
+offered on the row currently peeked. (2) **Rename from a row**: `POST /conversation/:id/title`,
+addressed by *conversation* so a thread with no session behind it can still be named; it **routes
+through a live session** when one holds that id, or the rail card would show the old name until a
+reload. (3) **An empty session no longer joins history at all** — `startSession` created the index row
+eagerly at construction, so closing a thread you never typed into left an untitled stub with nothing
+to peek at. `create()` is now deferred to the first `entry` (or `title`) event, which is shape (i),
+the honest fix: an abandoned thread leaves no trace rather than a row we then hide. The audit that
+choice needed holds — nothing reads the index during the live-but-silent window, since the browser
+filters live conversations out of HISTORY and both the peek and `/chat`'s revival fallback read the
+conversation *log*. Peeked in Chrome (VISUAL-LOG "X-12b"), where the hover/confirm states needed real
+mouse events over CDP rather than a plain `peek shot`. *Caught by the change, as it should have been:*
+the D-46 persistence-fault test jammed a conversation log by chmod-ing it straight after
+`POST /session`, which no longer exists at that point.
 
 **X-24 FIXED 2026-08-06 (D-61) — you can see how full the context is, all the time.** A meter beside
 the spend chip: a bar reading a percentage **of the raw window**, with the compaction threshold drawn
@@ -1206,8 +1229,6 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
-**a browser history list — open a past conversation from the page (X-12 — DESIGNED, ready to
-build; see the X-12 design note in `DECISIONS.md`)** ·
 **auto-re-title a thread as it drifts (X-17)** ·
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **TTS auto-read when the agent hands the turn back (X-13)** ·

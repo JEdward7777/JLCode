@@ -231,14 +231,34 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       });
     });
 
-    if (!conversation) {
+    // The conversation log is created **lazily, on first content** (X-12b).
+    // Creating it eagerly meant opening a session and never typing into it still
+    // wrote an index row, so history filled with untitled stubs that have nothing
+    // to peek at and nothing to auto-title from. Deferring is the honest fix —
+    // an abandoned thread leaves no trace at all, rather than a row we then hide.
+    //
+    // Safe because nothing reads the index during the live-but-silent window: the
+    // browser filters live conversations *out* of its HISTORY list, and both the
+    // peek and `/chat`'s revival fallback read the conversation **log**, not the
+    // index. Any entry implies a user entry above it, so "first entry" and the
+    // agreed definition of empty (no user and no assistant entries) coincide.
+    let created = Boolean(conversation); // a resumed conversation is already on disk
+    const ensureCreated = (): void => {
+      if (created) return;
+      created = true;
       settled(deps.store.create({ id: session.conversation.id, workingDir: deps.workingDir, configName: config.name }));
-    }
+    };
     session.onEvent((e) => {
-      if (e.type === "entry") settled(deps.store.entry(session.conversation.id, e.entry));
-      else if (e.type === "active-leaf") settled(deps.store.activeLeaf(session.conversation.id, e.leaf));
-      else if (e.type === "title") settled(deps.store.title(session.conversation.id, e.title, e.source));
-      else if (e.type === "debug" && deps.debugJournal) {
+      if (e.type === "entry") {
+        ensureCreated(); // issued first, so the header leads the log
+        settled(deps.store.entry(session.conversation.id, e.entry));
+      } else if (e.type === "active-leaf") settled(deps.store.activeLeaf(session.conversation.id, e.leaf));
+      else if (e.type === "title") {
+        // A hand-rename can land before the first message. Records fold by id
+        // rather than by order, so this only has to make the row exist.
+        ensureCreated();
+        settled(deps.store.title(session.conversation.id, e.title, e.source));
+      } else if (e.type === "debug" && deps.debugJournal) {
         // The journal is diagnostic and never replayed to a model, so a failure
         // here is a warning — not worth stopping the session over (D-46).
         void deps.debugJournal.record(session.conversation.id, e.record).catch((err: unknown) => {
@@ -700,6 +720,47 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const conv = deps.store.load(c.req.param("id"));
     if (!conv) return c.json({ error: "no such conversation" }, 404);
     return c.json({ id: conv.id, activeLeaf: conv.activeLeaf, entries: conv.entries.map(entryView) });
+  });
+
+  // Rename a thread from its history row (X-12b): {title}. The rail's rename is
+  // `/session/:id/title` and needs a live session; this one is addressed by
+  // *conversation*, so a thread nobody has open can still be named.
+  //
+  // **Route through the session when one holds this conversation.** Writing
+  // straight to the store would leave that session's in-memory title stale and
+  // its rail card showing the old name until a reload.
+  app.post("/conversation/:id/title", async (c) => {
+    const convId = c.req.param("id");
+    const body = (await c.req.json().catch(() => ({}))) as { title?: unknown };
+    if (typeof body.title !== "string" || body.title.trim() === "") return c.json({ error: "title is required" }, 400);
+    const live = manager.list().find((s) => s.conversation.id === convId);
+    if (live) {
+      try {
+        live.setTitle(body.title, "manual"); // the event drives persistence
+      } catch (err) {
+        return c.json({ error: (err as Error).message }, 400);
+      }
+    } else {
+      if (!deps.store.load(convId)) return c.json({ error: "no such conversation" }, 404);
+      await deps.store.title(convId, body.title, "manual");
+    }
+    await flushDurable(); // read-your-writes: the next /conversations sees it
+    return c.json({ id: convId, title: body.title });
+  });
+
+  // Delete a thread from history (X-12b) — a **reversible masking flag** in the
+  // index, never an unlink (see `store.setDeleted`). `DELETE` names what the user
+  // is doing; that it is implemented by masking is ours to keep, and it is what
+  // makes an oops recoverable by hand-flipping one line in `index.jsonl`.
+  //
+  // Restoring has no route on purpose: the agreed recovery path is editing that
+  // file, so a second endpoint would be a surface with no caller.
+  app.delete("/conversation/:id", async (c) => {
+    const convId = c.req.param("id");
+    if (!deps.store.load(convId)) return c.json({ error: "no such conversation" }, 404);
+    await deps.store.setDeleted(convId);
+    await flushDurable();
+    return c.json({ id: convId, deleted: true });
   });
 
   // The verbose debug journal for a conversation — the "Halp!" record (D-15).

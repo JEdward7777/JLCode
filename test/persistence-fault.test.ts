@@ -86,7 +86,12 @@ async function post(app: ReturnType<typeof makeApp>, url: string, body: unknown)
  *  matter how much has already been written to it. */
 const convFile = (conv: string) => path.join(storeDir, `${conv}.jsonl`);
 async function jam(conv: string): Promise<void> {
-  await store.flush(); // the log must exist before we can chmod it
+  await store.flush(); // land whatever is already queued
+  // A session that hasn't spoken yet has no log to chmod — the file is created
+  // lazily on first content (X-12b). Make it exist so it can be made read-only;
+  // appends open with "a", so an empty file changes nothing except that the
+  // header write now fails alongside the entry, which is the fault under test.
+  fs.closeSync(fs.openSync(convFile(conv), "a"));
   fs.chmodSync(convFile(conv), 0o400);
 }
 const unjam = (conv: string) => fs.chmodSync(convFile(conv), 0o600);
