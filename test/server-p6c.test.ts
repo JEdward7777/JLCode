@@ -120,6 +120,18 @@ describe("P6c server surface (D-27)", () => {
     expect(view.entries.some((e: any) => e.type === "compaction")).toBe(true);
   });
 
+  // X-24: the meter's number has to reach the browser, and the case that matters
+  // is the *uncrossed* one — the old surface only ever reported a crossing.
+  it("the settled state carries the context reading, window and threshold", async () => {
+    const app = makeApp([turn("hi", { promptTokens: 300, completionTokens: 40 })]);
+    const id = await newSession(app);
+    const s = await post(app, "/chat", { sessionId: id, text: "hi" });
+    expect(s.json.needsCompaction).toBe(false); // 340 of a 900 threshold — quiet
+    expect(s.json.contextTokens).toBe(340);
+    expect(s.json.contextWindow).toBe(1_000);
+    expect(s.json.contextThreshold).toBe(900); // window − buffer (D-44)
+  });
+
   it("Skip on a cancelable pause proceeds without compacting", async () => {
     const app = makeApp([
       turn("first", { promptTokens: 950, completionTokens: 100 }),

@@ -209,6 +209,12 @@ export interface SessionState {
   triggerMode?: TriggerMode; // live compaction trigger mode (D-27, P6c)
   needsCompaction?: boolean; // budget crossed — drives the suggest banner (D-44)
   compactionRequest?: CompactionRequest; // pending pre-send compaction pause (D-27)
+  /** The window compaction measures against and where the number came from
+   *  (D-44c/H-06) — `"fallback"` means we are guessing and must say so. */
+  contextWindow?: number | null;
+  contextThreshold?: number | null; // where compaction fires: window − buffer (D-44)
+  contextTokens?: number; // how full it is now; 0 = not measured yet (X-24)
+  contextWindowSource?: "config" | "catalog" | "fallback" | null;
   persistenceFault?: PersistenceFault; // a write failed; session stopped on it (D-46)
   retryable?: boolean; // the last turn failed and can be re-sent as-is (D-57)
 }

@@ -71,6 +71,14 @@ export interface SessionSlice {
    *  was never stated at all. */
   contextWindow: number | null;
   contextWindowSource: "config" | "catalog" | "fallback" | null;
+  /** Where compaction actually fires (`window − buffer`, D-44) — drawn as the
+   *  mark on the meter rather than being what the percentage is *of* (X-24). */
+  contextThreshold: number | null;
+  /** How full the window is now, in tokens (X-24). Ground truth from the last
+   *  turn's usage, so it steps at each round trip rather than creeping — and
+   *  **0 means not measured yet** (fresh branch, or just compacted), which the
+   *  meter must render as unknown rather than as an empty window. */
+  contextTokens: number;
   /** A stalled persistence write the session is stopped on (D-46). Blocks the
    *  composer: nothing may proceed until it is retried or explicitly discarded. */
   persistenceFault: PersistenceFault | null;
@@ -118,6 +126,8 @@ export function newSlice(id: string, model = ""): SessionSlice {
     pendingCompaction: null,
     contextWindow: null,
     contextWindowSource: null,
+    contextThreshold: null,
+    contextTokens: 0,
     persistenceFault: null,
     retryable: false,
     lastEventAt: Date.now(),
@@ -156,6 +166,8 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   next.pendingCompaction = state.compactionRequest ?? null;
   if (typeof state.contextWindow === "number") next.contextWindow = state.contextWindow;
   if (state.contextWindowSource) next.contextWindowSource = state.contextWindowSource as SessionSlice["contextWindowSource"];
+  if (typeof state.contextThreshold === "number") next.contextThreshold = state.contextThreshold;
+  if (typeof state.contextTokens === "number") next.contextTokens = state.contextTokens;
   next.persistenceFault = state.persistenceFault ?? null;
   if (typeof state.retryable === "boolean") next.retryable = state.retryable;
   return next;
@@ -240,6 +252,15 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
         notice: s.noticeKind === "retrying" ? null : s.notice,
         noticeKind: s.noticeKind === "retrying" ? null : s.noticeKind,
       };
+    case "context": {
+      // The meter's live reading (X-24), announced per round trip. Window and
+      // threshold ride along when known so a tab that joined mid-thread can draw
+      // the bar without waiting for the next settled state frame.
+      const next = { ...s, contextTokens: e.tokens as number };
+      if (typeof e.threshold === "number") next.contextThreshold = e.threshold;
+      if (typeof e.window === "number") next.contextWindow = e.window;
+      return next;
+    }
     case "trigger-mode":
       return { ...s, triggerMode: e.mode as TriggerMode };
     case "needs-compaction":

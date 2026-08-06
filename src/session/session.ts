@@ -33,6 +33,7 @@ import {
   buildCrossModelSummaryInput,
   computeBudget,
   evaluateTrigger,
+  knownPrefixTokens,
   isOverWindowError,
   truncateToolOutputsForSummary,
   COMPACTION_MAX_TOKENS,
@@ -367,12 +368,43 @@ export class Session {
     return applyCompactorFit(budget, compactorWindow, buffer);
   }
 
+  /** How full the context is right now, in tokens — the meter's reading (X-24).
+   *
+   *  **Derived, never stored:** walk back along the active branch and report the
+   *  most recent authoritative measurement. That is the same ground-truth number
+   *  the trigger uses (`prompt + completion` of the last turn, D-44), so the
+   *  meter and the trigger can never disagree — and because it is read off the
+   *  tree rather than latched in a field, it is automatically right after a
+   *  resume, a fork/rewind, or a branch switch, none of which a stored counter
+   *  would notice.
+   *
+   *  A `compaction` overlay short-circuits it to 0: everything above the replay
+   *  cut is no longer sent, so the pre-compaction figure describes a prefix that
+   *  no longer exists. 0 means *not measured yet* — a fresh session, a
+   *  just-compacted one, or a branch with no assistant turn on it. The UI shows
+   *  that as unmeasured rather than as "empty", since the true value is small
+   *  but unknown. Stale by construction between turns (D-44 reads authoritative
+   *  usage rather than tokenizing), which the meter says out loud. */
+  get contextTokens(): number {
+    const branch = pathToLeaf(this.conversation, this.workingLeaf).reverse();
+    for (const entry of branch) {
+      if (entry.type === "compaction") return 0; // replay cut — nothing measured since
+      if (entry.type === "assistant") return knownPrefixTokens(entry.usage);
+    }
+    return 0;
+  }
+
   /** After a turn, decide from ground-truth usage whether the *next* request would
    *  exceed the budget (D-44). Detection only — P6a announces via `needs-compaction`
    *  and latches `needsCompaction`; the loop still proceeds (the accepted one-turn
    *  overshoot). The compaction engine (summarize + overlay) is P6b. */
   private evaluateCompaction(usage: Usage | undefined): void {
     const budget = this.compactionBudget();
+    // Announce the meter reading every round trip, crossed or not (X-24) — the
+    // filed defect was that this number only ever surfaced once it was too late
+    // to act on. Emitted before the budget check so a session with no budget
+    // still drives a meter (it just has nothing to measure against).
+    this.emit({ type: "context", tokens: knownPrefixTokens(usage), threshold: budget?.threshold, window: budget?.window });
     if (!budget) return;
     const evaln = evaluateTrigger(usage, budget);
     if (!evaln.needsCompaction) return;
@@ -462,6 +494,10 @@ export class Session {
     });
     const entry = this.pushEntry({ type: "compaction", summary, replayCut: true });
     this.needsCompaction = false;
+    // The prefix above the cut is no longer sent, so the last reading now
+    // describes a request that will never be made again (X-24). Back to
+    // unmeasured until the next turn reports real usage.
+    this.emit({ type: "context", tokens: 0 });
     this.emit({ type: "compacted", entryId: entry.id, forced: opts.forced ?? false, summaryChars: summary.length });
     return true;
   }
@@ -740,6 +776,11 @@ export class Session {
     }
     this.conversation = treeSetActiveLeaf(this.conversation, entryId);
     this.emit({ type: "active-leaf", leaf: entryId });
+    // Each branch has its own prefix, so the reading moves with the leaf (X-24).
+    // Derived from the branch, so this only announces what already changed — and
+    // mid-turn it re-announces the *pinned* branch's figure, since that is the
+    // context the in-flight request actually has (H-05).
+    this.emit({ type: "context", tokens: this.contextTokens });
   }
 
   /** Edit-and-fork: create a sibling of `entryId` (off its parent) with new text

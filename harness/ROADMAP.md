@@ -480,7 +480,8 @@ gets a preview (the file's size + first lines) in the same slice; (d) don't brea
 raw-JSON box stays the single **editable** truth, and the preview stays read-only, exactly as
 `apply_edits` established.
 
-**Filed 2026-08-04: X-24 — there is no context-usage meter; you can't see how full the window is.**
+**Filed 2026-08-04, FIXED 2026-08-06 (D-61) — see the status block above: X-24 — there is no
+context-usage meter; you can't see how full the window is.**
 Joshua, from real use: the page shows whole-tree **spend** in the corner (`SpendChip`,
 `web/src/App.tsx:1479`) and nothing at all about context. The numbers exist and are already
 authoritative — after each turn the session compares the just-finished response's `prompt_tokens`
@@ -625,16 +626,39 @@ read-once-for-cache, size-cap and self-modification calls spelled out. Nothing h
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
 reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
 
-**463 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 53 files). **H-06 is fixed (D-60)**, so
-the queue moves on. **Next: X-12b** (above — delete-masking, rename from a row, no history stub for
-an empty session; all designed in `DECISIONS.md` and deliberately cut from X-12a since none of it is
-needed to *read* an old thread), **then P7c** — live validation against the real `file_utils` server.
-Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+**474 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 54 files). **H-06 is fixed (D-60)** and
+**X-24 is fixed (D-61)**. **Next: X-12b** (above — delete-masking, rename from a row, no history stub
+for an empty session; all designed in `DECISIONS.md` and deliberately cut from X-12a since none of it
+is needed to *read* an old thread), **then P7c** — live validation against the real `file_utils`
+server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
-**Worth considering ahead of X-12b now that H-06 is closed:** **X-24** (the context meter) and
-**X-27** (a settable threshold) were both blocked on a budget existing, and both are now unblocked
-and small — X-24's numbers already ride on the state frame (`contextWindow`, `contextThreshold`,
-`contextWindowSource`), so the meter is close to a UI-only slice. Joshua's call which goes first.
+**X-24 FIXED 2026-08-06 (D-61) — you can see how full the context is, all the time.** A meter beside
+the spend chip: a bar reading a percentage **of the raw window**, with the compaction threshold drawn
+as a **mark** on the track (X-24 asked "budget or window?" — showing both is what makes *how full* and
+*when does it compact* separately legible). The number is `Session.contextTokens`, a **getter derived
+from the active branch** rather than a latched field, so resume / fork / rewind / branch-switch are
+right with no bookkeeping and the meter can never disagree with the trigger. It rides live on a new
+**`context` event** emitted per LLM round trip — deliberately *not* off `spend`, which also fires for
+the summary/title/watchdog calls whose prompt size isn't this branch's prefix — plus `contextTokens`
+on the state frame for a tab joining mid-thread. **Unmeasured renders `—`, never `0%`** (a fresh or
+just-compacted branch is small-but-unknown, and a confident zero is the exact shape of lie that hid
+H-06); an assumed window (D-60 `fallback`) is marked `~`. Peeked in Chrome (VISUAL-LOG "X-24").
+*Found in passing and fixed:* **`web/` was never typechecked** — `npm run build` runs `tsc` on the
+server tsconfig then hands the browser client to Vite/esbuild, which strips types without checking
+them, so H-06 had left two live type errors in `session-state.ts` that nothing reported.
+`tsc -p web/tsconfig.json` is now in both `build` and `typecheck`.
+
+**Peeks are now a tool, not a recipe** (Joshua's call, 2026-08-06): `harness/peek/peek.mjs`
+(`up` / `chat` / `new` / `shot` / `state` / `down`) does the isolated-config + fake-driver + CDP
+screenshot dance that every slice used to rebuild from prose. `--ctx`/`--buffer`/`--trigger` pose the
+compaction surfaces; `--crop topbar` makes chip-sized detail legible. It launches Chrome on port
+**9411** with a throwaway profile and **refuses to attach to a browser it didn't start** — the first
+version reused anything on 9222, which would have meant driving Joshua's real profile, with his
+cookies and tabs, on a port collision. See VISUAL-LOG's method section.
+
+**Still worth doing next, and small:** **X-27** (a settable compaction threshold) — the last of the
+"blocked on a budget existing" rows, and it now has an obvious surface: the threshold is the mark on
+X-24's bar, so making it settable moves something you can see.
 
 **Still unfiled from `observed_items_needing_filed_in_harness.txt`** (5 items as of 2026-08-06):
 the header model chip truncating from the wrong end (confirmed by eye during the H-06 peek —

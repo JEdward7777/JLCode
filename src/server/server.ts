@@ -173,6 +173,9 @@ function stateOf(session: Session): Record<string, unknown> {
     contextWindow: budget?.window ?? null,
     contextThreshold: budget?.threshold ?? null,
     contextWindowSource: session.contextWindowSource ?? null,
+    // How full the window is right now, for the context meter (X-24). 0 means
+    // "not measured yet" (fresh / just-compacted branch), not "empty".
+    contextTokens: session.contextTokens,
     retryable: session.retryable, // the last turn failed and can be re-sent as-is (D-57)
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };

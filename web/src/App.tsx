@@ -1148,6 +1148,12 @@ function ChatPane({
             journal
           </button>
           <McpButton />
+          <ContextMeter
+            tokens={slice.contextTokens}
+            window={slice.contextWindow}
+            threshold={slice.contextThreshold}
+            source={slice.contextWindowSource}
+          />
           <SpendChip spendUsd={slice.spendUsd} capUsd={slice.capUsd} capReached={slice.capReached} onSetCap={(v) => onChangeCap(id, v)} />
           <StopControl active={slice.working || slice.tasks.length > 0} onStop={(scope) => onStop(id, scope)} />
           <div className="seg" role="group" aria-label="mode">
@@ -1479,6 +1485,75 @@ function plainText(md: string): string {
     .replace(/[*_#>]/g, "")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .trim();
+}
+
+/** How full the context window is, continuously (X-24).
+ *
+ *  The number is the same ground truth the compaction trigger runs on — the last
+ *  turn's `prompt + completion` (D-44) — so it is **one round trip stale by
+ *  construction**: it steps when a turn lands and does not creep while the model
+ *  is thinking. That is deliberate (there is no tokenizer, and an estimate that
+ *  disagreed with the trigger would be worse than a stale exact figure), but it
+ *  has to be said out loud or it reads as a stuck widget, so the tooltip says it.
+ *
+ *  The percentage is of the **raw window**; the compaction threshold
+ *  (`window − buffer`) is drawn as a mark on the bar rather than being what the
+ *  percentage is *of* — X-24 left the choice open, and showing both is what makes
+ *  "how full" and "when will it compact" separately legible. Past the mark the
+ *  bar goes warm, which is the same moment the suggest banner / pause appears.
+ *
+ *  Two honest empty states, never a confident 0%: no window known at all renders
+ *  `—`, and a window we had to guess at (`source: "fallback"`, H-06) is marked
+ *  with `~`. A meter reading 0% because nothing was configured is worse than no
+ *  meter — that is precisely how H-06 hid for a month. */
+function ContextMeter({
+  tokens,
+  window: contextWindow,
+  threshold,
+  source,
+}: {
+  tokens: number;
+  window: number | null;
+  threshold: number | null;
+  source: SessionSlice["contextWindowSource"];
+}) {
+  // No window → nothing to be a percentage of. Say so instead of drawing a bar.
+  if (!contextWindow) {
+    return (
+      <div className="ctx" title="No context window is known for this model, so context usage can't be measured.">
+        <span className="ctx-pct">ctx —</span>
+      </div>
+    );
+  }
+  // 0 = not measured yet (fresh branch, or just compacted): the real figure is
+  // small but unknown, so show the empty bar with a dash rather than "0%".
+  const measured = tokens > 0;
+  const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
+  const markPct = threshold ? Math.min(100, (threshold / contextWindow) * 100) : null;
+  const over = threshold !== null && tokens > threshold;
+  const assumed = source === "fallback";
+  const title = [
+    measured
+      ? `context: ${tokens.toLocaleString()} of ${contextWindow.toLocaleString()} tokens (${pct}%)`
+      : `context: not measured yet — the reading arrives when the next turn lands (window ${contextWindow.toLocaleString()} tokens)`,
+    threshold ? `compacts above ${threshold.toLocaleString()} (the mark)` : null,
+    "measured from the last turn's actual usage, so it steps once per round trip",
+    assumed ? "⚠ this model isn't in the OpenRouter catalog — the window is an assumed default" : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <div className={`ctx ${over ? "over" : ""}`} title={title}>
+      <div className="ctx-bar">
+        <div className="ctx-fill" style={{ width: `${measured ? pct : 0}%` }} />
+        {markPct !== null && <div className="ctx-mark" style={{ left: `${markPct}%` }} />}
+      </div>
+      <span className="ctx-pct">
+        {assumed ? "~" : ""}
+        {measured ? `${pct}%` : "—"}
+      </span>
+    </div>
+  );
 }
 
 /** Live whole-tree spend in the corner (D-33); click to set / raise / clear the

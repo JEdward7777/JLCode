@@ -54,9 +54,10 @@ These are automatic — don't wait to be reminded:
    it carries no status of its own (it points at ROADMAP by design), but if the milestone changed
    *how a user runs or drives JLCode*, the README's run/drive sections must follow.
 5. **Look at rendered surfaces in a real browser — at least once per UI slice.** Tests with more
-   mocks than target code can pass while the real thing is broken or ugly. Chrome is installed;
-   drive the built server with the fake driver and screenshot via CDP (recipe in `VISUAL-LOG.md`).
-   Record each peek — what you confirmed with your own eyes + a screenshot — in
+   mocks than target code can pass while the real thing is broken or ugly. **Use the tool —
+   `node harness/peek/peek.mjs up|chat|new|shot|state|down`** — don't hand-roll the server +
+   CDP dance again (see VISUAL-LOG's method section for the flags). Record each peek — what you
+   confirmed with your own eyes + a screenshot — in
    [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md). This complements tests, never replaces them.
 6. **Watch context length; suggest a fresh thread at boundaries.** Caching discounts the stable
    prefix but the conversation still grows every turn (cost climbs, focus dulls). When the thread

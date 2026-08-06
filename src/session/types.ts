@@ -194,6 +194,11 @@ export type SessionEvent =
   | { type: "mode"; mode: Mode; approval: ApprovalPolicy } // live mode/approval change (D-07/D-08)
   | { type: "title"; title: string; source: "auto" | "manual" } // the thread got a name (X-09)
   | { type: "spend"; totalUsd: number; turnUsd: number; usage?: Usage } // whole-tree spend (D-33)
+  // How full the context is, for the meter (X-24). Emitted per LLM round trip of
+  // the conversation loop — deliberately *not* off `spend`, which also fires for
+  // the summary/title/watchdog calls whose prompt size is not this branch's
+  // prefix. `tokens: 0` means not measured yet (fresh branch, or just compacted).
+  | { type: "context"; tokens: number; threshold?: number; window?: number }
   | { type: "cap"; capUsd: number | null } // the spend cap was set/raised/cleared (D-33)
   | { type: "cap-reached"; spendUsd: number; capUsd: number } // breach → no further LLM call (D-33)
   // Ground-truth usage says the next request would exceed the budget (D-44). The

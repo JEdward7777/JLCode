@@ -7,12 +7,44 @@ per slice and record it here — what we loaded, what we confirmed with our own
 eyes, and a screenshot. This complements the automated tests; it does not
 replace them.
 
-**How the peeks are driven** (no extra deps, D-25): run the built server with the
-fake echo driver (`JLCODE_FAKE_LLM=1`, isolated `JLCODE_CONFIG_DIR`/`JLCODE_DATA_DIR`,
-no real key/spend), seed a conversation over the HTTP API, then screenshot the
-page via Chrome's DevTools Protocol (`--remote-debugging-port` + a tiny
-`WebSocket` client). Chrome's `--virtual-time-budget` screenshot stalls on the
-long-lived SSE connection, so CDP with a real wait is the reliable path.
+## How the peeks are driven — use the tool
+
+**`harness/peek/peek.mjs` is the recipe. Don't hand-roll it again.** (Joshua's
+call, 2026-08-06: this used to be prose here, so every slice rebuilt the same
+three throwaway scripts from scratch.) No extra deps — Node's global `fetch` +
+`WebSocket`, so it wants Node 22+. Nothing here ships; `package.json` publishes
+`dist` only.
+
+```bash
+npm run build                                                  # peek drives dist/
+node harness/peek/peek.mjs up --ctx 4000 --buffer 1000 --trigger suggest
+node harness/peek/peek.mjs chat "Give me a short overview."    # prints the state frame
+node harness/peek/peek.mjs shot x24-meter                      # → harness/visual/x24-meter.png
+node harness/peek/peek.mjs shot x24-crop --crop topbar         # named crop, for chip-sized detail
+node harness/peek/peek.mjs new                                 # a fresh session (empty states)
+node harness/peek/peek.mjs state                               # just the state frame
+node harness/peek/peek.mjs down
+```
+
+What it handles, so you don't rediscover it:
+
+- **Isolated everything.** Writes its own `config.json` under `/tmp/jlcode-peek`
+  with `JLCODE_CONFIG_DIR`/`JLCODE_DATA_DIR` pointed there and `JLCODE_FAKE_LLM=1`
+  — no real key, no spend, and your actual `~/.config/jlcode` is never touched.
+- **`--ctx` / `--buffer` / `--trigger` are the dials that pose the compaction and
+  context surfaces.** They set `contextLength`/`bufferTokens`/`triggerModes`,
+  which is what decides whether a fake turn (≈1,000 prompt tokens) reads as
+  quiet, crossed, or over the wall. `--delay <ms>` sets `JLCODE_FAKE_LLM_DELAY_MS`
+  so mid-stream surfaces are screenshottable at all.
+- **CDP, with a real wait.** Chrome's `--virtual-time-budget` screenshot stalls on
+  the long-lived SSE connection the client holds open, so the tool drives a real
+  page and waits (`--wait ms`, default 2500).
+- **It never touches your browser.** It launches Chrome on a *deliberately
+  unconventional* CDP port (9411, not 9222) with a throwaway `--user-data-dir`,
+  and it **refuses to attach** to a listening port it didn't start rather than
+  risk driving a real profile with real cookies and open tabs. It also opens its
+  own tab instead of navigating whichever page is first in the target list.
+  (Both hazards were real: the first version reused any browser on 9222.)
 
 ---
 
@@ -758,3 +790,51 @@ first observed-item and is still unfiled.
 Not exercised visually: the `auto`/`hard`/`cancelable` surfaces with the new
 window line (same components, same props), and a real over-window compaction
 against a live model.
+
+---
+
+## X-24 — the context meter · 2026-08-06 · ✅ looked good
+
+**Screenshots:** [`visual/x24-meter-states.png`](visual/x24-meter-states.png) (the
+three chip states stacked) · [`visual/x24-meter.png`](visual/x24-meter.png) ·
+[`visual/x24-over-threshold.png`](visual/x24-over-threshold.png)
+
+First peek driven by `harness/peek/peek.mjs` rather than hand-rolled scripts, and
+the tool was hardened mid-peek after Joshua asked whether it could act in *his*
+Chrome with *his* cookies (see the method section above — it could have, on a
+port collision; now it refuses).
+
+Posed with `--ctx 4000 --buffer 1000` (quiet) and `--ctx 1200 --buffer 200`
+(crossed), since a fake turn reports ≈1,000 prompt tokens. Confirmed with my own
+eyes:
+
+- **The meter exists, continuously, with no crossing required.** A single quiet
+  turn shows `26%` with a partly-filled blue bar. That is the whole filing: the
+  same number previously appeared *only* on the compaction card, i.e. only once
+  it was too late to act on. The state frame behind it read
+  `contextTokens: 1054, contextWindow: 4000, contextThreshold: 3000`.
+- **The threshold is a mark, not the denominator.** The hairline sits at 75% of
+  the track (3,000 of 4,000) while the fill reads 26% — so "how full" and "when
+  will it compact" are separately legible, which was X-24's open question (c).
+- **Unmeasured reads as unmeasured, not as empty.** A fresh session shows an empty
+  track and `—`, not `0%`. A confident `0%` is exactly the lie that let H-06 hide
+  for a month, so this was the case most worth looking at.
+- **Crossing is one visual event.** At 87% the chip turns red — border, fill and
+  figure together — at the same moment the suggest banner appears below the
+  thread. The meter and the banner agree because they read the same budget.
+- **It sits with the spend chip and matches it.** Same height, radius, border and
+  mono figure, so the corner reads as one row of instruments rather than a
+  widget bolted on.
+
+*Noticed while looking, not fixed here:* past the threshold the red fill swallows
+the threshold hairline (the mark is drawn in `--muted` over `--danger`). Harmless
+— once the bar is red you already know you are over it — but if the mark ever
+needs to stay visible there, it wants a contrasting colour rather than one tone.
+
+Also re-confirmed, still unfiled: the header model chip truncates from the wrong
+end (`pe…` for `peek/model`), keeping the vendor and hiding the model. Same
+observed-item as the H-06 peek.
+
+Not exercised visually: the meter under `auto`/`hard`/`cancelable` (same
+component, same props), and its reset across a real compaction — the post-compact
+`—` is covered by tests but was not screenshotted.

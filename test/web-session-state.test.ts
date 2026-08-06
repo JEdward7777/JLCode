@@ -73,6 +73,36 @@ describe("compaction events fold into the slice (D-27, P6c)", () => {
   });
 });
 
+describe("the context meter's reading folds into the slice (X-24)", () => {
+  it("a live `context` event updates tokens, and carries window/threshold when known", () => {
+    let s = newSlice("s1");
+    expect(s.contextTokens).toBe(0); // 0 = not measured yet, rendered as unknown
+    s = reduceEvent(s, { type: "context", tokens: 1500, threshold: 180_000, window: 200_000 } as WireEvent);
+    expect(s.contextTokens).toBe(1500);
+    expect(s.contextWindow).toBe(200_000);
+    expect(s.contextThreshold).toBe(180_000);
+    // A later event without the window (e.g. the post-compaction reset) must not
+    // wipe what we already know, or the bar would vanish on a successful compact.
+    s = reduceEvent(s, { type: "context", tokens: 0 } as WireEvent);
+    expect(s.contextTokens).toBe(0);
+    expect(s.contextWindow).toBe(200_000);
+    expect(s.contextThreshold).toBe(180_000);
+  });
+
+  it("applyState carries the reading + window provenance", () => {
+    const s = applyState(newSlice("s1"), {
+      contextTokens: 4200,
+      contextWindow: 128_000,
+      contextThreshold: 108_000,
+      contextWindowSource: "fallback",
+    });
+    expect(s.contextTokens).toBe(4200);
+    expect(s.contextWindow).toBe(128_000);
+    expect(s.contextThreshold).toBe(108_000);
+    expect(s.contextWindowSource).toBe("fallback"); // meter must mark this a guess
+  });
+});
+
 describe("reduceEvent folds live events", () => {
   it("streams reasoning + text into the live overlay, then retires it on the entry", () => {
     let s = newSlice("s1");

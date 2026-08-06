@@ -617,6 +617,59 @@ body.row-resizing {
   cursor: pointer;
 }
 
+/* Context meter (X-24): how full the window is, beside the spend chip. Same chip
+   metrics as .spend so the two read as a pair; the bar carries the reading and
+   the mark is where compaction fires (window − buffer). */
+.ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: default;
+}
+.ctx-bar {
+  position: relative;
+  width: 54px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.ctx-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+/* The compaction threshold, as a hairline across the track. */
+.ctx-mark {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--muted);
+}
+.ctx-pct {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 30px;
+  text-align: right;
+}
+/* Past the threshold — the same moment compaction is offered. */
+.ctx.over {
+  border-color: var(--danger);
+}
+.ctx.over .ctx-fill {
+  background: var(--danger);
+}
+.ctx.over .ctx-pct {
+  color: var(--danger);
+}
+
 /* Spend chip + cap popover (D-33) */
 .spend-wrap,
 .stop-wrap {
