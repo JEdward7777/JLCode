@@ -7,9 +7,13 @@
  * D-44's key move: react **one turn late** on *ground-truth* usage. Every LLM
  * response reports authoritative `prompt_tokens` + `completion_tokens`, so after
  * a turn the next request's known prefix is exactly `prompt + completion`. We
- * compare that to `window − buffer` and compact before the next send — never
+ * compare that to the threshold and compact before the next send — never
  * estimating, never tokenizing (honors D-25). The ~20K buffer is precisely the
  * headroom that absorbs the single accepted overshoot turn.
+ *
+ * X-27 makes that threshold *settable*: `compaction.thresholdTokens` states it
+ * absolutely ("compact above 171,500"), and `window − buffer` remains the
+ * derivation when it is absent.
  */
 import type { ChatMessage, Usage } from "../llm/types.js";
 import type { CompactionSettings, CompactionTrigger } from "../config/types.js";
@@ -24,19 +28,84 @@ export const DEFAULT_BUFFER_TOKENS = 20_000;
 /** Active trigger mode when auto is off (D-27: auto-but-cancelable is the default). */
 export const DEFAULT_TRIGGER_MODE: CompactionTrigger = "cancelable";
 
+/** Where a budget's threshold came from (X-27) — provenance rides with the
+ *  number, the same way `WindowSource` rides with the window (D-60d), so a
+ *  banner or `config which` can state *why* compaction fires where it does. */
+export type ThresholdSource = "absolute" | "buffer" | "compactor-fit";
+
 export interface CompactionBudget {
   /** The model's context window (`context_length`) — injected in P6a. */
   window: number;
   /** Headroom kept below the window (buffer, D-44). */
   buffer: number;
-  /** Compact once the known prefix exceeds this: `window − buffer`, floored at 0. */
+  /** Compact once the known prefix exceeds this. Either the absolute
+   *  `thresholdTokens` (X-27) or the derived `window − buffer`, floored at 0. */
   threshold: number;
+  /** How `threshold` was settled (X-27). */
+  source: ThresholdSource;
+  /** An absolute `thresholdTokens` that was **refused** because it does not fit
+   *  the window (X-27d): a threshold at or above the window can only be crossed
+   *  by a prefix the provider would already have rejected, so it would silently
+   *  never fire. Kept here — rather than dropped — so the surfaces can say the
+   *  configured value is being ignored instead of quietly disagreeing with it. */
+  refusedThreshold?: number;
 }
 
-/** Derive the compaction budget from an injected window and the config buffer. */
-export function computeBudget(window: number, bufferTokens?: number): CompactionBudget {
-  const buffer = bufferTokens ?? DEFAULT_BUFFER_TOKENS;
-  return { window, buffer, threshold: Math.max(0, window - buffer) };
+/** Settings that shape the budget: the absolute threshold (X-27) and the
+ *  headroom it falls back to (D-44). */
+export interface BudgetSettings {
+  /** Absolute "compact above this many tokens" (X-27). Wins over `bufferTokens`. */
+  thresholdTokens?: number;
+  /** Headroom below the window; the derivation used when no absolute threshold
+   *  is set, so existing configs keep their meaning exactly (D-44/D-44c). */
+  bufferTokens?: number;
+}
+
+/** Is an absolute threshold usable against this window (X-27d)? It must be a
+ *  positive integer strictly *below* the window — at the window it could only
+ *  fire on a request the provider has already rejected. Shared with the CLI so
+ *  `config set` refuses the same values the budget would ignore. */
+export function thresholdFitsWindow(thresholdTokens: number, window: number): boolean {
+  return Number.isFinite(thresholdTokens) && thresholdTokens > 0 && thresholdTokens < window;
+}
+
+/**
+ * Settle the compaction budget from an injected window and the config.
+ *
+ * **Precedence (X-27a): an absolute `thresholdTokens` wins; otherwise the
+ * threshold is derived as `window − bufferTokens` (D-44c), the pre-X-27
+ * behaviour.** So nothing existing changes meaning: a config with only a buffer
+ * computes exactly what it always did. An absolute threshold that does not fit
+ * the window is refused and the derivation is used instead, with the refused
+ * value reported (see {@link CompactionBudget.refusedThreshold}).
+ *
+ * The compactor-fit guard (D-44a) is applied *after* this, by
+ * {@link applyCompactorFit} — an absolute threshold the summarizer itself
+ * cannot read must still tighten, or compaction fails at the moment it is
+ * needed.
+ */
+export function computeBudget(window: number, settings: BudgetSettings = {}): CompactionBudget {
+  const buffer = settings.bufferTokens ?? DEFAULT_BUFFER_TOKENS;
+  const derived = Math.max(0, window - buffer);
+  const absolute = settings.thresholdTokens;
+  if (absolute === undefined) return { window, buffer, threshold: derived, source: "buffer" };
+  if (!thresholdFitsWindow(absolute, window)) {
+    return { window, buffer, threshold: derived, source: "buffer", refusedThreshold: absolute };
+  }
+  return { window, buffer, threshold: absolute, source: "absolute" };
+}
+
+/** Human wording for where a threshold came from (X-27), for the serve banner
+ *  and `config which`. The refusal, when there is one, is stated separately. */
+export function describeThresholdSource(budget: CompactionBudget): string {
+  switch (budget.source) {
+    case "absolute":
+      return "set in this config (compaction.thresholdTokens)";
+    case "compactor-fit":
+      return "tightened to fit the compaction model";
+    case "buffer":
+      return `derived: window − ${budget.buffer.toLocaleString()} buffer`;
+  }
 }
 
 /** The next request's known prefix size (D-44): the just-finished turn's
@@ -52,7 +121,11 @@ export function knownPrefixTokens(usage: Usage | undefined): number {
  *  count exists for a model we never send to, so proxy it with the working model's
  *  window under the same buffer slack and take the tighter threshold. Returns the
  *  budget unchanged when the compactor is the working model or its window is
- *  unknown (or is at least as roomy). */
+ *  unknown (or is at least as roomy).
+ *
+ *  Applied **after** {@link computeBudget}, so it caps an absolute
+ *  `thresholdTokens` too (X-27a): a threshold above what the summarizer can read
+ *  would fail exactly when compaction is needed. */
 export function applyCompactorFit(
   budget: CompactionBudget,
   compactorWindow: number | undefined,
@@ -62,7 +135,7 @@ export function applyCompactorFit(
   const buffer = bufferTokens ?? DEFAULT_BUFFER_TOKENS;
   const compactorThreshold = Math.max(0, compactorWindow - buffer);
   if (compactorThreshold >= budget.threshold) return budget;
-  return { ...budget, threshold: compactorThreshold };
+  return { ...budget, threshold: compactorThreshold, source: "compactor-fit" };
 }
 
 export interface TriggerEvaluation {

@@ -65,7 +65,7 @@ Each configuration carries:
 | Sampling params | temperature, top_p, max_tokens. |
 | Default mode + approval policy | The mode (Ask/Plan/Code) and approval policy this config starts in. |
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
-| Compaction settings (§15) | **Compaction model** (default = the working model; overridable to a cheaper one, with the compactor-fit guard); **auto** on/off; **headroom buffer** (default ~20K tokens); **keep-recent tokens** (default ~8K verbatim); **trigger modes**. Budget is derived from the model's `context_length` (from OpenRouter metadata). |
+| Compaction settings (§15) | **Compaction model** (default = the working model; overridable to a cheaper one, with the compactor-fit guard); **auto** on/off; an **absolute threshold** in tokens (`thresholdTokens`, X-27 — e.g. condense at 171,500) *or*, absent one, a **headroom buffer** (default ~20K tokens) the threshold is derived from; **keep-recent tokens** (default ~8K verbatim); **trigger modes**. The window comes from the model's `context_length` (from OpenRouter metadata, D-60). |
 
 **Project-scoped instructions (planned, X-15).** The addendum above is per *config* (per client).
 A **workspace** cannot yet ship instructions of its own: nothing reads `AGENTS.md` (or
@@ -289,6 +289,11 @@ regimes #2/#3 (fast-follow), while v1 exercises the safe-harbor path.
 - Budget derived from the model's `context_length` (OpenRouter metadata). Compact when the
   estimated request (system + messages + tools) exceeds `window − max(reservedOutput, buffer)`,
   **buffer default ≈ 20K tokens** (KiloCode's value; configurable).
+- **Or state the threshold outright (X-27, D-62):** `compaction.thresholdTokens` (e.g. 171,500) is
+  used as the threshold directly and **wins over the buffer derivation**, which remains the rule
+  when it is absent. A threshold that is not strictly below the window is **refused** — at
+  `config set` time when the window is known, and ignored in favour of the derivation at runtime —
+  since it could otherwise only fire on a request the provider has already rejected.
 - **Compactor-fit guard:** the budget must also fit the **compaction model's** window (minus
   summary output). If the summarizer is smaller than the working model, trigger earlier so the
   history still fits the summarizer. Bail/degrade gracefully if it can't fit.

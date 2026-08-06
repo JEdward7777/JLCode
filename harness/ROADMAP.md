@@ -596,8 +596,8 @@ screen, is noise; keying off `document.hidden` plus "not the focused session" is
 computed by `tabTitle()`, X-10) — a badge is the silent half of this feature and costs almost
 nothing once the trigger exists.
 
-**Filed 2026-08-04: X-27 — a compaction threshold you can actually set (KiloCode condenses at
-171.5k).** Joshua: *"KiloCode condenses at 171.5k, so we should probably have a preset for
+**Filed 2026-08-04, FIXED 2026-08-06 (D-62) — see the status block above: X-27 — a compaction
+threshold you can actually set (KiloCode condenses at 171.5k).** Joshua: *"KiloCode condenses at 171.5k, so we should probably have a preset for
 condensing at the same size. Shooting past by one turn is fine"* — the last clause is already how
 JLCode works (D-44's accepted one-turn overshoot, since the trigger reads authoritative usage after
 the turn). Today the threshold is **derived, not set**: `budget = window − bufferTokens`
@@ -627,8 +627,8 @@ read-once-for-cache, size-cap and self-modification calls spelled out. Nothing h
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
 reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
 
-**487 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 55 files). **H-06 is fixed (D-60)**,
-**X-24 is fixed (D-61)** and **X-12b is DONE**. **Next: P7c** — live validation against the real
+**506 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 56 files). **H-06 is fixed (D-60)**,
+**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)** and **X-12b is DONE**. **Next: P7c** — live validation against the real
 `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 **X-12b shipped 2026-08-06 — a past thread can now be renamed and removed.** The three parts the row
@@ -679,9 +679,23 @@ compaction surfaces; `--crop topbar` makes chip-sized detail legible. It launche
 version reused anything on 9222, which would have meant driving Joshua's real profile, with his
 cookies and tabs, on a port collision. See VISUAL-LOG's method section.
 
-**Still worth doing next, and small:** **X-27** (a settable compaction threshold) — the last of the
-"blocked on a budget existing" rows, and it now has an obvious surface: the threshold is the mark on
-X-24's bar, so making it settable moves something you can see.
+**X-27 FIXED 2026-08-06 (D-62) — you can now say "condense at 171.5k" and be obeyed.**
+`compaction.thresholdTokens` states the threshold **absolutely**; `bufferTokens` stays the
+derivation when it is absent, so no existing config changes meaning. Precedence is stated once, in
+`computeBudget`: **absolute wins over the buffer, and D-44a's compactor-fit guard still applies
+after both** — a threshold the summarizer itself cannot read has to tighten, or compaction fails at
+the moment it is needed. Reachable without hand-editing JSON, per Joshua's "preset":
+`config set <name> --compaction-threshold 171500` (`none` clears it), and readable back from
+`config which` and the `serve` banner, both of which now print *where compaction fires and why*
+beside the window D-60 added. **A threshold that is not below the window is refused, twice over:**
+`config set` errors at the moment you type it when the window is *known* (and warns, but accepts,
+against an assumed one — refusing on a guess would block a value that is probably right), and the
+budget itself ignores an unfittable stored value, falling back to the derivation and reporting the
+refused number so every surface can say so. The **meter needed no new wiring**: D-61 already draws
+the threshold as a mark from `contextThreshold` on the state frame, and the new test asserts that
+frame carries 171,500 — verified end-to-end rather than rebuilt, so no peek was needed for this
+slice. Tested at four levels, deliberately including the **`serve` session factory** — the level
+D-60's month-long bug lived at, which a `Session` test injecting its own budget cannot see.
 
 **Still unfiled from `observed_items_needing_filed_in_harness.txt`** (5 items as of 2026-08-06):
 the header model chip truncating from the wrong end (confirmed by eye during the H-06 peek —

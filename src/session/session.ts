@@ -354,12 +354,17 @@ export class Session {
   }
 
   /** The compaction budget for this session (D-27/D-44), or undefined when no
-   *  context window is known (so no trigger can fire). Applies the config buffer
-   *  and the compactor-fit guard (D-44a) when a smaller summarizer is configured. */
+   *  context window is known (so no trigger can fire). Takes the absolute
+   *  `thresholdTokens` when set, else derives from the config buffer (X-27), then
+   *  applies the compactor-fit guard (D-44a) when a smaller summarizer is
+   *  configured — in that order, so the guard can tighten either. */
   compactionBudget(): CompactionBudget | undefined {
     if (this.contextWindow === undefined) return undefined;
     const buffer = this.config.compaction?.bufferTokens;
-    const budget = computeBudget(this.contextWindow, buffer);
+    const budget = computeBudget(this.contextWindow, {
+      bufferTokens: buffer,
+      thresholdTokens: this.config.compaction?.thresholdTokens,
+    });
     // The guard only bites when a *different*, smaller compaction model is set;
     // an identical/absent compactor uses the working window unchanged.
     const compactorId = this.config.compaction?.model;

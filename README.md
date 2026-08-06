@@ -163,6 +163,24 @@ made it stop, the approval card asks you to settle it (*does this tool write?*,
 `mcp_settings.json`, so each question is asked once. If your approval policy
 would have let the call run unattended, nothing is asked (D-48).
 
+### When it compacts
+
+A long thread is summarized in place before it overflows the model's context
+window — the meter beside the spend chip shows how full the window is, with a
+mark where that happens. The window is read live from OpenRouter, so normally
+you set nothing. To condense at a size you pick instead (matching KiloCode's
+171.5k, say):
+
+```bash
+jlcode config set work --compaction-threshold 171500   # "none" puts it back
+jlcode config which                                    # window + where it fires
+```
+
+Unset, the threshold stays derived — the window minus a ~20k buffer. A value at
+or above the window is refused rather than quietly never firing, and if you
+configure a *smaller* summarizer model the effective threshold tightens to what
+that model can actually read.
+
 ### Serving scope and auth
 
 The bind address declares the exposure, and auth follows from it (D-40):

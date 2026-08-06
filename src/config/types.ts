@@ -50,8 +50,15 @@ export interface CompactionSettings {
   /** Summarizer model id; default = the working model (D-27/D-38). */
   model?: string;
   auto: boolean;
-  /** Headroom below the window before compacting (default ≈ 20k, D-27). */
+  /** Headroom below the window before compacting (default ≈ 20k, D-27). The
+   *  derivation used when `thresholdTokens` is absent (X-27). */
   bufferTokens?: number;
+  /** Compact once the known prefix exceeds this many tokens (X-27) — the
+   *  threshold stated absolutely ("condense at 171500") instead of as headroom.
+   *  Wins over `bufferTokens`; must be below the context window or it is refused
+   *  (a threshold at/above the window could never fire). The compactor-fit guard
+   *  (D-44a) still applies on top. */
+  thresholdTokens?: number;
   /** Recent tokens kept verbatim — fast-follow (#2); v1 safe-harbor ignores it. */
   keepRecentTokens?: number;
   triggerModes?: CompactionTrigger[];

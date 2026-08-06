@@ -3,8 +3,19 @@
  * never printed — only whether one is set. Selection is keyed off the current
  * working directory (D-06).
  */
-import { resolvePaths } from "../paths.js";
-import { ModelCatalog, describeWindowSource } from "../llm/models.js";
+import { resolvePaths, type JlcodePaths } from "../paths.js";
+import { ModelCatalog, describeWindowSource, type WindowSource } from "../llm/models.js";
+// The same function `serve` uses to settle a session's windows (D-60/H-06) —
+// borrowed rather than re-derived, so `config which` can never disagree with
+// what the session will actually run under.
+import { resolveWindows } from "../server/session-factory.js";
+import {
+  applyCompactorFit,
+  computeBudget,
+  describeThresholdSource,
+  thresholdFitsWindow,
+  type CompactionBudget,
+} from "../session/compaction.js";
 import { parseArgs, flagString } from "../util/args.js";
 import { readSecret } from "../util/prompt.js";
 import { loadConfig, saveConfig } from "./store.js";
@@ -43,6 +54,12 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
   --system <text> --max-tokens <n> --temperature <n> --top-p <n>
   --context-length <n>   override the model's context window; normally unset,
                          since it is read live from OpenRouter (D-44c)
+  --compaction-threshold <n|none>
+                         compact once the context passes n tokens (X-27), e.g.
+                         171500. Must be below the context window. Omit it and
+                         the threshold stays derived (window − buffer);
+                         "none" clears it back to that.
+  --offline              (set/which) don't refresh the model catalog
 `;
 
 function numberFlag(flags: Record<string, string | boolean>, key: string): number | undefined {
@@ -86,7 +103,57 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
     if (!Number.isInteger(n) || n <= 0) throw new Error(`--context-length must be a positive integer`);
     patch.contextLength = n;
   }
+  // The absolute compaction threshold (X-27). Shape only here; whether it fits
+  // the model's window is checked in `set`, where the catalog is reachable.
+  const threshold = flagString(flags, "compaction-threshold");
+  if (threshold !== undefined) {
+    if (threshold === "none" || threshold === "0") {
+      patch.thresholdTokens = null; // back to the derived window − buffer
+    } else {
+      const n = Number(threshold);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--compaction-threshold must be a positive integer, or "none" to clear it`);
+      }
+      patch.thresholdTokens = n;
+    }
+  }
   return patch;
+}
+
+/**
+ * Settle the window *and* the compaction threshold a session for this config
+ * would run under — D-60's window precedence (config > catalog > fallback) plus
+ * X-27's threshold precedence (absolute > `window − buffer`), with the D-44a
+ * compactor-fit guard applied last, exactly as `serve` does it. Refreshes the
+ * catalog unless `--offline`; a catalog failure is reported, never fatal.
+ */
+async function resolveBudget(
+  config: ModelConfig,
+  paths: JlcodePaths,
+  opts: { offline?: boolean } = {},
+): Promise<{ budget: CompactionBudget; source: WindowSource; catalogError?: string }> {
+  const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
+  let catalogError: string | undefined;
+  if (!opts.offline) ({ error: catalogError } = await catalog.ensureKnown(config.model));
+  const windows = resolveWindows(config, catalog);
+  const bufferTokens = config.compaction?.bufferTokens;
+  const budget = applyCompactorFit(
+    computeBudget(windows.window, { bufferTokens, thresholdTokens: config.compaction?.thresholdTokens }),
+    windows.compactorWindow,
+    bufferTokens,
+  );
+  return { budget, source: windows.source, catalogError };
+}
+
+/** The two lines that state where compaction fires and why (X-27). */
+function thresholdLines(budget: CompactionBudget): string {
+  let out = `    compacts above ${budget.threshold.toLocaleString()} tokens — ${describeThresholdSource(budget)}\n`;
+  if (budget.refusedThreshold !== undefined) {
+    out +=
+      `    ⚠ compaction.thresholdTokens ${budget.refusedThreshold.toLocaleString()} is not below the window — ` +
+      `ignored (it could never fire); set a lower --compaction-threshold\n`;
+  }
+  return out;
 }
 
 function shortId(id: string): string {
@@ -145,15 +212,15 @@ export async function runConfig(args: string[]): Promise<number> {
       // Printed here because the failure mode this fixes was invisible: nothing
       // ever stated the window, so "no window at all" looked exactly like a
       // working setup. `--offline` keeps the command from reaching the network.
-      const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
-      if (!parseArgs(rest).flags["offline"]) {
-        const { error } = await catalog.ensureKnown(selected.model);
-        if (error) process.stdout.write(`  (model catalog unavailable — ${error})\n`);
-      }
-      const window = catalog.resolve(selected.model, selected.compaction?.contextLength);
+      const offline = Boolean(parseArgs(rest).flags["offline"]);
+      const { budget, source, catalogError } = await resolveBudget(selected, paths, { offline });
+      if (catalogError) process.stdout.write(`  (model catalog unavailable — ${catalogError})\n`);
       process.stdout.write(
-        `    context window ${window.window.toLocaleString()} tokens — ${describeWindowSource(window.source)}\n`,
+        `    context window ${budget.window.toLocaleString()} tokens — ${describeWindowSource(source)}\n`,
       );
+      // And where compaction actually fires under it (X-27) — a threshold you
+      // can set is only useful if you can read it back.
+      process.stdout.write(thresholdLines(budget));
       return 0;
     }
 
@@ -210,13 +277,58 @@ export async function runConfig(args: string[]): Promise<number> {
       const ref = positionals[0];
       if (!ref) throw new Error("Usage: jlcode config set <name|id> [--model <> --max-tokens <> …]");
       const config = loadConfig(paths);
-      const { config: next, updated } = updateModelConfig(config, ref, patchFromFlags(flags));
+      const patch = patchFromFlags(flags);
+      const offline = Boolean(flags["offline"]);
+      // A threshold above the window can never fire (X-27d) — the silent failure
+      // H-06 just showed is easy to miss. Refuse it here, against the window the
+      // *updated* config would run under, so the error lands at the moment the
+      // value is typed rather than as months of un-compacted conversations.
+      if (typeof patch.thresholdTokens === "number") {
+        const target = findModelConfig(config, ref);
+        if (!target) throw new Error(`No model config matching "${ref}"`);
+        const probe: ModelConfig = {
+          ...target,
+          model: patch.model ?? target.model,
+          compaction: {
+            ...(target.compaction ?? { auto: false }),
+            ...(patch.contextLength !== undefined ? { contextLength: patch.contextLength } : {}),
+          },
+        };
+        const { budget, source, catalogError } = await resolveBudget(probe, paths, { offline });
+        if (catalogError) process.stderr.write(`  (model catalog unavailable — ${catalogError})\n`);
+        if (!thresholdFitsWindow(patch.thresholdTokens, budget.window)) {
+          // An assumed window is a guess, not a fact (D-60d) — refusing on a
+          // guess would block a value that is very likely right, so warn and
+          // accept, naming the fix.
+          if (source === "fallback") {
+            process.stderr.write(
+              `warning: ${probe.model} isn't in the OpenRouter catalog, so its window is an assumed ` +
+                `${budget.window.toLocaleString()} — accepting ${patch.thresholdTokens.toLocaleString()} anyway. ` +
+                `Set --context-length <n> to state the real window.\n`,
+            );
+          } else {
+            throw new Error(
+              `--compaction-threshold ${patch.thresholdTokens.toLocaleString()} is not below the ` +
+                `${budget.window.toLocaleString()}-token context window of ${probe.model} ` +
+                `(${describeWindowSource(source)}) — it would never fire. Pick a lower value` +
+                `${source === "config" ? ", or raise --context-length" : ""}.`,
+            );
+          }
+        }
+      }
+      const { config: next, updated } = updateModelConfig(config, ref, patch);
       saveConfig(next, paths);
       const mt = updated.sampling?.maxTokens;
       process.stdout.write(
         `Updated → ${updated.name}  ${updated.model}  effort:${updated.reasoningEffort ?? "-"}` +
           `${mt !== undefined ? `  max_tokens:${mt}` : ""}  ${shortId(updated.id)}\n`,
       );
+      // Read the threshold back whenever this command touched it — the effective
+      // one, so a compactor-fit tightening (D-44a) is visible rather than silent.
+      if (patch.thresholdTokens !== undefined || patch.contextLength !== undefined) {
+        const { budget } = await resolveBudget(updated, paths, { offline });
+        process.stdout.write(thresholdLines(budget));
+      }
       return 0;
     }
 

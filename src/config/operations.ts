@@ -6,6 +6,7 @@
 import { newId } from "../util/id.js";
 import type {
   ApprovalPolicy,
+  CompactionSettings,
   Config,
   Mode,
   ModelConfig,
@@ -72,6 +73,9 @@ export interface ModelConfigPatch {
    *  OpenRouter catalog supplies it — so this is the escape hatch for a model
    *  the catalog doesn't list or gets wrong. */
   contextLength?: number;
+  /** Absolute compaction threshold in tokens (X-27); `null` clears it, putting
+   *  the config back on the `window − buffer` derivation. */
+  thresholdTokens?: number | null;
 }
 
 /** Edit an existing config in place (merging sampling), bumping updatedAt. */
@@ -88,6 +92,18 @@ export function updateModelConfig(
     if (typeof v === "number") mergedSampling[k] = v;
   }
 
+  // Compaction fields (`contextLength` D-44c, `thresholdTokens` X-27) merge into
+  // the one settings object, so setting both in a single command keeps both.
+  // `null` clears a field rather than writing it — the way back to the derived
+  // threshold without hand-editing JSON.
+  let compaction: CompactionSettings | undefined;
+  if (patch.contextLength !== undefined || patch.thresholdTokens !== undefined) {
+    compaction = { ...(target.compaction ?? { auto: false }) };
+    if (patch.contextLength !== undefined) compaction.contextLength = patch.contextLength;
+    if (patch.thresholdTokens === null) delete compaction.thresholdTokens;
+    else if (patch.thresholdTokens !== undefined) compaction.thresholdTokens = patch.thresholdTokens;
+  }
+
   const updated: ModelConfig = {
     ...target,
     ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -96,9 +112,7 @@ export function updateModelConfig(
     ...(patch.systemPromptAddendum !== undefined ? { systemPromptAddendum: patch.systemPromptAddendum } : {}),
     ...(patch.defaultMode !== undefined ? { defaultMode: patch.defaultMode } : {}),
     ...(patch.defaultApproval !== undefined ? { defaultApproval: patch.defaultApproval } : {}),
-    ...(patch.contextLength !== undefined
-      ? { compaction: { ...(target.compaction ?? { auto: false }), contextLength: patch.contextLength } }
-      : {}),
+    ...(compaction ? { compaction } : {}),
     sampling: Object.keys(mergedSampling).length > 0 ? mergedSampling : undefined,
     updatedAt: new Date().toISOString(),
   };

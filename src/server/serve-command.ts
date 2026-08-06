@@ -13,6 +13,7 @@ import type { LlmDriver } from "../llm/types.js";
 import type { ModelConfig } from "../config/types.js";
 import { ModelCatalog, describeWindowSource } from "../llm/models.js";
 import { fakeAgentDriver } from "../session/fake.js";
+import { applyCompactorFit, computeBudget, describeThresholdSource } from "../session/compaction.js";
 import { createSessionFactory, resolveWindows } from "./session-factory.js";
 import { McpManager, mcpSettingsFiles } from "../mcp/client.js";
 import { ConversationStore } from "../persist/conversation-store.js";
@@ -117,6 +118,16 @@ export async function runServe(args: string[]): Promise<number> {
     if (error) process.stderr.write(`models: could not refresh the catalog — ${error}\n`);
   }
   const windows = resolveWindows(config, catalog);
+  // Where compaction will actually fire under that window (X-27). Same math the
+  // sessions run, so the banner cannot drift from the behaviour — and a
+  // configured threshold that had to be refused says so here, at start, rather
+  // than by never compacting.
+  const bufferTokens = config.compaction?.bufferTokens;
+  const startupBudget = applyCompactorFit(
+    computeBudget(windows.window, { bufferTokens, thresholdTokens: config.compaction?.thresholdTokens }),
+    windows.compactorWindow,
+    bufferTokens,
+  );
 
   // A port you asked for (--port or $JLCODE_PORT) is bound as asked and fails
   // loudly if it's taken; the default is free to walk to the next open one
@@ -270,6 +281,10 @@ export async function runServe(args: string[]): Promise<number> {
       // Name the window and where it came from. `fallback` is a guess and says
       // so — H-06 survived a month precisely because nothing ever stated this.
       `context window ${windows.window.toLocaleString()} tokens (${describeWindowSource(windows.source)})`,
+      `compacts above ${startupBudget.threshold.toLocaleString()} tokens — ${describeThresholdSource(startupBudget)}` +
+        (startupBudget.refusedThreshold !== undefined
+          ? `\n  ⚠ compaction.thresholdTokens ${startupBudget.refusedThreshold.toLocaleString()} is not below the window — ignored`
+          : ""),
       `listening on ${base}  (pid ${process.pid})`,
       `  ${client}`,
       ...authLines,

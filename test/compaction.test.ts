@@ -55,12 +55,13 @@ describe("compaction budget math (D-27/D-44)", () => {
       window: 100_000,
       buffer: DEFAULT_BUFFER_TOKENS,
       threshold: 100_000 - DEFAULT_BUFFER_TOKENS,
+      source: "buffer", // derived, not set (X-27)
     });
   });
 
   it("honors a configured buffer and floors the threshold at 0", () => {
-    expect(computeBudget(1_000, 100).threshold).toBe(900);
-    expect(computeBudget(50, 100).threshold).toBe(0); // buffer > window → 0, not negative
+    expect(computeBudget(1_000, { bufferTokens: 100 }).threshold).toBe(900);
+    expect(computeBudget(50, { bufferTokens: 100 }).threshold).toBe(0); // buffer > window → 0, not negative
   });
 
   it("known prefix is last prompt + completion, tolerant of gaps", () => {
@@ -70,7 +71,7 @@ describe("compaction budget math (D-27/D-44)", () => {
   });
 
   it("triggers strictly above the threshold (one turn late)", () => {
-    const budget = computeBudget(1_000, 100); // threshold 900
+    const budget = computeBudget(1_000, { bufferTokens: 100 }); // threshold 900
     expect(evaluateTrigger({ promptTokens: 800, completionTokens: 200 }, budget).needsCompaction).toBe(true);
     expect(evaluateTrigger({ promptTokens: 700, completionTokens: 200 }, budget).needsCompaction).toBe(false);
     // exactly at the threshold is not over
@@ -79,7 +80,7 @@ describe("compaction budget math (D-27/D-44)", () => {
 });
 
 describe("compactor-fit guard (D-44a)", () => {
-  const budget = computeBudget(100_000, 20_000); // working threshold 80K
+  const budget = computeBudget(100_000, { bufferTokens: 20_000 }); // working threshold 80K
 
   it("tightens the threshold for a smaller compactor window", () => {
     // compactor window 50K, buffer 20K → 30K, which is tighter than 80K.
