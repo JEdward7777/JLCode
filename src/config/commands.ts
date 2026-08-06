@@ -4,6 +4,7 @@
  * working directory (D-06).
  */
 import { resolvePaths } from "../paths.js";
+import { ModelCatalog, describeWindowSource } from "../llm/models.js";
 import { parseArgs, flagString } from "../util/args.js";
 import { readSecret } from "../util/prompt.js";
 import { loadConfig, saveConfig } from "./store.js";
@@ -29,7 +30,8 @@ import {
 const CONFIG_HELP = `jlcode config — manage model configurations
 
   config list [query]              list configs (filtered by name/model)
-  config which                     show the config selected for this directory
+  config which [--offline]         show the config selected for this directory,
+                                   plus its effective context window
   config use <name|id>             bind this directory to a config
   config clone <src> <new-name>    clone an existing config
   config add --name <> --model <>  add a config (key read from stdin or JLCODE_ADD_KEY)
@@ -39,6 +41,8 @@ const CONFIG_HELP = `jlcode config — manage model configurations
 Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
   --mode <ask|plan|code> --approval <manual|auto-safe|full-auto|read-only>
   --system <text> --max-tokens <n> --temperature <n> --top-p <n>
+  --context-length <n>   override the model's context window; normally unset,
+                         since it is read live from OpenRouter (D-44c)
 `;
 
 function numberFlag(flags: Record<string, string | boolean>, key: string): number | undefined {
@@ -76,6 +80,12 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
   if (system !== undefined) patch.systemPromptAddendum = system;
   const sampling = samplingFromFlags(flags);
   if (Object.keys(sampling).length > 0) patch.sampling = sampling;
+  const contextLength = flagString(flags, "context-length");
+  if (contextLength !== undefined) {
+    const n = Number(contextLength);
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`--context-length must be a positive integer`);
+    patch.contextLength = n;
+  }
   return patch;
 }
 
@@ -131,6 +141,19 @@ export async function runConfig(args: string[]): Promise<number> {
         return 0;
       }
       process.stdout.write(`${selected.name}  (${selected.model})  ${shortId(selected.id)}\n`);
+      // The effective context window, and where it came from (D-44c, H-06).
+      // Printed here because the failure mode this fixes was invisible: nothing
+      // ever stated the window, so "no window at all" looked exactly like a
+      // working setup. `--offline` keeps the command from reaching the network.
+      const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
+      if (!parseArgs(rest).flags["offline"]) {
+        const { error } = await catalog.ensureKnown(selected.model);
+        if (error) process.stdout.write(`  (model catalog unavailable — ${error})\n`);
+      }
+      const window = catalog.resolve(selected.model, selected.compaction?.contextLength);
+      process.stdout.write(
+        `    context window ${window.window.toLocaleString()} tokens — ${describeWindowSource(window.source)}\n`,
+      );
       return 0;
     }
 

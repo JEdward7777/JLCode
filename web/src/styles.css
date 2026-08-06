@@ -818,6 +818,15 @@ body.row-resizing {
 .compaction-mode {
   max-width: 12em;
 }
+/* An assumed window is a guess and has to read like one (D-44c, H-06). */
+.fence-note.window-assumed {
+  opacity: 0.9;
+  font-size: 0.92em;
+}
+.fence-note.window-assumed code {
+  font-size: 0.95em;
+  padding: 0 3px;
+}
 
 /* Queued messages (D-34) */
 .queue {

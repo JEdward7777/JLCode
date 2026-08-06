@@ -402,7 +402,30 @@ the pending record, compare ids, act at most once) instead of four separately-ha
 is this same gap seen from the browser; it can be fixed first and cheaply, but this row is the one
 that makes it impossible.
 
-**Filed 2026-08-04: H-06 — no window is known in `serve`, so auto-compaction has never fired in real
+**H-06 FIXED 2026-08-06 (D-60) — every session now knows its context window.** The deferred D-44c
+`/models` fetch landed as `src/llm/models.ts`: a keyless `GET /models`, cached to
+`dataDir/models.json` behind a 24h TTL and refreshed at `serve` start, with `ensureKnown()`
+refetching out of turn when the configured model is missing from an otherwise-fresh cache (a
+newly-released model would otherwise take the fallback for a day). Lookup is **exact-match then
+strip-the-variant**, because `:online` is a routing modifier OpenRouter does not list — an exact
+lookup reported *no window* for `anthropic/claude-opus-5:online`, one of the two presets Joshua
+actually runs. Precedence is config `contextLength` > catalog > a **labelled 128k fallback**, and it
+is never undefined: guessing low costs an early summary, guessing high costs never compacting, which
+was the defect. The window's **provenance travels with it** (`WindowSource`) into the serve banner,
+`config which`, and the state frame, and the browser marks an assumed window as a guess while naming
+the fix — a silently wrong window would be the same bug wearing a number. Verified live: both real
+Opus presets banner **1,000,000 tokens (from OpenRouter)**. `createSessionFactory` was extracted to
+`src/server/session-factory.ts` **because the wiring was untestable where it lived** — every
+compaction test injects its own window into its own `Session`, which is exactly the level that
+cannot see this bug; the new test runs against the factory `runServe` uses and was confirmed to fail
+when the two window lines are removed. One deliberate deviation from the plan below: **`config add`
+does not write a `contextLength`** (it would pin the window at add-time against a catalog that can
+correct itself, and label a value the user never chose as theirs) — `contextLength` stays the manual
+override, now reachable as `config set --context-length <n>`. Peeked in Chrome (VISUAL-LOG "H-06").
+**This unblocks X-24 and X-27**, both of which were waiting on a budget existing at all.
+
+*Original filing, 2026-08-04 — kept for the diagnosis:* **no window is known in `serve`, so
+auto-compaction has never fired in real
 use.** Found while filing X-27 below, and it is the missing third leg of the $120 conversation
 (D-58/D-59): that thread was never going to compact. P6a made the context window **injected**
 (`Session` `contextWindow`, with `config.compaction.contextLength` as the only fallback) and stated
@@ -602,13 +625,23 @@ read-once-for-cache, size-cap and self-modification calls spelled out. Nothing h
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
 reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
 
-**437 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-04, 51 files — the trailer had drifted to
-the pre-D-58/D-59 count). **Next: X-12b** (above — delete-masking, rename from a
-row, no history stub for an empty session; all designed in `DECISIONS.md` and deliberately cut from
-X-12a since none of it is needed to *read* an old thread), **then P7c** — live validation against the
-real `file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
-**H-06 arguably jumps the queue** — it is a live cost defect on the same footing as D-58/D-59, and
-X-24/X-27 both sit behind it.
+**463 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 53 files). **H-06 is fixed (D-60)**, so
+the queue moves on. **Next: X-12b** (above — delete-masking, rename from a row, no history stub for
+an empty session; all designed in `DECISIONS.md` and deliberately cut from X-12a since none of it is
+needed to *read* an old thread), **then P7c** — live validation against the real `file_utils` server.
+Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+
+**Worth considering ahead of X-12b now that H-06 is closed:** **X-24** (the context meter) and
+**X-27** (a settable threshold) were both blocked on a budget existing, and both are now unblocked
+and small — X-24's numbers already ride on the state frame (`contextWindow`, `contextThreshold`,
+`contextWindowSource`), so the meter is close to a UI-only slice. Joshua's call which goes first.
+
+**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (5 items as of 2026-08-06):
+the header model chip truncating from the wrong end (confirmed by eye during the H-06 peek —
+`openai/gpt-4o-mi…` hides the model and keeps the vendor), auto-scroll stealing the viewport while
+you read further up, `ask_user` forcing a choice with no skip/free-text escape, TTS jamming
+intermittently, and no todo tool for the agent (that last one Joshua flagged as needing a
+question-answering round before implementing).
 
 ---
 

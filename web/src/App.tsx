@@ -1241,11 +1241,16 @@ function ChatPane({
             request={slice.pendingCompaction}
             onCompact={() => onCompact(id)}
             onSkip={() => onCompact(id, { skip: true })}
+            windowSource={slice.contextWindowSource}
           />
         )}
         {/* suggest mode: non-blocking nudge once the budget is crossed (D-27). */}
         {slice.triggerMode === "suggest" && slice.needsCompaction && !slice.pendingCompaction && (
-          <CompactionBanner onCompact={() => onCompact(id)} />
+          <CompactionBanner
+            onCompact={() => onCompact(id)}
+            window={slice.contextWindow}
+            windowSource={slice.contextWindowSource}
+          />
         )}
         {slice.capReached && <CapBanner spendUsd={slice.spendUsd} capUsd={slice.capUsd} onRaise={(v) => onChangeCap(id, v)} />}
         {/* A request that has gone quiet (D-57). Offered only after real silence,
@@ -1676,14 +1681,30 @@ function PersistenceCard({
   );
 }
 
+/** Name the window we are measuring against — and admit when it is a guess.
+ *  A window nobody states is how H-06 went unnoticed for a month; a *wrong*
+ *  window stated confidently would be the same bug wearing a number. */
+function WindowNote({ source }: { source: SessionSlice["contextWindowSource"] }) {
+  if (source !== "fallback") return null;
+  return (
+    <div className="fence-note window-assumed">
+      ⚠ This model isn't in the OpenRouter catalog, so the window above is an assumed default. Set{" "}
+      <code>compaction.contextLength</code> for this config (or <code>jlcode config set &lt;name&gt;
+      --context-length &lt;n&gt;</code>) to measure against the real one.
+    </div>
+  );
+}
+
 function CompactionCard({
   request,
   onCompact,
   onSkip,
+  windowSource,
 }: {
   request: CompactionRequest;
   onCompact: () => void;
   onSkip: () => void;
+  windowSource: SessionSlice["contextWindowSource"];
 }) {
   const pct = request.window > 0 ? Math.round((request.prefixTokens / request.window) * 100) : 0;
   return (
@@ -1696,6 +1717,7 @@ function CompactionCard({
         The next request (~{request.prefixTokens.toLocaleString()} tokens{pct ? `, ${pct}% of the window` : ""}) would
         exceed the budget. Compacting folds the conversation so far into a summary and continues.
       </div>
+      <WindowNote source={windowSource} />
       <div className="actions">
         <button className="primary" onClick={onCompact}>
           Compact &amp; continue
@@ -1712,10 +1734,22 @@ function CompactionCard({
 
 /** Non-blocking "suggest" nudge (D-27): the budget is crossed but the loop keeps
  *  going; the user may compact whenever. */
-function CompactionBanner({ onCompact }: { onCompact: () => void }) {
+function CompactionBanner({
+  onCompact,
+  window,
+  windowSource,
+}: {
+  onCompact: () => void;
+  window: number | null;
+  windowSource: SessionSlice["contextWindowSource"];
+}) {
   return (
     <div className="card compaction-banner">
-      <div className="fence-note">◆ Context is getting large — compacting will keep replies fast and in-window.</div>
+      <div className="fence-note">
+        ◆ Context is getting large — compacting will keep replies fast and in-window.
+        {window ? ` (window ${window.toLocaleString()} tokens)` : ""}
+      </div>
+      <WindowNote source={windowSource} />
       <div className="actions">
         <button className="primary" onClick={onCompact}>
           Compact now

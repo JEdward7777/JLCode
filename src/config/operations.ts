@@ -68,6 +68,10 @@ export interface ModelConfigPatch {
   defaultMode?: Mode;
   defaultApproval?: ApprovalPolicy;
   sampling?: Partial<SamplingParams>;
+  /** Override the model's context window (D-44c). Normally unset — the live
+   *  OpenRouter catalog supplies it — so this is the escape hatch for a model
+   *  the catalog doesn't list or gets wrong. */
+  contextLength?: number;
 }
 
 /** Edit an existing config in place (merging sampling), bumping updatedAt. */
@@ -92,6 +96,9 @@ export function updateModelConfig(
     ...(patch.systemPromptAddendum !== undefined ? { systemPromptAddendum: patch.systemPromptAddendum } : {}),
     ...(patch.defaultMode !== undefined ? { defaultMode: patch.defaultMode } : {}),
     ...(patch.defaultApproval !== undefined ? { defaultApproval: patch.defaultApproval } : {}),
+    ...(patch.contextLength !== undefined
+      ? { compaction: { ...(target.compaction ?? { auto: false }), contextLength: patch.contextLength } }
+      : {}),
     sampling: Object.keys(mergedSampling).length > 0 ? mergedSampling : undefined,
     updatedAt: new Date().toISOString(),
   };

@@ -707,3 +707,54 @@ needs looking at is the recovery, not the failure. Confirmed with my own eyes:
 Not exercised visually (covered by tests): the breaker-reset path from `halted`,
 the 20s gate itself (waited it out rather than faking the clock), and the refusal
 when no request is in flight.
+
+---
+
+## H-06 — the window a session measures itself against · 2026-08-06 · ✅ looked good
+
+**Screenshots:** [`visual/h06-suggest-window.png`](visual/h06-suggest-window.png) ·
+[`visual/h06-assumed-window.png`](visual/h06-assumed-window.png)
+
+The defect being closed was invisible by construction: `serve` never injected a
+context window, so `compactionBudget()` was undefined and **no compaction surface
+had ever rendered in real use** — the P6c peek below was driven by a hand-set
+`contextLength` that no real config has. So the thing to look at here is whether
+the window is now *stated*, and whether a guessed one reads as a guess.
+
+Drove the built server with the fake driver (`JLCODE_FAKE_LLM=1`, isolated
+config/data dirs) in `suggest` mode across two turns, screenshotted via CDP.
+Confirmed with my own eyes:
+
+- **A known window is named.** The suggest banner now reads "◆ Context is getting
+  large — compacting will keep replies fast and in-window. **(window 1,500
+  tokens)**". Previously the banner asserted the context was "getting large"
+  without ever saying large *relative to what*.
+- **An assumed window says so, in the same breath.** For a model id the catalog
+  doesn't list, a second line appears under the banner: "⚠ This model isn't in
+  the OpenRouter catalog, so the window above is an assumed default. Set
+  `compaction.contextLength` for this config (or `jlcode config set <name>
+  --context-length <n>`) to measure against the real one." It renders at a
+  lighter weight than the banner text, so it reads as a caveat rather than a
+  second alarm, and it names the exact fix rather than just flagging doubt.
+- **The state frame carries all three fields.** `GET /session/:id/state` returned
+  `contextWindow: 1500, contextThreshold: 500, contextWindowSource: "config"` for
+  the known case and `…Source: "fallback"` for the unknown one — the numbers X-24's
+  meter needs are on the wire now, not just in the card.
+- **The real presets resolve.** Outside the peek, `serve` against Joshua's own
+  `MM - Opus` and `OmegaMusic-Opus` both banner **"context window 1,000,000 tokens
+  (from OpenRouter)"** — including the `:online` one, which an exact-id lookup
+  would have missed entirely.
+
+*Method note:* the assumed-window shot needed a fallback small enough for a fake
+turn (1,000 prompt tokens) to cross, so `FALLBACK_CONTEXT_WINDOW` was temporarily
+lowered **in `dist/` only** for that one screenshot and the tree rebuilt after.
+The rendering is what was being checked; the constant is covered by tests.
+
+*Noticed while looking, not fixed here:* the header model chip truncates from the
+right (`openai/gpt-4o-mi…`, `someone/unlisted-m…`), hiding the part that
+identifies the model and keeping the vendor prefix that doesn't. That is Joshua's
+first observed-item and is still unfiled.
+
+Not exercised visually: the `auto`/`hard`/`cancelable` surfaces with the new
+window line (same components, same props), and a real over-window compaction
+against a live model.

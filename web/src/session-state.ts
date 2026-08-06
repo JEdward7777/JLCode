@@ -65,6 +65,12 @@ export interface SessionSlice {
   triggerMode: TriggerMode;
   needsCompaction: boolean;
   pendingCompaction: CompactionRequest | null;
+  /** The window compaction is measured against, and where that number came from
+   *  (D-44c). `"fallback"` means we could not look the model up and are guessing,
+   *  which the UI must say out loud — H-06 hid for a month behind a window that
+   *  was never stated at all. */
+  contextWindow: number | null;
+  contextWindowSource: "config" | "catalog" | "fallback" | null;
   /** A stalled persistence write the session is stopped on (D-46). Blocks the
    *  composer: nothing may proceed until it is retried or explicitly discarded. */
   persistenceFault: PersistenceFault | null;
@@ -110,6 +116,8 @@ export function newSlice(id: string, model = ""): SessionSlice {
     triggerMode: "cancelable",
     needsCompaction: false,
     pendingCompaction: null,
+    contextWindow: null,
+    contextWindowSource: null,
     persistenceFault: null,
     retryable: false,
     lastEventAt: Date.now(),
@@ -146,6 +154,8 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (state.triggerMode) next.triggerMode = state.triggerMode;
   if (typeof state.needsCompaction === "boolean") next.needsCompaction = state.needsCompaction;
   next.pendingCompaction = state.compactionRequest ?? null;
+  if (typeof state.contextWindow === "number") next.contextWindow = state.contextWindow;
+  if (state.contextWindowSource) next.contextWindowSource = state.contextWindowSource as SessionSlice["contextWindowSource"];
   next.persistenceFault = state.persistenceFault ?? null;
   if (typeof state.retryable === "boolean") next.retryable = state.retryable;
   return next;
