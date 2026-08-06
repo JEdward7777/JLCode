@@ -152,6 +152,7 @@ function parseLearned(raw: unknown): LearnAnswers | undefined {
 function stateOf(session: Session): Record<string, unknown> {
   const entries = session.conversation.entries;
   const lastAssistant = [...entries].reverse().find((e) => e.type === "assistant");
+  const budget = session.compactionBudget();
   const base: Record<string, unknown> = {
     sessionId: session.id,
     conversationId: session.conversation.id,
@@ -166,6 +167,12 @@ function stateOf(session: Session): Record<string, unknown> {
     queue: session.queuedMessages,
     triggerMode: session.triggerMode, // live compaction trigger mode (D-27, P6c)
     needsCompaction: session.needsCompaction, // budget crossed (drives the suggest banner)
+    // The window compaction is measured against, and where it came from (D-44c).
+    // `source` rides along so the UI can mark an assumed window as a guess
+    // rather than presenting it as looked-up (H-06).
+    contextWindow: budget?.window ?? null,
+    contextThreshold: budget?.threshold ?? null,
+    contextWindowSource: session.contextWindowSource ?? null,
     retryable: session.retryable, // the last turn failed and can be re-sent as-is (D-57)
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
   };

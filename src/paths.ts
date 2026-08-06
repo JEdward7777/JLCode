@@ -24,6 +24,8 @@ export interface JlcodePaths {
   readonly conversationsDir: string;
   /** Rotating diagnostic log + debug journals (D-11, D-15). */
   readonly logsDir: string;
+  /** Cached OpenRouter model catalog — context windows per model id (D-44c). */
+  readonly modelsCacheFile: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -53,6 +55,7 @@ export function resolvePaths(env: Env = process.env): JlcodePaths {
     dataDir,
     conversationsDir: path.join(dataDir, "conversations"),
     logsDir: path.join(dataDir, "logs"),
+    modelsCacheFile: path.join(dataDir, "models.json"),
   };
 }
 

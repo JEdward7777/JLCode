@@ -11,16 +11,12 @@ import { resolveForCwd, findModelConfig } from "../config/operations.js";
 import { OpenRouterClient } from "../llm/client.js";
 import type { LlmDriver } from "../llm/types.js";
 import type { ModelConfig } from "../config/types.js";
+import { ModelCatalog, describeWindowSource } from "../llm/models.js";
 import { fakeAgentDriver } from "../session/fake.js";
-import { Session } from "../session/session.js";
-import { ToolRegistry, defaultTools } from "../tools/registry.js";
+import { createSessionFactory, resolveWindows } from "./session-factory.js";
 import { McpManager, mcpSettingsFiles } from "../mcp/client.js";
-import { askUserTool } from "../tools/ask-user.js";
-import { Sandbox } from "../tools/sandbox.js";
-import { ModeApprovalGate } from "../tools/mode-gate.js";
 import { ConversationStore } from "../persist/conversation-store.js";
 import { DebugJournal } from "../persist/debug-journal.js";
-import type { Conversation } from "../conversation/types.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { parseArgs, flagString } from "../util/args.js";
@@ -85,32 +81,19 @@ export async function runServe(args: string[]): Promise<number> {
     if (status.state === "failed") process.stderr.write(`mcp: ${status.name} failed to start — ${status.error ?? ""}\n`);
   }
 
-  const newSession = (config: ModelConfig, conversation?: Conversation): Session => {
-    const cfg = loadConfig(paths);
-    const roots = [cwd, ...(cfg.folderRoots?.[cwd] ?? [])];
-    return new Session({
-      config,
-      driver: makeDriver(config),
-      tools: new ToolRegistry([...defaultTools(), askUserTool(), ...mcp.tools()]),
-      sandbox: new Sandbox(roots),
-      // Live-switchable gate (D-07/D-08): rebuilt when the user changes
-      // mode/approval from the browser. Starts from the config defaults.
-      mode: config.defaultMode,
-      approval: config.defaultApproval,
-      buildGate: (mode, approval) => new ModeApprovalGate(mode, approval, cfg.autoSafeAllowlist),
-      conversation,
-      // Name the thread after the first exchange (X-09) — the browser rail and
-      // the tab title have somewhere to show it, so the extra call earns its keep.
-      autoTitle: true,
-      onAddRoot: (dir) => {
-        const current = loadConfig(paths);
-        const existing = current.folderRoots?.[cwd] ?? [];
-        if (!existing.includes(dir)) {
-          saveConfig({ ...current, folderRoots: { ...(current.folderRoots ?? {}), [cwd]: [...existing, dir] } }, paths);
-        }
-      },
-    });
-  };
+  // The context window for the compaction budget (D-44c, H-06). Fetched once and
+  // cached for a day; a failure here is reported and non-fatal, because a
+  // labelled fallback window still lets compaction fire — having *no* window is
+  // the defect. Skipped under the fake driver so offline tests never touch the
+  // network (they get the fallback, which is a real window).
+  const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
+  const newSession = createSessionFactory({
+    paths,
+    cwd,
+    makeDriver,
+    mcpTools: () => mcp.tools(),
+    catalog,
+  });
 
   const store = new ConversationStore(paths.conversationsDir);
   const debugJournal = new DebugJournal(paths.logsDir);
@@ -125,6 +108,15 @@ export async function runServe(args: string[]): Promise<number> {
     process.stderr.write(`Config "${config.name}" has no OpenRouter key. Re-add it.\n`);
     return 1;
   }
+
+  // Learn this model's window before the first session is built. `ensureKnown`
+  // refetches out of turn when the id is missing, so a preset for a model
+  // released since the cache was written doesn't quietly get the fallback.
+  if (!fake) {
+    const { error } = await catalog.ensureKnown(config.model);
+    if (error) process.stderr.write(`models: could not refresh the catalog — ${error}\n`);
+  }
+  const windows = resolveWindows(config, catalog);
 
   // A port you asked for (--port or $JLCODE_PORT) is bound as asked and fails
   // loudly if it's taken; the default is free to walk to the next open one
@@ -275,6 +267,9 @@ export async function runServe(args: string[]): Promise<number> {
   process.stderr.write(
     [
       `JLCode dev server — ${config.name} (${config.model})${fake ? " [fake]" : ""}`,
+      // Name the window and where it came from. `fallback` is a guess and says
+      // so — H-06 survived a month precisely because nothing ever stated this.
+      `context window ${windows.window.toLocaleString()} tokens (${describeWindowSource(windows.source)})`,
       `listening on ${base}  (pid ${process.pid})`,
       `  ${client}`,
       ...authLines,

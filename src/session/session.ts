@@ -14,6 +14,7 @@ import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
 import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
+import type { WindowSource } from "../llm/models.js";
 import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages, pinnedProvider } from "../conversation/wire.js";
 import type { Conversation, Entry } from "../conversation/types.js";
@@ -93,6 +94,10 @@ export interface SessionOptions {
    *  threshold; live `/models` fetch lands later. Falls back to the config's
    *  `compaction.contextLength`. When neither is known, no trigger ever fires. */
   contextWindow?: number;
+  /** Where `contextWindow` came from (D-44c). Carried so the browser can say
+   *  which window it is measuring against instead of implying we looked it up —
+   *  a silently wrong window is exactly how H-06 hid for a month. */
+  contextWindowSource?: WindowSource;
   /** The compaction model's window, when a *smaller* summarizer is configured
    *  (compactor-fit guard, D-44a). Defaults to the working window. */
   compactorWindow?: number;
@@ -216,6 +221,8 @@ export class Session {
   /** Injected context window for the compaction budget (D-44); undefined → no
    *  window known → no trigger fires. Falls back to the config override. */
   private readonly contextWindow: number | undefined;
+  /** Provenance of `contextWindow`, for display (D-44c). */
+  readonly contextWindowSource: WindowSource | undefined;
   /** The compaction model's window for the compactor-fit guard (D-44a). */
   private readonly compactorWindow: number | undefined;
   private readonly listeners = new Set<SessionListener>();
@@ -302,6 +309,14 @@ export class Session {
     this.spendCapUsd = options.spendCapUsd;
     this.autoTitle = options.autoTitle ?? false;
     this.contextWindow = options.contextWindow ?? options.config.compaction?.contextLength;
+    // An injected source describes the injected window; falling through to the
+    // config override means the window came from the config either way.
+    this.contextWindowSource =
+      options.contextWindow !== undefined
+        ? options.contextWindowSource
+        : options.config.compaction?.contextLength !== undefined
+          ? "config"
+          : undefined;
     this.compactorWindow = options.compactorWindow;
     this.triggerMode = activeTriggerMode(options.config.compaction);
     this.watchdogMs = options.watchdogMs ?? WATCHDOG_MS;
