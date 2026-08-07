@@ -507,7 +507,8 @@ carries no token fields today, so this needs the number on the roster/state fram
 a small server change, not a UI-only one. Composes with **X-27**: once a threshold is configurable,
 the meter is where you see it approaching.
 
-**Filed 2026-08-04: X-25 — JLCode never tells the model what day it is, so it writes wrong dates
+**Filed 2026-08-04, FIXED 2026-08-07 (D-64) — see the status block above: X-25 — JLCode never tells
+the model what day it is, so it writes wrong dates
 into files. Joshua's call: stamp each user turn, not the system prompt.** From real use: *"JLCode
 was leaving notes with the wrong date in them."* Confirmed — the system prompt is `BASE_SYSTEM` =
 "You are JLCode, a helpful coding agent." plus the optional per-config `systemPromptAddendum`
@@ -626,10 +627,11 @@ raised it again ("JLCode needs to auto read AGENTS.md on start"); the row alread
 [`DECISIONS.md`](DECISIONS.md) with the filename-precedence, search-scope, composition-order,
 read-once-for-cache, size-cap and self-modification calls spelled out. Nothing has changed in the
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
-reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
+reads nothing from the workspace. **X-25 has since landed (D-64) and left that seam shaped for it:** per-turn detail is an `EnvSection` on the *user* turn, so X-15's static half drops into the *system* prompt without rewriting any of it — the same `staticEnvLines` / `environmentDetails` split KiloCode makes.
 
-**525 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 56 files). **H-06 is fixed (D-60)**,
-**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)** and **X-23 is fixed (D-63)**; **X-12b is DONE**.
+**551 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 57 files). **H-06 is fixed (D-60)**,
+**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)** and **X-25 is fixed (D-64)**;
+**X-12b is DONE**.
 **Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
@@ -720,6 +722,33 @@ the threshold as a mark from `contextThreshold` on the state frame, and the new 
 frame carries 171,500 — verified end-to-end rather than rebuilt, so no peek was needed for this
 slice. Tested at four levels, deliberately including the **`serve` session factory** — the level
 D-60's month-long bug lived at, which a `Session` test injecting its own budget cannot see.
+
+**X-25 FIXED 2026-08-07 (D-64) — the model is now told when each turn was sent.** The bug was
+Joshua's: *"JLCode was leaving notes with the wrong date in them."* Nothing on the wire carried a
+date, so a model with a training cutoff dated a changelog entry to whenever it thought "now" was.
+Each **user** turn is now replayed as the user's words followed by an `<environment_details>` block
+— `# Current Time`, the ISO 8601 UTC instant, and `User time zone: <IANA>, UTC±HH:MM` — and
+nothing was added to the log to do it: the `ts` every entry has always carried is simply **rendered**
+now, in `buildWireMessages`. That is what makes it **retroactive** (every existing conversation gains
+its timestamps, no migration, no rewrite of an append-only log) and **cache-safe by construction**
+(the stamp froze when the entry was appended, so turn N's prefix stays a byte-identical prefix of
+turn N+1's — asserted, including across a `compact()`). The **system prompt is deliberately still
+date-free**: a date there would re-render every turn and invalidate the whole cached prefix, which is
+the defect D-58 fixed at a measured 12.3x. A **compaction summary carries the span it replaces**
+(`# Summarized History … from <ISO> to <ISO>`, root of the branch → the cut), or a compacted thread
+would silently lose its history of time. Off is one flag — `config set <name> --turn-timestamps off`,
+`environment.turnTimestamps`, **default on**, read back by `config which`. **Checked by hand** as the
+row asked (f): a thread seeded at 2026-08-05 09:12 CDT and resumed at 2026-08-06 22:35 CDT through
+the fake driver on port 7920 renders two stamps a night apart in the replayed prefix, and its
+compacted variant renders the span line. **X-15 was left alone** (g) but its seam is now shaped:
+per-turn detail is an `EnvSection` on the user turn; the static `AGENTS.md` half belongs in the
+system prompt. *Two things fell out of building it:* all four of `Session`'s replay builders now go
+through **one** `wire()`, because same-model compaction resends the exact live prefix for the cache
+(D-29) and a one-byte difference would have turned that off silently; and **a wall-clock stamp and a
+recorded-replay fixture cannot coexist** — the stamp changes the request-cache key (D-24) every run,
+so the committed Fable tests replay with `turnTimestamps: false`, and the offline fake drivers strip
+the block before reading the user's words (or `write: a.txt | hi` would write the timestamp into the
+file). **26 new Tier-0/1 tests.** No peek: nothing rendered changed in the browser.
 
 **Still unfiled from `observed_items_needing_filed_in_harness.txt`** (5 items as of 2026-08-06):
 the header model chip truncating from the wrong end (confirmed by eye during the H-06 peek —

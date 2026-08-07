@@ -19,6 +19,7 @@ import type { ChatMessage, Usage } from "../llm/types.js";
 import type { CompactionSettings, CompactionTrigger } from "../config/types.js";
 import type { Conversation } from "../conversation/types.js";
 import { pathToLeaf } from "../conversation/tree.js";
+import { summarySpanSection, turnSections, withEnvironmentDetails } from "../conversation/wire.js";
 
 /** Headroom kept below the window (D-27/D-44): the ~20K one-overshoot-turn buffer.
  *  Per D-44 this buffer subsumes the output reserve for v1 (`budget = window − buffer`);
@@ -251,19 +252,30 @@ export function truncateToolOutputsForSummary(
  *  still preserving the planning Joshua wants carried into the summary. */
 export function buildCrossModelSummaryInput(
   conv: Conversation,
-  opts: { system?: string; capChars?: number; leafId?: string | null } = {},
+  opts: { system?: string; capChars?: number; leafId?: string | null; stamps?: boolean } = {},
 ): ChatMessage[] {
   const system = opts.system?.trim();
   const messages: ChatMessage[] = system ? [{ role: "system", content: system }] : [];
+  const path = pathToLeaf(conv, opts.leafId ?? conv.activeLeaf);
+  // Same per-turn stamps the wire builder renders (X-25) — a summary written
+  // from an undated transcript is exactly the summary that loses the dates.
+  const stamps = opts.stamps !== false;
+  const branchStart = path[0]?.ts;
   let body: ChatMessage[] = [];
-  for (const entry of pathToLeaf(conv, opts.leafId ?? conv.activeLeaf)) {
+  for (const entry of path) {
     switch (entry.type) {
-      case "compaction":
+      case "compaction": {
         // A prior summary resets the replay, same as the wire builder.
-        body = [{ role: "user", content: `[Summary of the earlier conversation]\n${entry.summary}` }];
+        const summary = `[Summary of the earlier conversation]\n${entry.summary}`;
+        const span = stamps && branchStart ? summarySpanSection(branchStart, entry.ts) : undefined;
+        body = [{ role: "user", content: span ? withEnvironmentDetails(summary, [span]) : summary }];
         break;
+      }
       case "user":
-        body.push({ role: "user", content: entry.text });
+        body.push({
+          role: "user",
+          content: stamps ? withEnvironmentDetails(entry.text, turnSections(entry)) : entry.text,
+        });
         break;
       case "assistant": {
         // Fold the readable planning into visible content; drop the opaque

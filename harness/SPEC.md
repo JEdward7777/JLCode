@@ -65,6 +65,7 @@ Each configuration carries:
 | Sampling params | temperature, top_p, max_tokens. |
 | Default mode + approval policy | The mode (Ask/Plan/Code) and approval policy this config starts in. |
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
+| Per-turn environment details (X-25) | `environment.turnTimestamps` — whether each **user turn** is rendered with the time it was sent. **Default on**; off means the model is never told what day it is. |
 | Compaction settings (§15) | **Compaction model** (default = the working model; overridable to a cheaper one, with the compactor-fit guard); **auto** on/off; an **absolute threshold** in tokens (`thresholdTokens`, X-27 — e.g. condense at 171,500) *or*, absent one, a **headroom buffer** (default ~20K tokens) the threshold is derived from; **keep-recent tokens** (default ~8K verbatim); **trigger modes**. The window comes from the model's `context_length` (from OpenRouter metadata, D-60). |
 
 **Project-scoped instructions (planned, X-15).** The addendum above is per *config* (per client).
@@ -73,6 +74,16 @@ A **workspace** cannot yet ship instructions of its own: nothing reads `AGENTS.m
 When added it appends to the base prompt ahead of the per-config addendum, is read **once at
 session start** (the system prompt is the stable prompt-cache prefix, §22/D-26 — re-reading it per
 turn would churn the cache), and is size-capped and visible. See X-15 for the open choices.
+
+**Per-turn environment details (X-25, D-64).** The other half of the same seam, and it goes the
+other way: what varies *per turn* is rendered onto the **user turn**, never into the system prompt.
+Today that is the time — each user message is replayed as the user's words followed by an
+`<environment_details>` block giving the ISO 8601 UTC instant it was sent plus the user's IANA zone
+and offset. It is rendered from the `ts` each entry has always stored, so every existing
+conversation gains it with no migration, and the stamp is frozen at append time, so the replayed
+prefix stays byte-identical turn to turn and the cached prefix (§22/D-26) survives. A date in the
+system message would invalidate that prefix every turn — the defect D-58 fixed at a measured 12.3x.
+A compaction summary carries the span it replaces, so a compacted thread keeps its history of time.
 
 Configuration UX:
 

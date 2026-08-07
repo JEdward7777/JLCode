@@ -36,6 +36,7 @@ function normalizeModelConfig(raw: unknown): ModelConfig | undefined {
     defaultMode: (r.defaultMode as ModelConfig["defaultMode"]) ?? "code",
     defaultApproval: (r.defaultApproval as ModelConfig["defaultApproval"]) ?? "manual",
     compaction: r.compaction as ModelConfig["compaction"],
+    environment: r.environment as ModelConfig["environment"],
     createdAt: typeof r.createdAt === "string" ? r.createdAt : now,
     updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : now,
   };

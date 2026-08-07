@@ -11,7 +11,8 @@
 import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
-import type { ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
+import { turnTimestampsEnabled } from "../config/operations.js";
+import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
@@ -209,6 +210,11 @@ export class Session {
 
   private readonly driver: LlmDriver;
   private readonly systemPrompt: string;
+  /** Stamp each user turn with the time it was sent (X-25). Read from the config
+   *  once; every replay this session builds goes through {@link wire} so the
+   *  live prefix, the compaction input and the ephemeral title/watchdog asks are
+   *  byte-identical — which is what keeps the prompt cache warm (D-29/D-58). */
+  private readonly stamps: boolean;
   private readonly maxFailures: number;
   private readonly tools: ToolRegistry | undefined;
   private readonly sandbox: Sandbox | undefined;
@@ -305,6 +311,7 @@ export class Session {
     const addendum = options.config.systemPromptAddendum?.trim();
     const base = options.systemPrompt ?? BASE_SYSTEM;
     this.systemPrompt = addendum ? `${base}\n\n${addendum}` : base;
+    this.stamps = turnTimestampsEnabled(options.config);
     this.conversation = options.conversation ?? newConversation();
     this.pricing = options.config.pricing;
     this.spendCapUsd = options.spendCapUsd;
@@ -440,7 +447,7 @@ export class Session {
     // Compact the branch the turn is building, not whatever the reader has
     // navigated to since (H-05) — it is that branch's prefix we're about to resend.
     const leafId = this.workingLeaf;
-    const prefix = buildWireMessages(this.conversation, { system: this.systemPrompt, leafId });
+    const prefix = this.wire(leafId);
     // Only a system prompt (or nothing) → nothing to summarize.
     if (prefix.every((m) => m.role === "system")) return false;
     const hasPriorSummary = pathToLeaf(this.conversation, leafId).some((e) => e.type === "compaction");
@@ -454,7 +461,7 @@ export class Session {
     const crossModel = Boolean(compactorId && compactorId !== this.config.model);
     const model = crossModel ? compactorId! : this.config.model;
     const input = crossModel
-      ? buildCrossModelSummaryInput(this.conversation, { system: this.systemPrompt, leafId })
+      ? buildCrossModelSummaryInput(this.conversation, { system: this.systemPrompt, leafId, stamps: this.stamps })
       : opts.forced
         ? truncateToolOutputsForSummary(prefix)
         : prefix;
@@ -717,7 +724,7 @@ export class Session {
     const elapsedMin = Math.round(this.tasks.elapsedMs(taskId) / 60000);
     const output = this.tasks.output(taskId);
     const tail = output.length > 4000 ? "…" + output.slice(-4000) : output;
-    const messages = buildWireMessages(this.conversation, { system: this.systemPrompt, leafId: this.workingLeaf });
+    const messages = this.wire();
     messages.push({
       role: "user",
       content:
@@ -811,6 +818,18 @@ export class Session {
     return this.turnLeaf !== undefined ? this.turnLeaf : this.conversation.activeLeaf;
   }
 
+  /** The replayed window, built one way for every caller (X-25). The per-turn
+   *  stamps must be identical across the live request, the compaction input and
+   *  the ephemeral title/watchdog asks, or those "reuse the exact live prefix"
+   *  paths (D-29) would miss the cache on a difference nobody meant to make. */
+  private wire(leafId: string | null = this.workingLeaf): ChatMessage[] {
+    return buildWireMessages(this.conversation, {
+      system: this.systemPrompt,
+      leafId,
+      stamps: this.stamps,
+    });
+  }
+
   /** Append an entry to the tree and emit it for the persistence projection.
    *  With a turn in flight the parent defaults to the turn's pin (and advances
    *  it), so the turn's entries chain off each other regardless of where the
@@ -856,7 +875,7 @@ export class Session {
   buildRequest(): ChatRequest {
     const req: ChatRequest = {
       model: this.config.model,
-      messages: buildWireMessages(this.conversation, { system: this.systemPrompt, leafId: this.workingLeaf }),
+      messages: this.wire(),
     };
     if (this.tools) req.tools = this.tools.defs();
     const s = this.config.sampling;
@@ -1114,7 +1133,7 @@ export class Session {
     const req: ChatRequest = {
       model: this.config.model,
       messages: [
-        ...buildWireMessages(this.conversation, { system: this.systemPrompt, leafId: this.workingLeaf }),
+        ...this.wire(),
         { role: "user", content: buildTitleInstruction() },
       ],
       tool_choice: "none",

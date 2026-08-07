@@ -27,6 +27,7 @@ import {
   removeModelConfig,
   resolveForCwd,
   setBinding,
+  turnTimestampsEnabled,
   updateModelConfig,
   type ModelConfigPatch,
 } from "./operations.js";
@@ -59,6 +60,9 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
                          171500. Must be below the context window. Omit it and
                          the threshold stays derived (window − buffer);
                          "none" clears it back to that.
+  --turn-timestamps <on|off>
+                         tell the model when each user turn was sent (X-25).
+                         On by default; off stops JLCode saying what day it is.
   --offline              (set/which) don't refresh the model catalog
 `;
 
@@ -117,7 +121,23 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
       patch.thresholdTokens = n;
     }
   }
+  // Per-turn timestamps (X-25e). A flag with no value reads as "on", so
+  // `--turn-timestamps` alone does the obvious thing.
+  const stamps = flags["turn-timestamps"];
+  if (stamps !== undefined) {
+    const on = onOff(stamps, "turn-timestamps");
+    patch.turnTimestamps = on;
+  }
   return patch;
+}
+
+/** Parse an on/off flag; `--flag` with no value means on. */
+function onOff(value: string | boolean, key: string): boolean {
+  if (typeof value === "boolean") return value;
+  const v = value.trim().toLowerCase();
+  if (["on", "true", "yes", "1"].includes(v)) return true;
+  if (["off", "false", "no", "0"].includes(v)) return false;
+  throw new Error(`--${key} must be "on" or "off"`);
 }
 
 /**
@@ -154,6 +174,14 @@ function thresholdLines(budget: CompactionBudget): string {
       `ignored (it could never fire); set a lower --compaction-threshold\n`;
   }
   return out;
+}
+
+/** The one line that says whether the model is told when each turn was sent (X-25). */
+function turnTimestampLine(config: ModelConfig): string {
+  return turnTimestampsEnabled(config)
+    ? `    turn timestamps: on — each user turn carries the time it was sent\n`
+    : `    turn timestamps: off — the model is never told what day it is ` +
+        `(environment.turnTimestamps=false)\n`;
 }
 
 function shortId(id: string): string {
@@ -221,6 +249,10 @@ export async function runConfig(args: string[]): Promise<number> {
       // And where compaction actually fires under it (X-27) — a threshold you
       // can set is only useful if you can read it back.
       process.stdout.write(thresholdLines(budget));
+      // Whether the model is told what day it is (X-25). Stated here for the
+      // same reason the window is: the failure it fixes is silent, so "off"
+      // must be readable rather than inferred from missing JSON.
+      process.stdout.write(turnTimestampLine(selected));
       return 0;
     }
 
@@ -329,6 +361,9 @@ export async function runConfig(args: string[]): Promise<number> {
         const { budget } = await resolveBudget(updated, paths, { offline });
         process.stdout.write(thresholdLines(budget));
       }
+      // Same read-back for the stamps (X-25e): turning them off is a decision
+      // to see confirmed, not one to assume took.
+      if (patch.turnTimestamps !== undefined) process.stdout.write(turnTimestampLine(updated));
       return 0;
     }
 

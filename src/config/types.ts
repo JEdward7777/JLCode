@@ -69,6 +69,19 @@ export interface CompactionSettings {
   contextLength?: number;
 }
 
+/** What JLCode tells the model about the world around the conversation (X-25).
+ *  The **per-turn** half only — the `<environment_details>` block appended to
+ *  each user turn. X-15's static half (`AGENTS.md`, read once into the system
+ *  prompt) is a sibling key here when it lands; the two must stay separate
+ *  because only the static half can live in the cached system message. */
+export interface EnvironmentSettings {
+  /** Stamp each user turn with the time it was sent (X-25). **Default on** —
+   *  absent means on, and it takes an explicit `false` to turn it off, because
+   *  the failure being fixed (a model writing today's notes under a date from
+   *  its training cutoff) is silent. */
+  turnTimestamps?: boolean;
+}
+
 /** A named model configuration a user works under (e.g. "Client A — Opus"). */
 export interface ModelConfig {
   id: string;
@@ -85,6 +98,8 @@ export interface ModelConfig {
   defaultMode: Mode;
   defaultApproval: ApprovalPolicy;
   compaction?: CompactionSettings;
+  /** Per-turn environment details (X-25). Absent = defaults, i.e. stamped. */
+  environment?: EnvironmentSettings;
   createdAt: string;
   updatedAt: string;
 }

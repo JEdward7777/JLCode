@@ -8,11 +8,20 @@ import type {
   ApprovalPolicy,
   CompactionSettings,
   Config,
+  EnvironmentSettings,
   Mode,
   ModelConfig,
   ReasoningEffort,
   SamplingParams,
 } from "./types.js";
+
+/** Are user turns stamped with the time they were sent (X-25e)? Stated once,
+ *  here, because the default is the interesting part: **absent means on**, so a
+ *  config written before X-25 — and every config nobody ever edits — gets the
+ *  fix, and only an explicit `false` opts out. */
+export function turnTimestampsEnabled(config: { environment?: EnvironmentSettings } | undefined): boolean {
+  return config?.environment?.turnTimestamps !== false;
+}
 
 /** Fields a caller supplies when creating a config (id/timestamps are generated). */
 export type NewModelConfig = Omit<ModelConfig, "id" | "createdAt" | "updatedAt">;
@@ -76,6 +85,9 @@ export interface ModelConfigPatch {
   /** Absolute compaction threshold in tokens (X-27); `null` clears it, putting
    *  the config back on the `window − buffer` derivation. */
   thresholdTokens?: number | null;
+  /** Stamp each user turn with the time it was sent (X-25e). Default on, so
+   *  this is written only to record a deliberate choice either way. */
+  turnTimestamps?: boolean;
 }
 
 /** Edit an existing config in place (merging sampling), bumping updatedAt. */
@@ -104,6 +116,13 @@ export function updateModelConfig(
     else if (patch.thresholdTokens !== undefined) compaction.thresholdTokens = patch.thresholdTokens;
   }
 
+  // Per-turn environment details (X-25), merged the same way, so a future
+  // sibling key (X-15's static half) survives a `--turn-timestamps` flip.
+  const environment: EnvironmentSettings | undefined =
+    patch.turnTimestamps === undefined
+      ? undefined
+      : { ...(target.environment ?? {}), turnTimestamps: patch.turnTimestamps };
+
   const updated: ModelConfig = {
     ...target,
     ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -113,6 +132,7 @@ export function updateModelConfig(
     ...(patch.defaultMode !== undefined ? { defaultMode: patch.defaultMode } : {}),
     ...(patch.defaultApproval !== undefined ? { defaultApproval: patch.defaultApproval } : {}),
     ...(compaction ? { compaction } : {}),
+    ...(environment ? { environment } : {}),
     sampling: Object.keys(mergedSampling).length > 0 ? mergedSampling : undefined,
     updatedAt: new Date().toISOString(),
   };

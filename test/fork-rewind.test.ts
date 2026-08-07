@@ -4,6 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { Session } from "../src/session/session";
 import { childrenOf, pathToLeaf, leafOf } from "../src/conversation/tree";
+import { stripEnvironmentDetails } from "../src/conversation/wire";
 import { ConversationStore } from "../src/persist/conversation-store";
 import { Sandbox } from "../src/tools/sandbox";
 import { ToolRegistry } from "../src/tools/registry";
@@ -63,9 +64,13 @@ function parkableDriver(script: StreamEvent[][]) {
   };
 }
 
-/** The text of the user messages in a recorded request (which branch it replayed). */
+/** The text of the user messages in a recorded request (which branch it replayed),
+ *  with X-25's per-turn `<environment_details>` framing taken back off — what is
+ *  being asserted here is *which turns* were replayed, not how they are stamped. */
 const userTexts = (messages: ChatMessage[]): string[] =>
-  messages.filter((m) => m.role === "user" && typeof m.content === "string").map((m) => m.content as string);
+  messages
+    .filter((m) => m.role === "user" && typeof m.content === "string")
+    .map((m) => stripEnvironmentDetails(m.content as string));
 
 describe("fork / rewind (D-10, D-17)", () => {
   it("edit-and-fork creates a sibling branch; rewind switches between them", async () => {
