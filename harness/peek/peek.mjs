@@ -15,11 +15,40 @@
  *   node harness/peek/peek.mjs up --ctx 4000 --buffer 1000 --trigger suggest
  *   node harness/peek/peek.mjs chat "hello there"
  *   node harness/peek/peek.mjs shot x24-normal --crop topbar
+ *   node harness/peek/peek.mjs click ".tool-head" --shot x23-expanded
  *   node harness/peek/peek.mjs state
  *   node harness/peek/peek.mjs down
  *
  * `shot` writes straight into `harness/visual/`, since a peek that isn't
  * recorded may as well not have happened.
+ *
+ * ## Two peeks at once — `JLCODE_PEEK_PORT`
+ *
+ * Everything transient is keyed by the server port, so a second peek on a second
+ * port is a second *instance*: its own state file, config, data, chrome profile
+ * and pids under `/tmp/jlcode-peek-<port>/`. `down` therefore only ever tears
+ * down the instance you named — which is what makes two agents peeking side by
+ * side safe.
+ *
+ *   JLCODE_PEEK_PORT=7811 JLCODE_PEEK_CDP_PORT=9421 node harness/peek/peek.mjs up
+ *
+ * ## `click` — the mouse, because some surfaces need one
+ *
+ * Hover-revealed affordances and collapsed blocks can't be reached by `shot`
+ * alone; two slices (X-12b, X-23) hand-rolled the same CDP mouse dance before
+ * this existed. Steps run in order in **one** invocation — peek opens its tab
+ * per command and closes it after, so a hover in one process is gone by the next
+ * — and `--shot` captures the result of the sequence:
+ *
+ *   node harness/peek/peek.mjs click "hover:.rail-item.history@1" \
+ *        ".rail-item.history .rail-close@1" ".rail-confirm-actions .danger" \
+ *        --shot x12b-deleted --crop rail
+ *
+ * A step is `[hover:]<css selector>[@n]`, where `@n` picks from that selector's
+ * own matches and so goes at the end. A step that matches nothing, matches
+ * several, isn't rendered, or is covered by something else is an **error**,
+ * never a shrug: the failure this must not have is a screenshot of a page that
+ * never changed.
  *
  * ## `--attach` — screenshot the browser *you* are looking at
  *
@@ -48,12 +77,19 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "../..");
 const VISUAL_DIR = path.join(REPO, "harness", "visual");
+
+/** The server port, and with it the identity of a peek *instance*. Overridable
+ *  because two peeks have to be able to coexist — two agents on one machine, or
+ *  a second look while the first is still posed — and a hardcoded port made that
+ *  impossible. Same shape as `JLCODE_PEEK_CDP_PORT` below. */
+const PORT = Number(process.env.JLCODE_PEEK_PORT ?? 7801);
 /** Everything transient (config, data, chrome profile, pids) lives here, so a
- *  peek never touches the real `~/.config/jlcode` or the user's browser. */
-const RUN_DIR = path.join(os.tmpdir(), "jlcode-peek");
+ *  peek never touches the real `~/.config/jlcode` or the user's browser — and it
+ *  is **keyed by the port**, so a second instance gets its own state file rather
+ *  than adopting (and then `down`-ing) the first one's server and browser. */
+const RUN_DIR = path.join(os.tmpdir(), `jlcode-peek-${PORT}`);
 const STATE_FILE = path.join(RUN_DIR, "peek.json");
 
-const PORT = 7801;
 /** Deliberately *not* Chrome's conventional 9222: that is the port a person is
  *  most likely to have their own debuggable browser on, and the one collision we
  *  must never quietly win. Overridable for a genuine clash. */
@@ -163,7 +199,30 @@ function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model }) {
   fs.writeFileSync(path.join(cfgDir, "config.json"), JSON.stringify(config, null, 2));
 }
 
+/** Is a peek server already answering on our port, and is it *ours*? The same
+ *  question `ensureChrome` asks of the CDP port, for the same reason: a listener
+ *  we did not start belongs to someone else — another agent's peek, most likely
+ *  — and taking it over (or shutting it down) breaks their run silently. */
+async function serverOnPort(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function cmdUp(flags) {
+  const state = readState();
+  if (await serverOnPort(PORT)) {
+    if (!(state.serverPid && isAlive(state.serverPid))) {
+      throw new Error(
+        `something is already serving on port ${PORT} and this tool did not start it.\n` +
+          `  Refusing to shut it down — it is most likely another peek (or another agent's).\n` +
+          `  Run yours somewhere else: JLCODE_PEEK_PORT=<port> JLCODE_PEEK_CDP_PORT=<port> peek up`,
+      );
+    }
+  }
   await cmdDown({ quiet: true }); // never stack two servers on the port
 
   const cfgDir = path.join(RUN_DIR, "config");
@@ -260,7 +319,7 @@ async function ensureChrome(flags = {}) {
     bin,
     [
       "--headless=new",
-      `--remote-debugging-port=${CDP_PORT}`,
+      `--remote-debugging-port=${port}`,
       "--disable-gpu",
       "--no-first-run",
       `--user-data-dir=${profile}`,
@@ -269,7 +328,7 @@ async function ensureChrome(flags = {}) {
     { detached: true, stdio: ["ignore", log, log] },
   );
   chrome.unref();
-  await waitFor(`http://127.0.0.1:${CDP_PORT}/json/version`, "chrome");
+  await waitFor(`http://127.0.0.1:${port}/json/version`, "chrome");
   writeState({ chromePid: chrome.pid });
 }
 
@@ -293,15 +352,35 @@ async function cdp(flags = {}) {
   ws.onmessage = (m) => {
     const d = JSON.parse(m.data);
     if (d.id && pending.has(d.id)) {
-      pending.get(d.id)(d.result);
+      const { res, rej, method } = pending.get(d.id);
+      // A CDP command that failed used to resolve `undefined` and read as a
+      // silent no-op two steps later; `click` cannot afford that.
+      d.error ? rej(new Error(`CDP ${method}: ${d.error.message ?? JSON.stringify(d.error)}`)) : res(d.result);
       pending.delete(d.id);
     }
   };
+  // A browser that dies mid-command (they do: OOM, a crashed renderer) simply
+  // stops answering, and an un-answered `await` is a hang with no message at
+  // all — the worst failure a peek can have, because it looks like a slow one.
+  // So: every pending call is failed when the socket goes, and every call has a
+  // deadline of its own.
+  const failAll = (why) => {
+    for (const [i, p] of pending) {
+      p.rej(new Error(`CDP ${p.method}: ${why}`));
+      pending.delete(i);
+    }
+  };
+  ws.onclose = () => failAll("the browser closed the connection (did Chrome die? see the chrome.log in the run dir)");
+  ws.onerror = () => failAll("the CDP connection errored");
   await new Promise((r) => (ws.onopen = r));
+  const budget = Number(flags["cdp-timeout"] ?? 20000);
   const send = (method, params = {}) =>
-    new Promise((res) => {
+    new Promise((res, rej) => {
       const i = ++id;
-      pending.set(i, res);
+      const timer = setTimeout(() => {
+        if (pending.delete(i)) rej(new Error(`CDP ${method}: no answer in ${budget}ms`));
+      }, budget);
+      pending.set(i, { res: (v) => (clearTimeout(timer), res(v)), rej: (e) => (clearTimeout(timer), rej(e)), method });
       ws.send(JSON.stringify({ id: i, method, params }));
     });
   return {
@@ -310,19 +389,19 @@ async function cdp(flags = {}) {
     close: async () => {
       ws.close();
       // Only ever tidy up a tab we opened.
-      if (!flags.attach) await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`).catch(() => {});
+      if (!flags.attach) await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`, { signal: AbortSignal.timeout(10000) }).catch(() => {});
     },
   };
 }
 
 /** Our own blank tab in our own browser. */
 async function newTab(port) {
-  return (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" })).json();
+  return (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT", signal: AbortSignal.timeout(10000) })).json();
 }
 
 /** List the user's open page tabs (attach mode). */
 async function listTabs(port) {
-  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(10000) })).json();
   return list.filter((t) => t.type === "page" && !String(t.url).startsWith("devtools://"));
 }
 
@@ -377,32 +456,45 @@ function isAlive(pid) {
   }
 }
 
-async function cmdShot(name, flags) {
-  if (!name) throw new Error("usage: peek shot <name> [--session id] [--url u] [--crop topbar] [--wait ms] [--attach [--tab n]]");
+/** Open the page a command works on: our own tab at the peek server (posed to
+ *  the session we are following), or — under `--attach` — the user's tab exactly
+ *  as it is. Shared by `shot` and `click`, which is also *why* clicking and
+ *  shooting compose in one invocation: the tab is per-invocation. */
+async function openPage(flags) {
   await ensureChrome(flags);
   const state = readState();
   const session = flags.session ?? state.session;
-
-  const { send, target, close } = await cdp(flags);
-  await send("Page.enable");
+  const page = await cdp(flags);
+  await page.send("Page.enable");
 
   if (flags.attach) {
     // Capture what the user is actually looking at: no navigate (that would yank
     // their page), no metrics override (that would visibly resize it). Their
     // window is the viewport, whatever size it happens to be.
-    console.log(`peek: capturing YOUR tab — ${target.title} (${target.url})`);
+    console.log(`peek: on YOUR tab — ${page.target.title} (${page.target.url})`);
   } else {
     const url = flags.url ?? `http://127.0.0.1:${state.port ?? PORT}/${session ? `?session=${session}` : ""}`;
-    await send("Emulation.setDeviceMetricsOverride", {
+    await page.send("Emulation.setDeviceMetricsOverride", {
       width: VIEWPORT.width,
       height: VIEWPORT.height,
       deviceScaleFactor: VIEWPORT.scale,
       mobile: false,
     });
-    await send("Page.navigate", { url });
+    await page.send("Page.navigate", { url });
   }
   await sleep(Number(flags.wait ?? (flags.attach ? 250 : 2500))); // SSE connect + first render
+  return page;
+}
 
+async function cmdShot(name, flags) {
+  if (!name) throw new Error("usage: peek shot <name> [--session id] [--url u] [--crop topbar] [--wait ms] [--attach [--tab n]]");
+  const { send, close } = await openPage(flags);
+  await capture(send, name, flags);
+  await close();
+}
+
+/** Screenshot the page as it now stands and write it where it belongs. */
+async function capture(send, name, flags) {
   const clip = flags.crop
     ? (() => {
         // Named crops are measured against our own 2x viewport, so they mean
@@ -420,7 +512,21 @@ async function cmdShot(name, flags) {
       })()
     : undefined;
 
-  const { data } = await send("Page.captureScreenshot", { format: "png", ...(clip ? { clip } : {}) });
+  // A freshly-launched headless Chrome answers the first `captureScreenshot`
+  // with a bare `Internal error` now and then — the renderer isn't ready and the
+  // frame doesn't exist yet. Seen once here, on the first shot of a second peek
+  // started while the first was busy. Capturing is idempotent, so retry rather
+  // than fail the run; a *persistent* failure still throws, loudly and named.
+  let data;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      ({ data } = await send("Page.captureScreenshot", { format: "png", ...(clip ? { clip } : {}) }));
+      break;
+    } catch (err) {
+      if (attempt === 3) throw err;
+      await sleep(500);
+    }
+  }
   // A peek of JLCode belongs in the visual log; a capture of the user's own
   // screen does not — it is ad-hoc, may hold anything, and must not drift into
   // a commit. Those land in the scratch dir unless a path is asked for.
@@ -428,9 +534,192 @@ async function cmdShot(name, flags) {
   fs.mkdirSync(dir, { recursive: true });
   const out = flags.out ? path.resolve(flags.out) : path.join(dir, name.endsWith(".png") ? name : `${name}.png`);
   fs.writeFileSync(out, Buffer.from(data, "base64"));
-  await close();
   console.log(`peek: wrote ${out.startsWith(REPO) ? path.relative(REPO, out) : out}`);
 }
+
+// ---------------------------------------------------------------- `click` ---
+//
+// Some surfaces only exist under a mouse: X-12b's ✕ is `opacity: 0` until its
+// row is hovered and its confirm is a click deeper, X-23's tool block starts
+// collapsed. Both slices hand-rolled the same throwaway CDP script; this is it,
+// once, with the failure modes made loud.
+
+/** Names a match in an error message. Which of the four `.rail-close`es you
+ *  actually addressed is a question only the text around it can answer. */
+const DESCRIBE_JS = `((el) => {
+  if (!el) return "nothing";
+  const raw = typeof el.className === "string" ? el.className : "";
+  const cls = raw.trim() ? raw.trim().split(/\\s+/).slice(0, 3).map((c) => "." + c).join("") : "";
+  const text = (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 48);
+  return el.tagName.toLowerCase() + cls + (text ? ' "' + text + '"' : "");
+})`;
+
+async function evalJs(send, expression) {
+  const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+  if (r.exceptionDetails) {
+    throw new Error(`in-page error: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+  }
+  return r.result?.value;
+}
+
+/** What a selector matches right now, each match named and measured. */
+const probe = (send, sel) =>
+  evalJs(
+    send,
+    `(() => {
+      const describe = ${DESCRIBE_JS};
+      let els;
+      try { els = Array.from(document.querySelectorAll(${JSON.stringify(sel)})); }
+      catch (e) { return { invalid: String(e.message), matches: [] }; }
+      return { url: location.href, matches: els.map((el) => {
+        const r = el.getBoundingClientRect();
+        // The parent's text is what tells three identical ✕ buttons apart.
+        return { label: describe(el), where: describe(el.parentElement), w: r.width, h: r.height };
+      }) };
+    })()`,
+  );
+
+/** Scroll the chosen match into view and return the point to aim at — plus
+ *  whether something else is on top of that point, because a click that lands on
+ *  an overlay is exactly the silent no-op this command exists to prevent. */
+const aim = (send, sel, i) =>
+  evalJs(
+    send,
+    `(() => {
+      const describe = ${DESCRIBE_JS};
+      const el = document.querySelectorAll(${JSON.stringify(sel)})[${i}];
+      if (!el) return { gone: true };
+      el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      const r = el.getBoundingClientRect();
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      const top = document.elementFromPoint(x, y);
+      return { x, y, w: r.width, h: r.height, label: describe(el),
+               covered: !top || !(el.contains(top) || top.contains(el)), cover: describe(top) };
+    })()`,
+  );
+
+/** A cheap fingerprint of the rendered DOM, so "the click changed nothing" can
+ *  be *said* rather than silently screenshotted. */
+const domFingerprint = (send) =>
+  evalJs(
+    send,
+    `(() => { const s = document.body ? document.body.innerHTML : "";
+      let h = 5381; for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+      return h + ":" + s.length; })()`,
+  );
+
+/** A step is `[hover:]<css selector>[@n]`. Hover is a *step*, not a verb of its
+ *  own: peek opens its tab per invocation and closes it after, so a hover in one
+ *  process is already gone by the time a second one starts. `@n` is peek's own
+ *  index suffix (a CSS selector never contains `@`) — the explicit answer to an
+ *  ambiguous match, in the same spirit as `--tab`. */
+function parseStep(raw) {
+  const hover = String(raw).startsWith("hover:");
+  const body = hover ? String(raw).slice(6) : String(raw);
+  const m = /^(.*?)@(\d+)$/.exec(body.trim());
+  const sel = (m ? m[1] : body).trim();
+  if (sel.includes("@")) {
+    // `@n` indexes the whole selector's match list, so it can only go at the
+    // end. To reach *inside* one of several containers, index the leaf
+    // (`.rail-item.history .rail-close@1`) or scope it in CSS (`:nth-of-type`).
+    throw new Error(
+      `"${raw}": the @n index goes at the *end* of a selector — it picks from that selector's own matches.\n` +
+        `  To act inside the nth container, index the leaf instead: ".rail-item.history .rail-close@1"\n` +
+        `  or scope it in CSS: ".rail-item.history:nth-of-type(2) .rail-close"`,
+    );
+  }
+  return { hover, raw: String(raw), sel, index: m ? Number(m[2]) : null };
+}
+
+async function runStep(send, step, flags) {
+  const timeout = Number(flags.timeout ?? 3000);
+  const deadline = Date.now() + timeout;
+  let found;
+  for (;;) {
+    found = await probe(send, step.sel);
+    if (found.invalid) throw new Error(`not a usable selector: ${step.sel}\n  ${found.invalid}`);
+    if (found.matches.length > 0) break;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `nothing matches "${step.sel}" — waited ${timeout}ms, and nothing was clicked (${found.url}).\n` +
+          `  If the page needed longer to render: --wait <ms> (before the first step) or --timeout <ms>.\n` +
+          `  If the element only appears under the cursor: put a "hover:<selector>" step in front of it.`,
+      );
+    }
+    await sleep(100);
+  }
+
+  // Several matches with no index is an error, not a guess at the first one:
+  // clicking the wrong ✕ deletes the wrong thread, and the screenshot looks fine.
+  if (found.matches.length > 1 && step.index === null) {
+    throw new Error(
+      `"${step.sel}" matches ${found.matches.length} elements — say which with @n (e.g. "${step.sel}@0"), or narrow the selector:\n` +
+        found.matches.map((m, i) => `    ${i}  ${m.label}   in ${m.where}`).join("\n"),
+    );
+  }
+  const i = step.index ?? 0;
+  if (!found.matches[i]) {
+    throw new Error(`"${step.sel}@${i}" — there are only ${found.matches.length} matches (0…${found.matches.length - 1}).`);
+  }
+
+  await aim(send, step.sel, i);
+  await sleep(120); // let the scroll land before measuring where the thing ended up
+  const spot = await aim(send, step.sel, i);
+  const verb = step.hover ? "hover" : "click";
+  if (spot.gone) throw new Error(`"${step.sel}@${i}" left the page between finding it and ${verb}ing it.`);
+  if (!(spot.w > 0 && spot.h > 0)) {
+    throw new Error(
+      `${spot.label} matches "${step.sel}" but is ${spot.w}×${spot.h} — it is not rendered, so there is nothing to ${verb}.\n` +
+        `  Hidden until hovered? Put a "hover:<selector>" step in front of it.`,
+    );
+  }
+  if (spot.covered) {
+    throw new Error(
+      `${spot.label} is covered by ${spot.cover} at its centre — a ${verb} there would land on that instead.\n` +
+        `  Dismiss the overlay first, or address the element that is actually on top.`,
+    );
+  }
+
+  const at = { x: spot.x, y: spot.y };
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at, buttons: 0 });
+  if (!step.hover) {
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", buttons: 1, clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button: "left", buttons: 0, clickCount: 1 });
+  }
+  console.log(`peek: ${verb} ${spot.label}  @ ${Math.round(spot.x)},${Math.round(spot.y)}`);
+}
+
+async function cmdClick(steps, flags) {
+  if (steps.length === 0) {
+    throw new Error(
+      'usage: peek click "[hover:]<selector>[@n]" ["<selector>" …] [--shot <name> [--crop c]] [--wait ms] [--settle ms] [--timeout ms]',
+    );
+  }
+  if (flags.shot === true) throw new Error("--shot needs a name: --shot x23-expanded");
+  const parsed = steps.map(parseStep);
+  const { send, close } = await openPage(flags);
+  try {
+    const before = await domFingerprint(send);
+    let clicked = false;
+    for (const step of parsed) {
+      await runStep(send, step, flags);
+      clicked ||= !step.hover;
+      await sleep(Number(flags.settle ?? 300)); // the render the click caused
+    }
+    if (flags.shot) {
+      // A hover changes CSS only, so silence is expected there; a click that
+      // left the DOM byte-identical is worth saying out loud before the shot.
+      if (clicked && (await domFingerprint(send)) === before) {
+        console.log("peek: warning — the DOM is identical to before the click; this shot may prove nothing.");
+      }
+      await capture(send, String(flags.shot), flags);
+    }
+  } finally {
+    await close();
+  }
+}
+
+// -----------------------------------------------------------------------------
 
 /** Send a turn through the fake driver, remembering the session so subsequent
  *  `chat`/`shot`/`state` calls continue the same thread without repeating an id. */
@@ -486,23 +775,36 @@ function summarize(s) {
   return JSON.stringify(Object.fromEntries(keep.filter((k) => k in s).map((k) => [k, s[k]])), null, 2);
 }
 
+/** Down tears down **what this instance started**, and nothing else: the pids in
+ *  our own (port-keyed) state file. With no recorded server pid we started no
+ *  server, so we don't get to POST `/shutdown` at whatever is on the port — that
+ *  is how a second peek would kill the first one's. */
 async function cmdDown({ quiet } = {}) {
   const state = readState();
-  try {
-    await fetch(`http://127.0.0.1:${state.port ?? PORT}/shutdown`, { method: "POST" });
-  } catch {
-    /* not running */
+  if (state.serverPid) {
+    try {
+      await fetch(`http://127.0.0.1:${state.port ?? PORT}/shutdown`, { method: "POST" });
+    } catch {
+      /* not running */
+    }
   }
-  for (const pid of [state.serverPid, state.chromePid]) {
+  const stopped = [];
+  for (const [what, pid] of [
+    ["server", state.serverPid],
+    ["chrome", state.chromePid],
+  ]) {
     if (!pid) continue;
     try {
       process.kill(pid, "SIGTERM");
+      stopped.push(`${what} ${pid}`);
     } catch {
       /* already gone */
     }
   }
   writeState({ serverPid: null, chromePid: null });
-  if (!quiet) console.log("peek: down");
+  // Say what was actually stopped: "down" over a port someone else is serving
+  // means *nothing was touched*, and that should read as such.
+  if (!quiet) console.log(stopped.length ? `peek: down — stopped ${stopped.join(", ")}` : "peek: down (nothing of ours was running)");
 }
 
 // --------------------------------------------------------------------------
@@ -514,6 +816,7 @@ const commands = {
   chat: () => cmdChat(rest.join(" "), flags),
   new: () => cmdNewSession(),
   shot: () => cmdShot(rest[0], flags),
+  click: () => cmdClick(rest, flags),
   tabs: () => cmdTabs(flags),
   state: () => cmdState(flags),
   down: () => cmdDown({}),

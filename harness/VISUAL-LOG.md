@@ -21,6 +21,7 @@ node harness/peek/peek.mjs up --ctx 4000 --buffer 1000 --trigger suggest
 node harness/peek/peek.mjs chat "Give me a short overview."    # prints the state frame
 node harness/peek/peek.mjs shot x24-meter                      # → harness/visual/x24-meter.png
 node harness/peek/peek.mjs shot x24-crop --crop topbar         # named crop, for chip-sized detail
+node harness/peek/peek.mjs click ".tool-head" --shot x23-open  # a real mouse, then the shot
 node harness/peek/peek.mjs new                                 # a fresh session (empty states)
 node harness/peek/peek.mjs state                               # just the state frame
 node harness/peek/peek.mjs down
@@ -28,7 +29,7 @@ node harness/peek/peek.mjs down
 
 What it handles, so you don't rediscover it:
 
-- **Isolated everything.** Writes its own `config.json` under `/tmp/jlcode-peek`
+- **Isolated everything.** Writes its own `config.json` under `/tmp/jlcode-peek-<port>`
   with `JLCODE_CONFIG_DIR`/`JLCODE_DATA_DIR` pointed there and `JLCODE_FAKE_LLM=1`
   — no real key, no spend, and your actual `~/.config/jlcode` is never touched.
 - **`--ctx` / `--buffer` / `--trigger` are the dials that pose the compaction and
@@ -45,6 +46,72 @@ What it handles, so you don't rediscover it:
   didn't start, and opens its own tab instead of navigating whichever page is
   first in the target list. (Both hazards were real: the first version reused
   any browser on 9222.)
+
+### Two peeks at once — `JLCODE_PEEK_PORT` (D-67)
+
+A peek **instance is its server port**, and the port moves:
+
+```bash
+JLCODE_PEEK_PORT=7811 JLCODE_PEEK_CDP_PORT=9421 node harness/peek/peek.mjs up
+```
+
+Everything transient is keyed by it — `/tmp/jlcode-peek-<port>/` holds that
+instance's state file, config, data, chrome profile and pids — so a second peek
+is a second instance rather than a second writer of the first one's state. That
+is what makes `down` safe with two agents on one machine: **it signals only the
+pids it recorded**, and no longer POSTs `/shutdown` at whatever answers on the
+port. `up` refuses a port that is already serving when it didn't start that
+server, and says which env vars to move. Verified 2026-08-07 by running
+7811/9421 and 7821/9431 side by side and taking the second one down: the first
+one's server *and* its browser were still up, untouched.
+
+### `peek click` — the surfaces that need a mouse (D-67)
+
+Hover-revealed affordances and collapsed blocks can't be reached by `shot`
+alone. X-12b and X-23 each hand-rolled the same throwaway CDP script; this is
+that script, once. **Steps run in order in one invocation** and `--shot` captures
+the result — peek opens its tab per command and closes it after, so a hover in
+one process is already gone by the time a second one starts. That is also why
+hover is a *step* (`hover:<sel>`) and not a verb of its own.
+
+```bash
+# X-23's case: a tool block starts collapsed — expand it, then shoot.
+node harness/peek/peek.mjs click ".tool-head" --shot x23-transcript-write
+
+# X-12b's case: the ✕ is opacity:0 until its row is hovered, and the confirm is
+# a click deeper. Three steps, one invocation.
+node harness/peek/peek.mjs click "hover:.rail-item.history@1" \
+     ".rail-item.history .rail-close@1" ".rail-confirm-actions .danger" \
+     --shot x12b-deleted --crop rail
+```
+
+- **Addressing is a CSS selector**, plus peek's own `@n` suffix. `@n` picks from
+  that selector's own match list and therefore goes at the **end** — to act
+  inside the nth container, index the leaf (`.rail-item.history .rail-close@1`)
+  or scope it in CSS (`:nth-of-type(2)`).
+- **Nothing fails quietly**, because the failure that matters is a screenshot of
+  a page that never changed. No match (after `--timeout`, default 3000ms),
+  several matches, a 0×0 match, or a match with something else on top of it all
+  **exit 1 and write no PNG**. An ambiguous step lists its matches by their text
+  *and their parent's* — which is the only thing that tells three identical `✕`
+  buttons apart:
+
+  ```
+  peek: ".rail-item.history .rail-close" matches 3 elements — say which with @n …
+      0  button.rail-close "✕"   in div.rail-item-top "Third thread✎✕"
+      1  button.rail-close "✕"   in div.rail-item-top "Rail hover affordances✎✕"
+  ```
+- **A click that changed nothing says so** (`warning — the DOM is identical to
+  before the click`) before the shot is written. A hover changes CSS only, so it
+  is exempt.
+- `--settle <ms>` (default 300) is the pause after each step for the render it
+  caused; `--wait` still governs the first page load, `--timeout` how long a step
+  waits for its element to appear.
+
+Both recipes above were re-run against the real browser on 2026-08-07 as the
+acceptance test for the command: the ✕/confirm sequence really did delete the
+thread (`GET /conversations` dropped from 3 to 2), and the tool block really did
+expand to its args and file body.
 
 ### `--attach` — screenshotting the browser *you* are looking at
 
@@ -65,7 +132,7 @@ records no pid — so `down` can never kill your browser. With several tabs open
 ambiguity is an **error listing them**, not a guess: silently capturing the wrong
 window is the failure that actually matters. Named crops (`topbar`) are refused,
 since they're measured against peek's own viewport; give `x,y,w,h` instead.
-Captures land in `/tmp/jlcode-peek/`, **not** `harness/visual/` — they're ad-hoc,
+Captures land in `/tmp/jlcode-peek-<port>/`, **not** `harness/visual/` — they're ad-hoc,
 may hold anything that was on screen, and must not drift into a commit.
 
 *Caveat worth knowing before you try it:* a Chrome that is **already running**
