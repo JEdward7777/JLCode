@@ -329,6 +329,96 @@ describe("dev server — ask_user answers (D-18)", () => {
     const tool = conv.entries.find((e) => e.type === "tool")!;
     expect(tool.content).toContain("Store — Which store?: postgres");
   });
+
+  // D-72: the escape has to survive the wire, not just the card.
+  it("/answer carries chosen/typed/declined through to the tool result", async () => {
+    const app = askApp();
+    const first = await post(app, "/chat", { text: "configure" });
+    const id = first.json.sessionId as string;
+    const res = await post(app, `/session/${id}/answer`, {
+      answers: [
+        { header: "Store", question: "Which store?", answer: "duckdb", typed: "duckdb" },
+        { header: "Env", question: "Which envs?", answer: "", declined: true },
+      ],
+    });
+    expect(res.json.status).toBe("idle");
+    const conv = (await (await app.request(`/session/${id}`)).json()) as { entries: Array<Record<string, any>> };
+    const tool = conv.entries.find((e) => e.type === "tool")!;
+    expect(tool.content).toContain("picked none of the offered options and typed: duckdb");
+    expect(tool.content).toContain("Env — Which envs?: declined");
+    expect(tool.content).toContain("Do not substitute the closest one");
+  });
+
+  it("/answer reads a blank answer as a decline even with no flag", async () => {
+    const app = askApp();
+    const first = await post(app, "/chat", { text: "configure" });
+    const id = first.json.sessionId as string;
+    await post(app, `/session/${id}/answer`, {
+      answers: [
+        { question: "Which store?", answer: "" },
+        { question: "Which envs?", answer: "  " },
+      ],
+    });
+    const conv = (await (await app.request(`/session/${id}`)).json()) as { entries: Array<Record<string, any>> };
+    const tool = conv.entries.find((e) => e.type === "tool")!;
+    expect(tool.content).toContain("The user declined to answer any of these questions:");
+  });
+
+  it("/answer 400s on a blank required question and leaves the pause up", async () => {
+    const app = createServer({
+      resolveConfig: () => config,
+      store,
+      workingDir: "/work/test",
+      newSession: (c, conversation) =>
+        new Session({
+          config: c,
+          driver: requiredAskDriver(),
+          tools: new ToolRegistry([...fileTools(), askUserTool()]),
+          sandbox: new Sandbox([storeDir]),
+          conversation,
+        }),
+      version: "0.0.0",
+    }).app;
+    const first = await post(app, "/chat", { text: "ask" });
+    const id = first.json.sessionId as string;
+    expect(first.json.status).toBe("awaiting-input");
+
+    const bad = await post(app, `/session/${id}/answer`, {
+      answers: [{ question: "Which ticket?", answer: "", declined: true }],
+    });
+    expect(bad.status).toBe(400);
+    expect(String(bad.json.error)).toMatch(/requires an answer/);
+
+    // The question is still askable — a rejected answer must not eat the pause.
+    const state = (await (await app.request(`/session/${id}/state`)).json()) as any;
+    expect(state.status).toBe("awaiting-input");
+    const ok = await post(app, `/session/${id}/answer`, {
+      answers: [{ question: "Which ticket?", answer: "JL-411", typed: "JL-411" }],
+    });
+    expect(ok.json.status).toBe("idle");
+  });
+
+  function requiredAskDriver(): LlmDriver {
+    let n = 0;
+    return {
+      async *streamChat(): AsyncGenerator<StreamEvent> {
+        n++;
+        if (n === 1) {
+          yield {
+            type: "tool_call",
+            index: 0,
+            id: "c1",
+            name: "ask_user",
+            argsDelta: JSON.stringify({ question: "Which ticket?", required: true }),
+          };
+          yield { type: "finish", reason: "tool_calls" };
+        } else {
+          yield { type: "text", delta: "Configured." };
+          yield { type: "finish", reason: "stop" };
+        }
+      },
+    };
+  }
 });
 
 // P7b: the MCP status route and the learn-on-pause answers riding on /approve

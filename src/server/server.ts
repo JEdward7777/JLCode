@@ -818,17 +818,35 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } else if (Array.isArray(body.answers)) {
       const answers = body.answers
         .filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === "object")
-        .map((a) => ({
-          question: typeof a.question === "string" ? a.question : "",
-          answer: typeof a.answer === "string" ? a.answer : "",
-          ...(typeof a.header === "string" ? { header: a.header } : {}),
-        }));
+        .map((a) => {
+          // `chosen`/`typed`/`declined` are D-72 provenance: which of the offered
+          // options was picked, what was typed instead, or that nothing was said.
+          // All optional — a plain-text frontend still posts `answer` alone, and a
+          // blank one reads as a decline rather than as the empty string.
+          const chosen = Array.isArray(a.chosen) ? a.chosen.filter((o): o is string => typeof o === "string") : [];
+          const typed = typeof a.typed === "string" ? a.typed : "";
+          const answer = typeof a.answer === "string" ? a.answer : "";
+          const declined = a.declined === true || (chosen.length === 0 && !typed.trim() && !answer.trim());
+          return {
+            question: typeof a.question === "string" ? a.question : "",
+            answer,
+            ...(typeof a.header === "string" ? { header: a.header } : {}),
+            ...(chosen.length > 0 ? { chosen } : {}),
+            ...(typed ? { typed } : {}),
+            ...(declined ? { declined: true } : {}),
+          };
+        });
       if (answers.length === 0) return c.json({ error: "'answers' must be a non-empty array" }, 400);
       payload = answers;
     } else {
       return c.json({ error: "body must include 'text' or 'answers'" }, 400);
     }
-    await session.answer(payload);
+    try {
+      await session.answer(payload);
+    } catch (err) {
+      // A `required` question left blank (D-72) — the only refusal `answer()` has.
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
     await flushDurable();
     return c.json(stateOf(session));
   });

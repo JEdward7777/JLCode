@@ -1807,3 +1807,45 @@ figure.mermaid svg {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ============================================================================
+ * D-72 — the ask_user card's escape hatch (X-28).
+ * Appended as one block on purpose: three branches merge into this file.
+ * ==========================================================================*/
+
+/* "required" reads as a constraint on the form, not as an error — it is only a
+ * problem once you try to leave it blank, and `.ask-blocked` says so then. */
+.q-req {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 1px 7px;
+}
+
+/* The way out is a real button, not a disabled-Submit puzzle — but a quiet one,
+ * so it never competes with answering the question. */
+.actions button.ask-skip {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+}
+.actions button.ask-skip:hover:not(:disabled) {
+  color: var(--text);
+  border-style: solid;
+}
+
+.ask-blocked {
+  font-size: 12px;
+  color: #d8b45c;
+}
+
+/* One line under the actions that states the contract: options are suggestions,
+ * a blank comes back as an explicit decline. */
+.ask-foot {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: -2px;
+}

@@ -133,12 +133,16 @@ export interface AskUserQuestion {
   /** Short label/chip for the question (optional). */
   header?: string;
   question: string;
-  /** Suggested answers, rendered as buttons. */
+  /** Suggested answers, rendered as buttons. They are *suggestions*: a typed
+   *  answer is always available beside them and is never the model's to
+   *  withhold (D-72). There is deliberately no `allowFreeText` flag any more. */
   options?: string[];
   /** Allow selecting several options at once. */
   multiSelect?: boolean;
-  /** Allow a typed answer alongside / instead of the options. */
-  allowFreeText?: boolean;
+  /** The form cannot be submitted leaving this one blank (D-72). It compels
+   *  *an* answer — never the picking of an offered option, since typing stays
+   *  open — and it is the only thing that takes the decline away. */
+  required?: boolean;
 }
 
 /** The model's ask_user pause (D-18) — a structured multi-question form. */
@@ -147,11 +151,21 @@ export interface AskUserRequest {
   questions: AskUserQuestion[];
 }
 
-/** A resolved answer to one question of an ask_user form. */
+/** A resolved answer to one question of an ask_user form. `answer` is the flat
+ *  rendering (and the whole of what a plain-text frontend needs to send); the
+ *  rest is provenance, so the tool result can tell a chosen option from a typed
+ *  answer from a decline instead of flattening all three into one string (D-72). */
 export interface AskUserAnswer {
   question: string;
   header?: string;
   answer: string;
+  /** Offered options the user actually picked. */
+  chosen?: string[];
+  /** Text the user typed — beside the options, or instead of them. */
+  typed?: string;
+  /** The user answered nothing here. Not the same as any option, and not the
+   *  same as an empty string: it is reported to the model as a decline. */
+  declined?: boolean;
 }
 
 export interface ApprovalDecision {

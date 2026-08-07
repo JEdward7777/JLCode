@@ -192,23 +192,155 @@ describe("ask_user flow (D-18)", () => {
       callThenAnswer("ask_user", {
         questions: [
           { header: "Store", question: "Which store?", options: ["sqlite", "postgres"] },
-          { header: "Env", question: "Which envs?", options: ["dev", "prod"], multiSelect: true, allowFreeText: true },
+          { header: "Env", question: "Which envs?", options: ["dev", "prod"], multiSelect: true },
         ],
       }),
     );
     await s.send("configure");
     expect(s.awaitingInput?.questions).toHaveLength(2);
     expect(s.awaitingInput?.questions[1]?.multiSelect).toBe(true);
-    expect(s.awaitingInput?.questions[1]?.allowFreeText).toBe(true);
 
     await s.answer([
-      { header: "Store", question: "Which store?", answer: "postgres" },
-      { header: "Env", question: "Which envs?", answer: "dev, prod" },
+      { header: "Store", question: "Which store?", answer: "postgres", chosen: ["postgres"] },
+      { header: "Env", question: "Which envs?", answer: "dev, prod", chosen: ["dev", "prod"] },
     ]);
     const toolEntry = s.conversation.entries.find((e) => e.type === "tool");
     const content = toolEntry && toolEntry.type === "tool" ? toolEntry.content : "";
-    expect(content).toContain("Store — Which store?: postgres");
-    expect(content).toContain("Env — Which envs?: dev, prod");
+    expect(content).toContain(`Store — Which store?: chose "postgres"`);
+    expect(content).toContain(`Env — Which envs?: chose "dev", "prod"`);
+  });
+});
+
+/**
+ * D-72 — the escape hatch. A person answering a question must always be able to
+ * say something the model didn't offer, and to say nothing at all; and the tool
+ * result has to keep those apart from a picked option, or the model proceeds on
+ * "the closest wrong answer" with full confidence.
+ */
+describe("ask_user escape hatch (D-72)", () => {
+  const result = (s: ReturnType<typeof session>): string => {
+    const e = s.conversation.entries.find((x) => x.type === "tool");
+    return e && e.type === "tool" ? e.content : "";
+  };
+
+  it("keeps a plain single answer verbatim — D-18's contract is untouched", async () => {
+    const s = session(callThenAnswer("ask_user", { question: "Which color?", options: ["red", "blue"] }));
+    await s.send("pick");
+    await s.answer([{ question: "Which color?", answer: "blue", chosen: ["blue"] }]);
+    expect(result(s)).toBe("blue");
+  });
+
+  it("says so when the user typed instead of picking one of the options", async () => {
+    const s = session(callThenAnswer("ask_user", { question: "Which color?", options: ["red", "blue"] }));
+    await s.send("pick");
+    await s.answer([{ question: "Which color?", answer: "teal", typed: "teal" }]);
+    const out = result(s);
+    expect(out).toContain("picked none of the offered options and typed: teal");
+    // The distinction is the whole point: this must not read as "they said teal
+    // is one of your options".
+    expect(out).not.toBe("teal");
+  });
+
+  it("passes free text through bare when no options were offered", async () => {
+    const s = session(callThenAnswer("ask_user", { question: "What's the ticket?" }));
+    await s.send("ask");
+    await s.answer([{ question: "What's the ticket?", answer: "JL-411", typed: "JL-411" }]);
+    expect(result(s)).toBe("JL-411");
+  });
+
+  it("reports a decline as a decline, with the instruction not to substitute an option", async () => {
+    const s = session(callThenAnswer("ask_user", { question: "Which color?", options: ["red", "blue"] }));
+    await s.send("pick");
+    await s.answer([{ question: "Which color?", answer: "", declined: true }]);
+    const out = result(s);
+    expect(out).toContain("The user declined to answer:");
+    expect(out).toContain("declined — the user did not answer this");
+    expect(out).toContain("Do not substitute the closest one");
+    expect(out).not.toBe("");
+  });
+
+  it("treats a blank answer as a decline even without the flag", async () => {
+    const s = session(callThenAnswer("ask_user", { question: "Which color?", options: ["red", "blue"] }));
+    await s.send("pick");
+    await s.answer([{ question: "Which color?", answer: "" }]);
+    // No `declined` flag and no chosen/typed — an empty string handed to the
+    // model reads as an answer, so it is rendered as the decline it is.
+    expect(result(s)).toContain("The user declined to answer:");
+  });
+
+  it("mixes: a partly answered form keeps each question's shape and warns once", async () => {
+    const s = session(
+      callThenAnswer("ask_user", {
+        questions: [
+          { header: "Store", question: "Which store?", options: ["sqlite", "postgres"] },
+          { header: "Env", question: "Which envs?", options: ["dev", "prod"], multiSelect: true },
+          { header: "Notes", question: "Anything else?" },
+        ],
+      }),
+    );
+    await s.send("configure");
+    await s.answer([
+      { header: "Store", question: "Which store?", answer: "", declined: true },
+      { header: "Env", question: "Which envs?", answer: "dev, staging", chosen: ["dev"], typed: "staging" },
+      { header: "Notes", question: "Anything else?", answer: "go slow", typed: "go slow" },
+    ]);
+    const out = result(s);
+    expect(out).toContain("The user answered:");
+    expect(out).toContain("Store — Which store?: declined");
+    expect(out).toContain(`Env — Which envs?: chose "dev", and also typed: staging`);
+    expect(out).toContain("Notes — Anything else?: go slow");
+    // Once, not per declined question.
+    expect(out.match(/Do not substitute the closest one/g)).toHaveLength(1);
+  });
+
+  it("says outright when the whole form was skipped", async () => {
+    const s = session(
+      callThenAnswer("ask_user", {
+        questions: [
+          { question: "Which store?", options: ["sqlite", "postgres"] },
+          { question: "Which envs?", options: ["dev", "prod"] },
+        ],
+      }),
+    );
+    await s.send("configure");
+    await s.answer([
+      { question: "Which store?", answer: "", declined: true },
+      { question: "Which envs?", answer: "", declined: true },
+    ]);
+    expect(result(s)).toContain("The user declined to answer any of these questions:");
+  });
+
+  it("`required` refuses a blank — and the pause survives the refusal", async () => {
+    const s = session(callThenAnswer("ask_user", { question: "Which ticket?", required: true }));
+    await s.send("ask");
+    expect(s.awaitingInput?.questions[0]?.required).toBe(true);
+    await expect(s.answer([{ question: "Which ticket?", answer: "", declined: true }])).rejects.toThrow(
+      /requires an answer/,
+    );
+    // Still askable — a rejected answer must not consume the question.
+    expect(s.status).toBe("awaiting-input");
+    expect(s.awaitingInput?.questions[0]?.question).toBe("Which ticket?");
+    await s.answer([{ question: "Which ticket?", answer: "JL-411", typed: "JL-411" }]);
+    expect(s.status).toBe("idle");
+    expect(result(s)).toBe("JL-411");
+  });
+
+  it("`required` never forces one of the options — typing satisfies it", async () => {
+    const s = session(
+      callThenAnswer("ask_user", { question: "Which color?", options: ["red", "blue"], required: true }),
+    );
+    await s.send("pick");
+    await s.answer([{ question: "Which color?", answer: "teal", typed: "teal" }]);
+    expect(s.status).toBe("idle");
+    expect(result(s)).toContain("picked none of the offered options and typed: teal");
+  });
+
+  it("no longer advertises allowFreeText — typing is not the model's to withhold", () => {
+    const params = askUserTool().def.function.parameters as Record<string, any>;
+    const item = params.properties.questions.items.properties;
+    expect(item.allowFreeText).toBeUndefined();
+    expect(item.required).toBeDefined();
+    expect(askUserTool().def.function.description).toMatch(/can always type an answer/);
   });
 });
 

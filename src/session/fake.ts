@@ -223,9 +223,11 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
             question: "Which environments?",
             options: ["dev", "staging", "prod"],
             multiSelect: true,
-            allowFreeText: true,
           },
-          { header: "Notes", question: "Anything else I should know?", allowFreeText: true },
+          // One `required` field, so the peek can pose the case where the skip is
+          // withheld — and see that typing still satisfies it (D-72).
+          { header: "Ticket", question: "Which ticket is this for?", required: true },
+          { header: "Notes", question: "Anything else I should know?" },
         ],
       });
     }

@@ -178,17 +178,31 @@ export interface McpStatus {
   files: { global: string; workspace: string } | null;
 }
 
-/** One field of an ask_user form (D-18). */
+/** One field of an ask_user form (D-18). `options` are suggestions only: a
+ *  typed answer sits beside them on every question and cannot be withheld, and
+ *  a question may be declined unless `required` (D-72). */
 export interface AskQuestion {
   header?: string;
   question: string;
   options?: string[];
   multiSelect?: boolean;
-  allowFreeText?: boolean;
+  required?: boolean;
 }
 export interface AskUserRequest {
   id: string;
   questions: AskQuestion[];
+}
+
+/** One answer posted back (D-72). `answer` is the flat rendering; `chosen` /
+ *  `typed` / `declined` keep the shape so the tool result can tell a picked
+ *  option from a typed reply from "none of these". */
+export interface AskAnswer {
+  question: string;
+  header?: string;
+  answer: string;
+  chosen?: string[];
+  typed?: string;
+  declined?: boolean;
 }
 
 /** A background command (D-34) — listed, killable, watchdog-watched. */
@@ -460,10 +474,7 @@ export async function setTitle(id: string, title: string): Promise<void> {
 }
 
 /** Answer a pending ask_user (D-18): a single string, or per-question answers. */
-export async function answer(
-  id: string,
-  payload: string | Array<{ question: string; header?: string; answer: string }>,
-): Promise<void> {
+export async function answer(id: string, payload: string | AskAnswer[]): Promise<void> {
   await postJson(`/session/${id}/answer`, typeof payload === "string" ? { text: payload } : { answers: payload });
 }
 

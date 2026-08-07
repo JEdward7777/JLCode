@@ -163,7 +163,7 @@ function parseAskQuestions(args: Record<string, unknown>): AskUserQuestion[] {
       const opts = strings(o.options);
       if (opts) q.options = opts;
       if (o.multiSelect === true) q.multiSelect = true;
-      if (o.allowFreeText === true) q.allowFreeText = true;
+      if (o.required === true) q.required = true;
       out.push(q);
     }
     if (out.length > 0) return out;
@@ -173,19 +173,68 @@ function parseAskQuestions(args: Record<string, unknown>): AskUserQuestion[] {
   };
   const opts = strings(args.options);
   if (opts) single.options = opts;
+  if (args.required === true) single.required = true;
   return [single];
+}
+
+/** Said once per result that carries a decline, because the model's default
+ *  reading of a blank is "they meant the obvious one" and that is exactly the
+ *  failure this exists to prevent (D-72). */
+const DECLINE_NOTE =
+  "A declined question is information, not an absence of it: the user chose none of the offered options. " +
+  "Do not substitute the closest one. Continue with what you have and say which assumption you are making, " +
+  "or ask a different question.";
+
+const quote = (s: string): string => `"${s}"`;
+
+/** Nothing was said here — an explicit decline, or a blank that amounts to one. */
+export function isBlankAnswer(a: AskUserAnswer): boolean {
+  return a.declined === true || (!(a.chosen?.length ?? 0) && !(a.typed?.trim() ?? "") && !a.answer.trim());
+}
+
+/** One answer, rendered so its *shape* survives — picked / typed / declined. */
+function describeAnswer(a: AskUserAnswer, hadOptions: boolean): string {
+  if (isBlankAnswer(a)) return "declined — the user did not answer this";
+  const chosen = a.chosen ?? [];
+  const typed = a.typed?.trim() ?? "";
+  if (chosen.length > 0 && typed) return `chose ${chosen.map(quote).join(", ")}, and also typed: ${typed}`;
+  if (chosen.length > 0) return `chose ${chosen.map(quote).join(", ")}`;
+  if (typed && hadOptions) return `picked none of the offered options and typed: ${typed}`;
+  return typed || a.answer;
 }
 
 /** Turn an answer payload into the tool-result string the model reads. A bare
  *  string (single-question) passes through verbatim; an array is rendered as a
- *  labeled block so multi-question answers stay unambiguous. */
-function formatAnswers(payload: string | AskUserAnswer[]): string {
+ *  labeled block so multi-question answers stay unambiguous.
+ *
+ *  The one-question form still returns the answer verbatim when it is a plain
+ *  one — that is D-18's contract and what a plain-text frontend produces. It
+ *  does *not* when the answer's shape is itself the message: a decline, or text
+ *  typed in the face of offered options. Both of those read as an ordinary
+ *  answer once flattened, which is the bug (D-72). */
+function formatAnswers(payload: string | AskUserAnswer[], questions: AskUserQuestion[] = []): string {
   if (typeof payload === "string") return payload;
-  if (payload.length === 1) return payload[0]!.answer;
-  return (
-    "The user answered:\n" +
-    payload.map((a) => `- ${a.header ? `${a.header} — ` : ""}${a.question}: ${a.answer}`).join("\n")
+  const hadOptions = (i: number): boolean => (questions[i]?.options?.length ?? 0) > 0;
+  // A blank counts as a decline whether or not the frontend said so: an empty
+  // string handed to the model reads as an answer, which is the bug.
+  const declines = payload.filter(isBlankAnswer).length;
+
+  if (payload.length === 1) {
+    const only = payload[0]!;
+    const plain = !isBlankAnswer(only) && !((only.typed?.trim() ?? "") && hadOptions(0));
+    if (plain) return only.answer;
+  }
+
+  const head =
+    declines === payload.length
+      ? payload.length > 1
+        ? "The user declined to answer any of these questions:"
+        : "The user declined to answer:"
+      : "The user answered:";
+  const lines = payload.map(
+    (a, i) => `- ${a.header ? `${a.header} — ` : ""}${a.question}: ${describeAnswer(a, hadOptions(i))}`,
   );
+  return [head, ...lines, ...(declines > 0 ? ["", DECLINE_NOTE] : [])].join("\n");
 }
 
 export class Session {
@@ -1011,12 +1060,22 @@ export class Session {
 
   /** Provide the answer(s) to a pending ask_user and continue (D-18). A bare
    *  string answers a single-question form verbatim (the tool result is exactly
-   *  that text); an array carries per-question answers for a multi-question form. */
+   *  that text); an array carries per-question answers for a multi-question form.
+   *
+   *  A blank answer is a **decline** and is legal — that is the escape D-72 is
+   *  about — except where the model marked the question `required`, which is
+   *  enforced here rather than only in the card, so the flag means the same
+   *  thing to every frontend. */
   async answer(payload: string | AskUserAnswer[]): Promise<void> {
     const pending = this.pendingQuestion;
     if (!pending) throw new Error("No pending question");
+    const questions = pending.request.questions;
+    if (Array.isArray(payload) && payload.length === questions.length) {
+      const missing = questions.find((q, i) => q.required === true && isBlankAnswer(payload[i]!));
+      if (missing) throw new Error(`This question requires an answer: ${missing.question}`);
+    }
     this.pendingQuestion = undefined;
-    this.appendToolResult(pending.call, formatAnswers(payload), false);
+    this.appendToolResult(pending.call, formatAnswers(payload, questions), false);
     this.pendingToolCalls.shift();
     await this.advance();
   }

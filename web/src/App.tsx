@@ -38,6 +38,7 @@ import {
   type ApprovalRequest,
   type ToolPreviewDiff,
   type ToolPreviewFile,
+  type AskAnswer,
   type AskUserRequest,
   type BusFrame,
   type ConversationRow,
@@ -57,6 +58,7 @@ import {
   type TaskView,
   type TriggerMode,
 } from "./api";
+import { askActions, buildAnswers, emptyQState, toggleOption, type QState } from "./ask-form";
 import {
   newSlice,
   reduceEvent,
@@ -541,12 +543,16 @@ export function App() {
     [slices],
   );
 
-  const submitAnswer = useCallback(async (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => {
+  // The card is cleared optimistically, so a rejected answer has to put it back
+  // — otherwise the question is gone and the session sits awaiting-input with no
+  // way to answer it. Only reachable since D-72 gave `answer()` a refusal at all
+  // (a blank `required` question), which is what turned this up.
+  const submitAnswer = useCallback(async (id: string, answers: AskAnswer[], asked: AskUserRequest) => {
     dispatch({ t: "patch", id, patch: { pendingAsk: null, working: true } });
     try {
       await apiAnswer(id, answers);
     } catch (err) {
-      dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
+      dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false, pendingAsk: asked } });
     }
   }, []);
 
@@ -1288,7 +1294,7 @@ function ChatPane({
     id: string,
     d: { approve: boolean; editedArgs?: Record<string, unknown>; addRoot?: boolean | string; learned?: LearnAnswers },
   ) => void;
-  onSubmitAnswer: (id: string, answers: Array<{ question: string; header?: string; answer: string }>) => void;
+  onSubmitAnswer: (id: string, answers: AskAnswer[], asked: AskUserRequest) => void;
   onChangeCap: (id: string, v: number | null) => void;
   onStop: (id: string, scope: "hard" | "soft") => void;
   onRetry: (id: string) => void;
@@ -1453,7 +1459,7 @@ function ChatPane({
         {slice.working && <div className="working">{workWord}</div>}
         {slice.tasks.length > 0 && <TasksPanel tasks={slice.tasks} onKill={(taskId) => onKillTask(id, taskId)} />}
         {slice.pendingApproval && <ApprovalCard request={slice.pendingApproval} onResolve={(d) => onResolveApproval(id, d)} />}
-        {slice.pendingAsk && <AskForm request={slice.pendingAsk} onSubmit={(answers) => onSubmitAnswer(id, answers)} />}
+        {slice.pendingAsk && <AskForm request={slice.pendingAsk} onSubmit={(answers) => onSubmitAnswer(id, answers, slice.pendingAsk!)} />}
         {/* Persistence fault outranks the other cards: nothing else can proceed
             until the disk problem is resolved (D-46). */}
         {slice.persistenceFault && (
@@ -2786,58 +2792,31 @@ function ApprovalCard({
   );
 }
 
-/** A single question's local selection state. */
-interface QState {
-  selected: string[];
-  text: string;
-}
-
 /** The ask_user form (D-18): one field per question, options as buttons
- *  (single- or multi-select), optional free-text, single Submit. */
+ *  (single- or multi-select), and — D-72 — **a free-text box on every question,
+ *  always**, plus a visible Skip. The options are the model's suggestions; they
+ *  are never the only exit, because the whole point of asking is to hear what
+ *  the model didn't anticipate. The gating logic lives in `ask-form.ts` so it
+ *  can be tested. */
 function AskForm({
   request,
   onSubmit,
 }: {
   request: AskUserRequest;
-  onSubmit: (answers: Array<{ question: string; header?: string; answer: string }>) => void;
+  onSubmit: (answers: AskAnswer[]) => void;
 }) {
-  const [state, setState] = useState<QState[]>(() => request.questions.map(() => ({ selected: [], text: "" })));
+  const [state, setState] = useState<QState[]>(() => request.questions.map(() => emptyQState()));
 
   const update = (i: number, fn: (q: QState) => QState) =>
     setState((s) => s.map((q, j) => (j === i ? fn(q) : q)));
 
-  const toggle = (i: number, opt: string, multi: boolean) =>
-    update(i, (q) => {
-      if (multi) {
-        return q.selected.includes(opt)
-          ? { ...q, selected: q.selected.filter((o) => o !== opt) }
-          : { ...q, selected: [...q.selected, opt] };
-      }
-      return { ...q, selected: q.selected[0] === opt ? [] : [opt] };
-    });
+  const acts = askActions(request.questions, state);
+  const single = request.questions.length === 1;
 
-  const answerFor = (q: QState): string => {
-    const parts = [...q.selected];
-    const t = q.text.trim();
-    if (t) parts.push(t);
-    return parts.join(", ");
-  };
-
-  const answered = state.every((q, i) => {
-    const def = request.questions[i]!;
-    // A question with only free-text can be blank; option questions need a pick.
-    if (def.options && def.options.length > 0 && !def.allowFreeText) return q.selected.length > 0;
-    return true;
-  });
-
-  const submit = () =>
-    onSubmit(
-      request.questions.map((def, i) => ({
-        question: def.question,
-        ...(def.header ? { header: def.header } : {}),
-        answer: answerFor(state[i]!),
-      })),
-    );
+  /** Submit and Skip post the same payload — blanks ride back as declines
+   *  either way. Two buttons because "I don't want to pick any of these" has to
+   *  be a thing you can *see*, not an empty form you have to reason about. */
+  const submit = () => onSubmit(buildAnswers(request.questions, state));
 
   return (
     <div className="card ask">
@@ -2847,6 +2826,7 @@ function AskForm({
             {q.header ? <span className="q-header">{q.header}</span> : null}
             <span className="q-text">{q.question}</span>
             {q.multiSelect ? <span className="q-hint">choose any</span> : null}
+            {q.required ? <span className="q-req">required</span> : null}
           </div>
           {q.options && q.options.length > 0 ? (
             <div className="opts">
@@ -2854,33 +2834,51 @@ function AskForm({
                 <button
                   key={opt}
                   className={state[i]!.selected.includes(opt) ? "opt on" : "opt"}
-                  onClick={() => toggle(i, opt, q.multiSelect ?? false)}
+                  onClick={() => update(i, (s) => toggleOption(s, opt, q.multiSelect ?? false))}
                 >
                   {opt}
                 </button>
               ))}
             </div>
           ) : null}
-          {q.allowFreeText || !q.options || q.options.length === 0 ? (
-            <input
-              className="free"
-              placeholder={q.options && q.options.length ? "or type your own…" : "type your answer…"}
-              value={state[i]!.text}
-              onChange={(e) => update(i, (s) => ({ ...s, text: e.target.value }))}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && request.questions.length === 1 && answered) {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
-            />
-          ) : null}
+          <input
+            className="free"
+            placeholder={
+              q.options && q.options.length
+                ? "…or say something else — you don't have to pick one"
+                : "type your answer…"
+            }
+            value={state[i]!.text}
+            onChange={(e) => update(i, (s) => ({ ...s, text: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && single && acts.canSubmit) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+          />
         </div>
       ))}
+      {acts.blocked ? <div className="ask-blocked">{acts.blocked}</div> : null}
       <div className="actions">
-        <button className="primary" disabled={!answered} onClick={submit}>
-          Submit
+        <button className="primary" disabled={!acts.canSubmit} onClick={submit}>
+          {acts.submitLabel}
         </button>
+        {acts.showSkip ? (
+          <button
+            className="ask-skip"
+            disabled={!acts.canSkip}
+            title="Send this back as “none of these” — the agent is told you declined, not that you agreed."
+            onClick={submit}
+          >
+            {acts.skipLabel}
+          </button>
+        ) : null}
+      </div>
+      <div className="ask-foot">
+        {acts.blanks > 0 && acts.canSkip
+          ? `${acts.blanks === request.questions.length && single ? "Skipping" : `${acts.blanks} unanswered`} comes back as “declined” — the agent is told you chose none of the options.`
+          : "You can type an answer instead of picking one."}
       </div>
     </div>
   );
