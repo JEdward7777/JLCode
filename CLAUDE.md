@@ -55,7 +55,7 @@ These are automatic — don't wait to be reminded:
    *how a user runs or drives JLCode*, the README's run/drive sections must follow.
 5. **Look at rendered surfaces in a real browser — at least once per UI slice.** Tests with more
    mocks than target code can pass while the real thing is broken or ugly. **Use the tool —
-   `node harness/peek/peek.mjs up|chat|new|shot|state|down`** — don't hand-roll the server +
+   `node harness/peek/peek.mjs up|chat|new|shot|click|state|down`** — don't hand-roll the server +
    CDP dance again (see VISUAL-LOG's method section for the flags). Record each peek — what you
    confirmed with your own eyes + a screenshot — in
    [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md). This complements tests, never replaces them.

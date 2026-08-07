@@ -131,6 +131,7 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
   if (retitle !== undefined) {
     if (retitle !== "on" && retitle !== "off") throw new Error(`--auto-retitle must be "on" or "off"`);
     patch.autoRetitle = retitle === "on";
+  }
   // Per-turn timestamps (X-25e). A flag with no value reads as "on", so
   // `--turn-timestamps` alone does the obvious thing.
   const stamps = flags["turn-timestamps"];
