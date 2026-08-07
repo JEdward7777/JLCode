@@ -70,6 +70,36 @@ describe("approval flow (D-16)", () => {
     expect(fs.readFileSync(path.join(root, "a.txt"), "utf8")).toBe("approved");
   });
 
+  // X-23: the pause is where you decide, so what the write *does* has to be on
+  // it. The tool computes the preview; this is the wiring that carries it.
+  it("carries a file preview on the pause, so the write is readable before it runs", async () => {
+    fs.writeFileSync(path.join(root, "over.txt"), "one\ntwo\n");
+    const s = session(callThenAnswer("write_file", { path: "over.txt", content: "one\nTWO\n" }));
+    await s.send("rewrite over.txt");
+    const preview = s.awaitingApproval?.preview;
+    expect(preview?.kind).toBe("diff");
+    expect(preview?.kind === "diff" && preview.files[0]!.patch).toContain("+TWO");
+
+    const fresh = session(callThenAnswer("write_file", { path: "brand-new.txt", content: "hello\n" }));
+    await fresh.send("write brand-new.txt");
+    const created = fresh.awaitingApproval?.preview;
+    expect(created?.kind).toBe("file");
+    expect(created?.kind === "file" && created.action).toBe("create");
+    expect(created?.kind === "file" && created.body).toBe("hello");
+  });
+
+  it("carries a preview of what a delete would destroy (X-23)", async () => {
+    fs.writeFileSync(path.join(root, "doomed.txt"), "line one\nline two\n");
+    const s = session(callThenAnswer("delete_file", { path: "doomed.txt" }));
+    await s.send("delete doomed.txt");
+    const preview = s.awaitingApproval?.preview;
+    expect(preview?.kind).toBe("file");
+    expect(preview?.kind === "file" && preview.action).toBe("delete");
+    expect(preview?.kind === "file" && preview.body).toContain("line one");
+    expect(preview?.kind === "file" && preview.bytes).toBe(18);
+    expect(fs.existsSync(path.join(root, "doomed.txt"))).toBe(true);
+  });
+
   it("does not run on deny", async () => {
     const s = session(callThenAnswer("write_file", { path: "b.txt", content: "x" }));
     await s.send("write b.txt");

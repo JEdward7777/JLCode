@@ -925,3 +925,61 @@ defect — but a peek that shows boxes where the glyphs should be is not a peek.
 Not exercised visually: the failed-write `.rail-notice` (the rename/delete error
 path has no session card to report into, so it renders in the history section);
 it is styled but was not provoked in the browser.
+
+---
+
+## X-23 — a write you can read before approving it · 2026-08-06 · ✅ looked good
+
+**Screenshots:** [`visual/x23-overwrite-diff.png`](visual/x23-overwrite-diff.png)
+(overwrite → diff against disk) ·
+[`visual/x23-create-file.png`](visual/x23-create-file.png) (new file → its body) ·
+[`visual/x23-delete-file.png`](visual/x23-delete-file.png) (delete → size + head) ·
+[`visual/x23-transcript-write.png`](visual/x23-transcript-write.png) (after the
+fact, in the transcript) · [`visual/x23-no-change.png`](visual/x23-no-change.png)
+(an identical write) ·
+[`visual/x23-whitespace-only.png`](visual/x23-whitespace-only.png) (the case that
+made the point)
+
+Posed with `peek up` plus two new fake-driver seeds — `delete: <path>` joins
+`write:`/`edit:` — over a workspace seeded with a small `.ts`, a 92-line
+`CHANGELOG.md` and two `.env` samples. The transcript shot needed a click (the
+tool block starts collapsed), which is the same gap X-12b hit; a throwaway CDP
+script did it, and that is now **twice**, so a `peek click` is worth adding the
+next time a slice needs one.
+
+Confirmed with my own eyes:
+
+- **An overwrite renders as a diff against what is actually on disk.** The card
+  reads `1 file +4 −2` with `@@` hunks, green/red rows and the file's own
+  `+4 −2` on its summary — the same card `apply_edits` gets. Before this, that
+  same call was `path: src/session-state.ts` and a collapsed raw-JSON box.
+- **No `sites` count on a write.** Anchor sites are an `apply_edits` notion; the
+  span is simply absent here rather than reading `1 site`, which would be a
+  number invented for the sake of the layout.
+- **A new file shows its body, not an all-green wall** — a `NEW FILE` badge, the
+  path, `17 lines · 338 B`, then the markdown as text. Compared side by side
+  with a hand-made `+`-diff of the same file, this is the readable one; the
+  green marks add nothing when every line is new.
+- **A delete finally shows what it is destroying**: a red `DELETE` badge,
+  `92 lines · 6.3 KB`, the first 40 lines, and `… 52 more lines not shown`. That
+  is enough to recognize the file, which is the decision (c) framing — the size
+  is what tells you how much is going.
+- **The transcript is readable after the fact.** The expanded `write_file` block
+  now carries a `src/session-state.ts` / `17 lines · 503 B written` header and
+  the file as text. This is where the old defect was worst: the approval card is
+  gone by then, so the escaped-JSON args were the *only* surviving record.
+- **An identical write says so** — `1 file +0 −0  identical — this changes
+  nothing`, and no diff body at all. The empty body box was the first render and
+  it read as broken, so it is now suppressed; the label carries the meaning.
+- **The case that justifies the whole slice, found by accident while posing the
+  identical one:** two files that look the same in the composer differed only in
+  a **trailing newline**. The card shows `+1 −1` on the last line
+  (`x23-whitespace-only.png`); the raw JSON showed nothing at all. That is the
+  defect in one image.
+- **The raw-args box is still there, still collapsed, still the editable one**
+  (D-16). Both new cards are read-only, exactly as the diff card has been.
+
+Not exercised visually: the not-UTF-8 and not-a-regular-file fallbacks and the
+400-line cap on a create (all covered by tests, none of them worth seeding a
+binary into a peek workspace for); and the out-of-fence path, where the preview
+is deliberately absent and the card is the soft-fence one already logged in P5b.

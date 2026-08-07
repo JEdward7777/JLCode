@@ -35,11 +35,11 @@ export interface ClassifiedPaths {
 }
 
 /**
- * What a tool can show at an approval pause beyond its raw args (D-53). A diff
- * preview is computed from the *pending* call, so a batch that cannot apply
- * reports its reason on the card rather than after the user approves it.
+ * A change to existing files, shown as a unified diff (D-53). Computed from the
+ * *pending* call, so a batch that cannot apply reports its reason on the card
+ * rather than after the user approves it.
  */
-export interface ToolPreview {
+export interface DiffPreview {
   kind: "diff";
   files: {
     path: string;
@@ -47,11 +47,40 @@ export interface ToolPreview {
     patch: string;
     added: number;
     removed: number;
-    sites: number;
+    /** How many anchor sites this file's edits touch — `apply_edits` only; a
+     *  whole-file write has no such notion, so it omits the field. */
+    sites?: number;
     /** Why this file couldn't be planned — shown instead of a diff. */
     error?: string;
   }[];
 }
+
+/**
+ * One whole file, shown as itself (X-23). A diff is the honest framing only when
+ * there is something to diff *against*: creating a file has no left-hand side
+ * (a full-body `+` wall marks every line as changed, which is decoration, not
+ * information) and deleting one has no right-hand side.
+ */
+export interface FilePreview {
+  kind: "file";
+  /** What is about to happen to it — the card's framing. */
+  action: "create" | "overwrite" | "delete";
+  path: string;
+  /** The text to show, already capped. Empty when there is nothing to show. */
+  body: string;
+  /** Size of the **whole** file/content, not of the capped `body`. */
+  lines: number;
+  bytes: number;
+  /** Lines of `lines` the cap withheld, if any. */
+  omitted?: number;
+  /** A caveat about the preview itself — why it isn't a diff, say. */
+  note?: string;
+  /** Why there is no body at all (missing, unreadable, not a regular file). */
+  error?: string;
+}
+
+/** What a tool can show at an approval pause beyond its raw args (D-53, X-23). */
+export type ToolPreview = DiffPreview | FilePreview;
 
 export interface Tool {
   name: string;

@@ -157,3 +157,142 @@ describe("file tools", () => {
     expect(leftover).toEqual([]);
   });
 });
+
+/**
+ * The approval-pause previews (X-23). `write_file` used to render as one
+ * escaped JSON string, so a 300-line file showed *that* it was long and never
+ * *what* it said; `delete_file` showed a bare path for the most destructive
+ * tool there is. These run on an **unapproved** call, so they must read only.
+ */
+describe("write_file / delete_file previews (X-23)", () => {
+  const preview = (name: string, args: Record<string, unknown>) =>
+    reg.get(name)!.preview!(args, ctx as never);
+
+  it("shows an overwrite as a diff against what is on disk, not the whole body", () => {
+    fs.writeFileSync(path.join(root, "f.txt"), "one\ntwo\nthree\n");
+    const p = preview("write_file", { path: "f.txt", content: "one\nTWO\nthree\n" });
+    expect(p!.kind).toBe("diff");
+    const file = (p as { files: { patch: string; added: number; removed: number; sites?: number }[] }).files[0]!;
+    expect(file.added).toBe(1);
+    expect(file.removed).toBe(1);
+    expect(file.patch).toContain("+TWO");
+    expect(file.patch).toContain("-two");
+    // `sites` is an apply_edits notion; a whole-file write has no anchors.
+    expect(file.sites).toBeUndefined();
+    // A preview never touches disk — the call is still unapproved.
+    expect(fs.readFileSync(path.join(root, "f.txt"), "utf8")).toBe("one\ntwo\nthree\n");
+  });
+
+  it("reports a rewrite that changes nothing as an empty diff, not as content", () => {
+    fs.writeFileSync(path.join(root, "same.txt"), "hello\n");
+    const p = preview("write_file", { path: "same.txt", content: "hello\n" });
+    expect(p!.kind).toBe("diff");
+    const file = (p as { files: { patch: string; added: number; removed: number }[] }).files[0]!;
+    expect(file.added).toBe(0);
+    expect(file.removed).toBe(0);
+    expect(file.patch).toBe("");
+  });
+
+  it("shows a new file as its body with a size, not as an all-green wall", () => {
+    const p = preview("write_file", { path: "new.txt", content: "alpha\nbeta\n" }) as {
+      kind: string;
+      action: string;
+      path: string;
+      body: string;
+      lines: number;
+      bytes: number;
+    };
+    expect(p.kind).toBe("file");
+    expect(p.action).toBe("create");
+    expect(p.path).toBe("new.txt");
+    expect(p.body).toBe("alpha\nbeta");
+    expect(p.lines).toBe(2);
+    expect(p.bytes).toBe(11);
+    expect(fs.existsSync(path.join(root, "new.txt"))).toBe(false);
+  });
+
+  it("caps a long new file and says how much it withheld", () => {
+    const content = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join("\n");
+    const p = preview("write_file", { path: "big.txt", content }) as {
+      body: string;
+      lines: number;
+      omitted: number;
+    };
+    expect(p.lines).toBe(500);
+    expect(p.body.split("\n")).toHaveLength(400);
+    expect(p.omitted).toBe(100);
+  });
+
+  it("keeps the head of a single enormous line rather than showing an empty box", () => {
+    const p = preview("write_file", { path: "min.js", content: "x".repeat(50_000) }) as { body: string };
+    expect(p.body.length).toBe(20_001); // 20k chars + the ellipsis
+    expect(p.body.endsWith("…")).toBe(true);
+  });
+
+  it("says so when the target is not a regular file, instead of previewing a create", () => {
+    fs.mkdirSync(path.join(root, "adir"));
+    const p = preview("write_file", { path: "adir", content: "x" }) as { action: string; error: string };
+    expect(p.action).toBe("overwrite");
+    expect(p.error).toContain("not a regular file");
+  });
+
+  it("falls back to the new body when the existing file is not UTF-8 text", () => {
+    fs.writeFileSync(path.join(root, "bin.dat"), Buffer.from([0x00, 0x01, 0x02]));
+    const p = preview("write_file", { path: "bin.dat", content: "now text\n" }) as {
+      kind: string;
+      action: string;
+      body: string;
+      note: string;
+    };
+    expect(p.kind).toBe("file");
+    expect(p.action).toBe("overwrite");
+    expect(p.body).toBe("now text");
+    expect(p.note).toContain("nothing to diff against");
+  });
+
+  it("previews nothing out of fence — reading it is what the fence exists to stop", () => {
+    expect(preview("write_file", { path: "../../etc/passwd", content: "x" })).toBeUndefined();
+    expect(preview("delete_file", { path: "../../etc/passwd" })).toBeUndefined();
+  });
+
+  it("previews nothing when the args aren't the right shape", () => {
+    expect(preview("write_file", { path: "a.txt" })).toBeUndefined();
+    expect(preview("delete_file", {})).toBeUndefined();
+  });
+
+  it("shows a delete as the file's size plus enough of its head to recognize it", () => {
+    const body = Array.from({ length: 100 }, (_, i) => `row ${i + 1}`).join("\n");
+    fs.writeFileSync(path.join(root, "doomed.txt"), body);
+    const p = preview("delete_file", { path: "doomed.txt" }) as {
+      kind: string;
+      action: string;
+      body: string;
+      lines: number;
+      bytes: number;
+      omitted: number;
+    };
+    expect(p.kind).toBe("file");
+    expect(p.action).toBe("delete");
+    expect(p.lines).toBe(100);
+    expect(p.bytes).toBe(Buffer.byteLength(body));
+    // Identification, not a last read: a much shorter head than a create shows.
+    expect(p.body.split("\n")).toHaveLength(40);
+    expect(p.body.startsWith("row 1\n")).toBe(true);
+    expect(p.omitted).toBe(60);
+    expect(fs.existsSync(path.join(root, "doomed.txt"))).toBe(true);
+  });
+
+  it("says a delete will fail rather than showing an empty file", () => {
+    const p = preview("delete_file", { path: "gone.txt" }) as { error: string; body: string };
+    expect(p.error).toContain("no such file");
+    expect(p.body).toBe("");
+  });
+
+  it("shows only the size for a binary file about to be deleted", () => {
+    fs.writeFileSync(path.join(root, "b.bin"), Buffer.from([0x00, 0xff, 0x00, 0xff]));
+    const p = preview("delete_file", { path: "b.bin" }) as { body: string; bytes: number; note: string };
+    expect(p.body).toBe("");
+    expect(p.bytes).toBe(4);
+    expect(p.note).toContain("not UTF-8 text");
+  });
+});

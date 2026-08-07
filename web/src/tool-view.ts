@@ -72,3 +72,39 @@ export function prettyArgs(raw: string | undefined): string {
     return raw;
   }
 }
+
+/** A call whose arguments *are* a file: the path, and the body as text (X-23). */
+export interface FileArgs {
+  path: string;
+  body: string;
+}
+
+/**
+ * `write_file`'s arguments read as a file, not as JSON (X-23).
+ *
+ * The approval card gets a diff from the server, but it disappears once
+ * approved — after that the args are the only record of what was written, and
+ * `JSON.stringify` renders a 300-line file as one string of `\n` escapes. There
+ * is deliberately **no stored diff**: the transcript is read long after the
+ * fact, and a diff against a file that has since changed is a lie waiting to
+ * happen. The content is what was actually sent, and stays true.
+ *
+ * Returns `null` — meaning "fall back to JSON" — for anything that isn't
+ * exactly this shape, including a call carrying *extra* arguments, since
+ * hiding an argument would be a worse failure than showing escapes.
+ */
+export function fileArgs(tool: string | undefined, raw: string | undefined): FileArgs | null {
+  if (tool !== "write_file" || raw === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null; // a truncated/repaired call (D-31) shows raw, as it always did
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const rec = parsed as Record<string, unknown>;
+  const keys = Object.keys(rec);
+  if (keys.length !== 2 || !keys.includes("path") || !keys.includes("content")) return null;
+  if (typeof rec["path"] !== "string" || typeof rec["content"] !== "string") return null;
+  return { path: rec["path"], body: rec["content"] };
+}

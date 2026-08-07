@@ -79,7 +79,8 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  * to end for the browser — no spend, no key. It reacts to command prefixes in
  * the latest user message so a person can trigger each surface by hand:
  *
- *   write: <path> | <content>   → a write_file call (approval card)
+ *   write: <path> | <content>   → a write_file call (approval card, X-23 preview)
+ *   delete: <path>              → a delete_file call (approval card, X-23 preview)
  *   edit: <path> | <a> => <b>   → an apply_edits batch (unified-diff card, D-53)
  *   run: <command>              → a run_command call (approval card, edit-approve)
  *   read: <path>                → a read_file call
@@ -179,6 +180,8 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
       }
       return toolCall("apply_edits", { files: out });
     }
+    // `delete: <path>` — the delete_file approval card and its file preview (X-23).
+    if (msg.startsWith("delete:")) return toolCall("delete_file", { path: after("delete:") || "note.txt" });
     if (msg.startsWith("run:")) return toolCall("run_command", { command: after("run:") || "echo hi" });
     if (msg.startsWith("read:")) return toolCall("read_file", { path: after("read:") || "README.md" });
     if (msg.startsWith("ask:")) {

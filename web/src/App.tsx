@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
-import { outputStats, prettyArgs, summarizeArgs } from "./tool-view";
+import { fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "./tool-view";
 import { abbreviatePath, folderName, tabTitle } from "./workspace";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import {
@@ -34,7 +34,8 @@ import {
   sendChat,
   type ApprovalPolicy,
   type ApprovalRequest,
-  type ToolPreview,
+  type ToolPreviewDiff,
+  type ToolPreviewFile,
   type AskUserRequest,
   type BusFrame,
   type ConversationRow,
@@ -2130,6 +2131,9 @@ function ToolBlock({ entry, args }: { entry: EntryView; args?: string }) {
   const content = entry.content ?? "";
   const stats = outputStats(content);
   const gist = summarizeArgs(args);
+  // A `write_file` call's args *are* a file (X-23) — show them as one, since
+  // after the approval card is gone they are the only record of what was written.
+  const file = fileArgs(entry.name, args);
   return (
     <div className={`tool-block ${entry.isError ? "err" : ""} ${open ? "open" : ""}`}>
       <button className="tool-head" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={open ? "hide output" : "show output"}>
@@ -2145,7 +2149,17 @@ function ToolBlock({ entry, args }: { entry: EntryView; args?: string }) {
       </button>
       {open ? (
         <div className="tool-body">
-          {args ? <pre className="tool-out args">{prettyArgs(args)}</pre> : null}
+          {file ? (
+            <div className="tool-file">
+              <div className="tool-file-head">
+                <code>{file.path}</code>
+                <span>{outputStats(file.body).label} written</span>
+              </div>
+              <pre className="tool-out args">{file.body === "" ? "(empty file)" : file.body}</pre>
+            </div>
+          ) : args ? (
+            <pre className="tool-out args">{prettyArgs(args)}</pre>
+          ) : null}
           <pre className="tool-out">{content === "" ? "(no output)" : content}</pre>
         </div>
       ) : null}
@@ -2386,17 +2400,21 @@ function primaryArgKey(args: Record<string, unknown>): string | null {
  * server-side against the real files, which means a batch that *cannot* apply
  * shows its reason here instead of failing after the user approves it.
  */
-function DiffPreview({ preview }: { preview: ToolPreview }) {
+function DiffPreview({ preview }: { preview: ToolPreviewDiff }) {
   const totals = preview.files.reduce(
     (t, f) => ({ added: t.added + f.added, removed: t.removed + f.removed, bad: t.bad + (f.error ? 1 : 0) }),
     { added: 0, removed: 0, bad: 0 },
   );
+  // A whole-file write can be a no-op — the model rewriting what it just read.
+  // `+0 −0` above an empty box reads as broken; say it instead (X-23).
+  const noChange = totals.bad === 0 && totals.added === 0 && totals.removed === 0;
   return (
     <div className="diff-preview">
       <div className="diff-head">
         {preview.files.length} file{preview.files.length === 1 ? "" : "s"}
         <span className="add">+{totals.added}</span>
         <span className="del">−{totals.removed}</span>
+        {noChange ? <span className="sites">identical — this changes nothing</span> : null}
         {totals.bad > 0 ? <span className="diff-bad">{totals.bad} cannot apply</span> : null}
       </div>
       {preview.files.map((f) => (
@@ -2409,15 +2427,17 @@ function DiffPreview({ preview }: { preview: ToolPreview }) {
               <>
                 <span className="add">+{f.added}</span>
                 <span className="del">−{f.removed}</span>
-                <span className="sites">
-                  {f.sites} site{f.sites === 1 ? "" : "s"}
-                </span>
+                {f.sites === undefined ? null : (
+                  <span className="sites">
+                    {f.sites} site{f.sites === 1 ? "" : "s"}
+                  </span>
+                )}
               </>
             )}
           </summary>
           {f.error ? (
             <div className="diff-err">{f.error}</div>
-          ) : (
+          ) : f.patch === "" ? null : ( // an identical write says so in the head; an empty box reads as broken
             <pre className="diff-body">
               {f.patch.split("\n").map((line, i) => (
                 <div
@@ -2433,6 +2453,47 @@ function DiffPreview({ preview }: { preview: ToolPreview }) {
           )}
         </details>
       ))}
+    </div>
+  );
+}
+
+/** Header wording per action — the card's whole framing, so it is spelled out
+ *  rather than derived from a tool name. */
+const FILE_ACTIONS: Record<ToolPreviewFile["action"], string> = {
+  create: "new file",
+  overwrite: "overwrite",
+  delete: "delete",
+};
+
+/**
+ * A whole file on the approval card (X-23): the body of one about to be
+ * created, or the head of one about to be deleted. Used where a diff would be
+ * dishonest — a create has no left-hand side and a delete no right-hand side,
+ * and an all-green (or all-red) wall marks every line as changed, which is
+ * decoration rather than information. Read-only, like the diff card: the
+ * raw-JSON box below stays the single editable truth (D-16).
+ */
+function FilePreview({ preview }: { preview: ToolPreviewFile }) {
+  return (
+    <div className={`diff-preview file-preview ${preview.action}`}>
+      <div className="diff-head">
+        <span className={`file-action ${preview.action}`}>{FILE_ACTIONS[preview.action]}</span>
+        <code className="file-path">{preview.path}</code>
+        <span className="file-size">
+          {preview.lines} line{preview.lines === 1 ? "" : "s"} · {formatBytes(preview.bytes)}
+        </span>
+      </div>
+      {preview.note ? <div className="file-note">{preview.note}</div> : null}
+      {preview.error ? (
+        <div className="diff-err">{preview.error}</div>
+      ) : (
+        <pre className="diff-body file-body">{preview.body === "" ? "(empty file)" : preview.body}</pre>
+      )}
+      {preview.omitted ? (
+        <div className="file-note">
+          … {preview.omitted} more line{preview.omitted === 1 ? "" : "s"} not shown
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2542,6 +2603,7 @@ function ApprovalCard({
       ) : null}
 
       {request.preview?.kind === "diff" ? <DiffPreview preview={request.preview} /> : null}
+      {request.preview?.kind === "file" ? <FilePreview preview={request.preview} /> : null}
 
       <details open={rawOpen || (!primaryKey && !request.preview)} onToggle={(e) => setRawOpen((e.target as HTMLDetailsElement).open)}>
         <summary>raw args (JSON)</summary>

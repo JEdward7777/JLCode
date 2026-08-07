@@ -1136,6 +1136,77 @@ body.row-resizing {
   font-size: 12px;
 }
 
+/* Whole-file preview on a write/delete approval card (X-23) — the create and
+   delete cases, where there is nothing to diff against. Read-only, same as the
+   diff card above it. */
+.file-preview .file-action {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.file-preview .file-action.create {
+  color: #7fc98a;
+  border-color: rgba(127, 201, 138, 0.5);
+}
+.file-preview .file-action.delete {
+  color: var(--danger);
+  border-color: rgba(224, 121, 107, 0.5);
+}
+.file-preview .file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.file-preview .file-size {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.file-preview .file-note {
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+/* The body is the file verbatim, so it keeps the diff box's scrolling but none
+   of its per-line +/− colouring — every line here is "new", which is exactly
+   why marking them adds nothing. */
+.file-body {
+  padding: 6px 10px;
+  white-space: pre;
+  color: var(--text);
+}
+
+/* `write_file` args in the transcript, rendered as the file they are (X-23). */
+.tool-file-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.tool-file-head code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+/* Args are normally supporting detail (muted, short box); here they are the
+   thing you came to read, so they get the output box's weight. */
+.tool-file .tool-out.args {
+  color: var(--text);
+  max-height: 320px;
+}
+
 .fence {
   border-top: 1px solid var(--border);
   padding-top: 10px;
