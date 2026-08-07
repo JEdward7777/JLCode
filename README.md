@@ -185,6 +185,22 @@ or above the window is refused rather than quietly never firing, and if you
 configure a *smaller* summarizer model the effective threshold tightens to what
 that model can actually read.
 
+### It knows what day it is
+
+Every message you send arrives stamped with the time you sent it, so the model
+writes today's date into a changelog instead of a date from its training data —
+and, coming back to a thread the next morning, can see that a night went by. The
+stamp is read from the conversation log, which has always recorded it, so old
+threads have it too. It costs nothing in cache: each turn's stamp is fixed when
+you send it and never changes afterwards.
+
+If you would rather JLCode never say what day it is:
+
+```bash
+jlcode config set work --turn-timestamps off   # "on" puts it back
+jlcode config which                            # states which it is
+```
+
 ### Serving scope and auth
 
 The bind address declares the exposure, and auth follows from it (D-40):

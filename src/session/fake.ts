@@ -5,6 +5,7 @@
 import zlib from "node:zlib";
 import type { ChatRequest, LlmDriver, StreamEvent } from "../llm/types.js";
 import { HttpError } from "../llm/errors.js";
+import { stripEnvironmentDetails } from "../conversation/wire.js";
 
 /** Milliseconds to hold between fake stream events (`JLCODE_FAKE_LLM_DELAY_MS`).
  *  Zero — the default, and what every test runs at — streams the whole reply in
@@ -44,7 +45,8 @@ export function throwingDriver(message = "simulated provider error"): LlmDriver 
 export function echoDriver(): LlmDriver {
   return scriptedDriver((req) => {
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
-    const said = typeof lastUser?.content === "string" ? lastUser.content : "";
+    // Echo the user's own words, not JLCode's per-turn framing (X-25).
+    const said = typeof lastUser?.content === "string" ? stripEnvironmentDetails(lastUser.content) : "";
     const text = `You said: ${said}`;
     const events: StreamEvent[] = [{ type: "reasoning", delta: "(considering) " }];
     for (const token of text.split(/(\s+)/)) {
@@ -104,7 +106,10 @@ export function fakeAgentDriver(): LlmDriver {
   return {
     async *streamChat(req, opts): AsyncGenerator<StreamEvent> {
       const last = req.messages[req.messages.length - 1];
-      const msg = last?.role === "user" && typeof last.content === "string" ? last.content.trim() : "";
+      const msg =
+        last?.role === "user" && typeof last.content === "string"
+          ? stripEnvironmentDetails(last.content).trim()
+          : "";
       const mode = /^(fail|flaky|hang):/.exec(msg)?.[1];
       if (mode && !spent.has(mode)) {
         if (mode !== "flaky") spent.add(mode); // flaky clears itself once its retries run out
@@ -137,7 +142,10 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     // A tool result (or anything non-user) just settled → wrap up the turn.
     if (!last || last.role !== "user") return textReply("Done — the tool ran and reported back.");
 
-    const msg = typeof last.content === "string" ? last.content.trim() : "";
+    // The prefixes below match on what the *user* typed, so the X-25
+    // environment block comes off first — otherwise `write: a.txt | hi` would
+    // write the timestamp into the file.
+    const msg = typeof last.content === "string" ? stripEnvironmentDetails(last.content).trim() : "";
     const after = (p: string) => msg.slice(p.length).trim();
 
     // The ephemeral auto-title question (X-09) — offline, answer it the way a

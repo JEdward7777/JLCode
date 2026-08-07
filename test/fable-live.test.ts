@@ -52,6 +52,13 @@ function fableConfig(): ModelConfig {
     defaultMode: "code",
     defaultApproval: "manual",
     compaction: { auto: false, contextLength: 1_000_000 },
+    // Render the replay **without** X-25's per-turn timestamps. Not a dodge —
+    // a wall-clock stamp is different on every run by construction, so it would
+    // change the request-keyed cache key (D-24) every time and this suite could
+    // never replay free from its committed fixtures. Recorded-replay tests and
+    // per-turn stamps are mutually exclusive; what these two assert (signed
+    // reasoning round-trip, the safe-harbor cut) is orthogonal to the stamp.
+    environment: { turnTimestamps: false },
     createdAt: "",
     updatedAt: "",
   };

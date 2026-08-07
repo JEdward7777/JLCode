@@ -41,6 +41,7 @@ function normalizeModelConfig(raw: unknown): ModelConfig | undefined {
     // setting can look stored and never reach a session.
     ...(r.autoRetitle === false ? { autoRetitle: false as const } : {}),
     compaction: r.compaction as ModelConfig["compaction"],
+    environment: r.environment as ModelConfig["environment"],
     createdAt: typeof r.createdAt === "string" ? r.createdAt : now,
     updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : now,
   };

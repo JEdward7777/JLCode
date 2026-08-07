@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { newConversation, appendEntry } from "../src/conversation/tree";
-import { buildWireMessages, pinnedProvider } from "../src/conversation/wire";
+import { buildWireMessages, pinnedProvider, stripEnvironmentDetails } from "../src/conversation/wire";
 
 describe("buildWireMessages", () => {
   it("maps user/assistant/tool entries and round-trips reasoning verbatim", () => {
@@ -15,7 +15,9 @@ describe("buildWireMessages", () => {
 
     const msgs = buildWireMessages(conv, { system: "SYS" });
     expect(msgs[0]).toEqual({ role: "system", content: "SYS" });
-    expect(msgs[1]).toEqual({ role: "user", content: "hi" });
+    // The user turn carries X-25's stamp after the user's own words; the words
+    // themselves are untouched, and the *system* message stays date-free (D-58).
+    expect(stripEnvironmentDetails(msgs[1]!.content as string)).toBe("hi");
     expect(msgs[2]!.role).toBe("assistant");
     expect(msgs[2]!.content).toBe("hello");
     // Opaque reasoning is replayed verbatim (D-14); reasoningText is NOT sent.
@@ -35,7 +37,7 @@ describe("buildWireMessages", () => {
     const msgs = buildWireMessages(conv, { system: "SYS" });
     expect(msgs.map((m) => m.role)).toEqual(["system", "user", "user"]);
     expect(msgs[1]!.content).toContain("SUMMARY");
-    expect(msgs[2]!.content).toBe("new q");
+    expect(stripEnvironmentDetails(msgs[2]!.content as string)).toBe("new q");
     // The pre-compaction "old q"/"old a" are not sent.
     expect(JSON.stringify(msgs)).not.toContain("old a");
   });

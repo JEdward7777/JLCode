@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { buildCrossModelSummaryInput, SUMMARY_TOOL_OUTPUT_CAP_CHARS } from "../src/session/compaction";
-import { buildWireMessages } from "../src/conversation/wire";
+import { buildWireMessages, stripEnvironmentDetails } from "../src/conversation/wire";
 import type { Conversation } from "../src/conversation/types";
 import { Session } from "../src/session/session";
 import type { ModelConfig, CompactionSettings } from "../src/config/types";
@@ -77,7 +77,10 @@ describe("cross-model summary input (D-29 refined — keep planning, drop signed
     const input = buildCrossModelSummaryInput(session.conversation, { system: SYS });
     // system + user + assistant (no tool cycle here)
     expect(input[0]).toEqual({ role: "system", content: SYS });
-    expect(input[1]).toEqual({ role: "user", content: "original request" });
+    expect(input[1]!.role).toBe("user");
+    // Stamped like the live wire (X-25) — the summarizer reads the same dated
+    // transcript the working model does; the user's words are unchanged under it.
+    expect(stripEnvironmentDetails(input[1]!.content as string)).toBe("original request");
     const asst = input[2]!;
     expect(asst.role).toBe("assistant");
     expect(String(asst.content)).toContain("[reasoning] plan: read the file then edit it");
