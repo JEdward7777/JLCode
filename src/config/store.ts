@@ -18,30 +18,33 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-/** Coerce an unknown entry into a ModelConfig, dropping ones missing essentials. */
+/**
+ * Coerce an unknown entry into a ModelConfig, dropping ones missing essentials.
+ *
+ * **Pass-through, not a whitelist (D-68).** Everything the loader does not
+ * actively police is carried over verbatim, because the alternative bit twice in
+ * one day: X-17's `autoRetitle` and X-25's `environment` were each written to
+ * disk, silently dropped on load, and their opt-outs did nothing — a setting
+ * that looks stored and never reaches a session. Only the fields below earn
+ * their coercion (an entry with no `id`/`name` is unusable; a missing mode or
+ * approval has a documented default), and the ones this once *cast* rather than
+ * checked — `sampling`, `pricing`, `compaction`, `environment` — were never
+ * validated anyway, so listing them bought nothing but the trap.
+ */
 function normalizeModelConfig(raw: unknown): ModelConfig | undefined {
   const r = asRecord(raw);
   if (typeof r.id !== "string" || typeof r.name !== "string") return undefined;
   const now = new Date().toISOString();
   return {
+    ...(r as Partial<ModelConfig>),
     id: r.id,
     name: r.name,
     openRouterKey: typeof r.openRouterKey === "string" ? r.openRouterKey : "",
     model: typeof r.model === "string" ? r.model : "",
-    reasoningEffort: r.reasoningEffort as ModelConfig["reasoningEffort"],
-    sampling: r.sampling as ModelConfig["sampling"],
-    pricing: r.pricing as ModelConfig["pricing"],
     systemPromptAddendum:
       typeof r.systemPromptAddendum === "string" ? r.systemPromptAddendum : undefined,
     defaultMode: (r.defaultMode as ModelConfig["defaultMode"]) ?? "code",
     defaultApproval: (r.defaultApproval as ModelConfig["defaultApproval"]) ?? "manual",
-    // Only `false` means anything here (X-17): the default is on, so anything
-    // else — absent, garbage — reads as on. This normalizer is a **whitelist**;
-    // a field missing from it is silently dropped on load, which is how a
-    // setting can look stored and never reach a session.
-    ...(r.autoRetitle === false ? { autoRetitle: false as const } : {}),
-    compaction: r.compaction as ModelConfig["compaction"],
-    environment: r.environment as ModelConfig["environment"],
     createdAt: typeof r.createdAt === "string" ? r.createdAt : now,
     updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : now,
   };

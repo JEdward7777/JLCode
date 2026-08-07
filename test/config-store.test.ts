@@ -73,4 +73,31 @@ describe("config store", () => {
     expect(c.modelConfigs[0]!.defaultMode).toBe("code"); // coerced default
     expect(c.folderBindings).toEqual({ "/y": "cfg_x" }); // non-string dropped
   });
+
+  /** D-68. The loader used to whitelist ModelConfig fields, so a setting added
+   *  to the type but not to the normalizer was written to disk and silently
+   *  dropped on load — X-17's `autoRetitle` and X-25's `environment` were each
+   *  born broken that way. A field nobody has invented yet stands in for the
+   *  next one. */
+  it("carries through a field the loader has never heard of (D-68)", () => {
+    mkdirSync(paths.configDir, { recursive: true });
+    writeFileSync(
+      paths.configFile,
+      JSON.stringify({
+        modelConfigs: [
+          { id: "cfg_x", name: "ok", model: "m", autoRetitle: false, futureSetting: { deep: 7 } },
+        ],
+      }),
+    );
+    const loaded = loadConfig(paths);
+    const cfg = loaded.modelConfigs[0]!;
+    expect(cfg.autoRetitle).toBe(false);
+    expect((cfg as Record<string, unknown>).futureSetting).toEqual({ deep: 7 });
+    // And it survives a save→load round trip, so writing the config back does
+    // not quietly delete the setting either.
+    saveConfig(loaded, paths);
+    const again = loadConfig(paths).modelConfigs[0]!;
+    expect((again as Record<string, unknown>).futureSetting).toEqual({ deep: 7 });
+    expect(again.autoRetitle).toBe(false);
+  });
 });

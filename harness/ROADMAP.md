@@ -20,7 +20,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-Built, tested (**595 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
+Built, tested (**596 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
 
 > **Cost (2026-08-04, D-58/D-59).** Two compounding defects found by reading the debug journal of a
@@ -630,7 +630,7 @@ read-once-for-cache, size-cap and self-modification calls spelled out. Nothing h
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
 reads nothing from the workspace. **X-25 has since landed (D-64) and left that seam shaped for it:** per-turn detail is an `EnvSection` on the *user* turn, so X-15's static half drops into the *system* prompt without rewriting any of it — the same `staticEnvLines` / `environmentDetails` split KiloCode makes.
 
-**595 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 58 files). **H-06 is fixed (D-60)**,
+**596 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 58 files). **H-06 is fixed (D-60)**,
 **X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
 (D-64)**, **X-26 is fixed (D-65)** and **X-17 is fixed (D-66)**; **X-12b is DONE**, and `peek` grew
 a mouse and a movable port (D-67).
@@ -802,6 +802,16 @@ as one DOM mutation**, which killed the original design of diffing the state bef
 render — the edge is now a monotonic `settleSeq` counter on the slice, which survives any amount of
 batching, with the level comparison kept as a second edge for a session that settled while the SSE
 bus was disconnected. **23 new Tier-0 tests.**
+
+**The config whitelist is gone — D-68, 2026-08-07.** `normalizeModelConfig` rebuilt a `ModelConfig`
+field by field, so a setting added to the type but not to that list was written by `config set`, read
+back as `undefined`, and silently lost. It bit **twice in one day**: X-17's `autoRetitle` and X-25's
+`environment` were each born broken, and each was caught only because its CLI test asserted a round
+trip *through disk*. The loader now spreads the stored record and overrides only what it actually
+coerces; the five fields it used to list with a bare `as` cast are gone, since naming them validated
+nothing and only created the obligation to remember. Joshua's call on seeing the second instance.
+A field nobody has invented yet (`futureSetting`) is asserted to survive load and a save→load round
+trip, standing in for the next one.
 
 **Still unfiled from `observed_items_needing_filed_in_harness.txt`** (5 items as of 2026-08-06):
 the header model chip truncating from the wrong end (confirmed by eye during the H-06 peek —
