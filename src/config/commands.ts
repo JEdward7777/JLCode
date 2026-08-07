@@ -24,6 +24,7 @@ import {
   cloneModelConfig,
   filterModelConfigs,
   findModelConfig,
+  projectInstructionsEnabled,
   removeModelConfig,
   resolveForCwd,
   setBinding,
@@ -31,6 +32,7 @@ import {
   updateModelConfig,
   type ModelConfigPatch,
 } from "./operations.js";
+import { summarizeProjectInstructions } from "../workspace/instructions.js";
 import {
   APPROVAL_POLICIES,
   MODES,
@@ -67,6 +69,9 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
   --turn-timestamps <on|off>
                          tell the model when each user turn was sent (X-25).
                          On by default; off stops JLCode saying what day it is.
+  --project-instructions <on|off>
+                         read the workspace's own AGENTS.md / CLAUDE.md into the
+                         system prompt at session start (X-15). On by default.
   --offline              (set/which) don't refresh the model catalog
 `;
 
@@ -139,6 +144,12 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
     const on = onOff(stamps, "turn-timestamps");
     patch.turnTimestamps = on;
   }
+  // The workspace's own instruction file (X-15). Same on/off shape as the two
+  // above, for the same reason: it must be possible to turn back on.
+  const projectInstructions = flags["project-instructions"];
+  if (projectInstructions !== undefined) {
+    patch.projectInstructions = onOff(projectInstructions, "project-instructions");
+  }
   return patch;
 }
 
@@ -193,6 +204,14 @@ function turnTimestampLine(config: ModelConfig): string {
     ? `    turn timestamps: on — each user turn carries the time it was sent\n`
     : `    turn timestamps: off — the model is never told what day it is ` +
         `(environment.turnTimestamps=false)\n`;
+}
+
+/** The one line that says which workspace file JLCode will read into the system
+ *  prompt here, and how big it is (X-15f). Answered for *this directory*, which
+ *  is the question `config which` already exists to answer — and the only way to
+ *  find out short of reading the request. */
+function projectInstructionsLine(config: ModelConfig, cwd: string): string {
+  return `    project instructions: ${summarizeProjectInstructions(projectInstructionsEnabled(config), cwd)}\n`;
 }
 
 function shortId(id: string): string {
@@ -269,6 +288,10 @@ export async function runConfig(args: string[]): Promise<number> {
       // same reason the window is: the failure it fixes is silent, so "off"
       // must be readable rather than inferred from missing JSON.
       process.stdout.write(turnTimestampLine(selected));
+      // And which of *this workspace's* files it will follow (X-15). Same
+      // argument again: a project that shipped an AGENTS.md needs to be able to
+      // confirm it was found, and one that has none needs to see that too.
+      process.stdout.write(projectInstructionsLine(selected, cwd));
       return 0;
     }
 
@@ -380,6 +403,11 @@ export async function runConfig(args: string[]): Promise<number> {
       // Same read-back for the stamps (X-25e): turning them off is a decision
       // to see confirmed, not one to assume took.
       if (patch.turnTimestamps !== undefined) process.stdout.write(turnTimestampLine(updated));
+      // …and for X-15, where the read-back does double duty: it confirms the
+      // flag *and* names the file that will be loaded (or says there is none).
+      if (patch.projectInstructions !== undefined) {
+        process.stdout.write(projectInstructionsLine(updated, cwd));
+      }
       return 0;
     }
 

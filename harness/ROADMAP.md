@@ -20,7 +20,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-Built, tested (**596 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
+Built, tested (**626 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
 
 > **Cost (2026-08-04, D-58/D-59).** Two compounding defects found by reading the debug journal of a
@@ -623,16 +623,40 @@ threshold is the mark on the bar; (d) sanity-check the value against the window 
 threshold above it rather than silently never firing, which is the failure mode H-06 just
 demonstrated is easy to miss.
 
-**Already filed — re-confirmed 2026-08-04 from real use: `AGENTS.md` auto-read is X-15.** Joshua
-raised it again ("JLCode needs to auto read AGENTS.md on start"); the row already exists in
-[`DECISIONS.md`](DECISIONS.md) with the filename-precedence, search-scope, composition-order,
-read-once-for-cache, size-cap and self-modification calls spelled out. Nothing has changed in the
-code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
-reads nothing from the workspace. **X-25 has since landed (D-64) and left that seam shaped for it:** per-turn detail is an `EnvSection` on the *user* turn, so X-15's static half drops into the *system* prompt without rewriting any of it — the same `staticEnvLines` / `environmentDetails` split KiloCode makes.
+**X-15 FIXED 2026-08-07 (D-69) — a repo's own `AGENTS.md` is now read, and the harness
+auto-integrates.** Joshua asked twice (2026-07-28, again 2026-08-04 from real use); JLCode read
+**nothing** from the workspace, so the harness pattern it is built around worked for Claude Code and
+not for JLCode, in JLCode's own repo. The system prompt is now base → the workspace's file → the
+per-config addendum, with the **addendum last on purpose**: it is the more specific of the two, so
+where a project and a client disagree the client config — chosen most recently by the operator — wins.
+Precedence is `AGENTS.md` → `CLAUDE.md` → `.clinerules` → `.kilocoderules` → `.cursorrules`, **first
+hit wins, never concatenated** (a repo carrying two of them is carrying the same rules twice, and
+concatenating bills for both every turn), matched case-insensitively off a directory listing so one
+repo behaves the same on Linux and macOS, searched in the launch dir and then **up to the repo root**
+for the `repo/packages/web` case. **The load-bearing call is that it is read once**, at session
+construction, and `Session` takes an already-rendered *string* rather than a directory — a session
+that cannot re-read cannot regress into re-reading. A file re-read into a re-rendered system message
+every turn would invalidate the whole cached prefix every turn: that is D-58's defect, measured at
+**12.3x**, and the test that guards it rewrites `AGENTS.md` **mid-session** and demands the system
+message not move a byte. Read-once is also the answer to **self-modification** — the agent can edit
+that file with its own tools, and the injected block tells it in as many words that the edit lands in
+the next session, not this one. **Nested per-directory files were deliberately left out**: content
+discovered mid-session is per-turn content, and per-turn content belongs on a user turn (X-25's half
+of the seam), never in the cached system message. Capped at **32 KiB**, head kept, cut on a line
+boundary, with the truncation stated in the prompt *and* on the console — bytes that ride in every
+request are a real cost and must not be a silent one. Visible from one function on two surfaces: the
+`serve` banner and `config which` both print `project instructions: CLAUDE.md (6.4 KB)`. Opt out with
+`config set <name> --project-instructions off` (`environment.projectInstructions`, default on — the
+sibling key D-64 (e) left room for). **Confirmed by hand through the built artifact**, not only in
+vitest: in this tree `config which` and the banner both name `CLAUDE.md`, and a session built by the
+real `createSessionFactory` composes a 7,045-character system prompt whose middle is this repo's own
+operating guide. **30 new Tier-0/1 tests**, including four at the **`serve` session-factory** level —
+the level H-06 and D-60 both hid at, and the only level that can see a prompt production forgets to
+compose. No peek: nothing rendered in the browser changed.
 
-**596 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 58 files). **H-06 is fixed (D-60)**,
+**626 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 59 files). **H-06 is fixed (D-60)**,
 **X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
-(D-64)**, **X-26 is fixed (D-65)** and **X-17 is fixed (D-66)**; **X-12b is DONE**, and `peek` grew
+(D-64)**, **X-26 is fixed (D-65)**, **X-17 is fixed (D-66)** and **X-15 is fixed (D-69)**; **X-12b is DONE**, and `peek` grew
 a mouse and a movable port (D-67).
 **Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
@@ -1361,7 +1385,6 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **TTS auto-read when the agent hands the turn back (X-13)** ·
-**auto-read the workspace's `AGENTS.md` into the system prompt (X-15)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
 **a `write_file` preview instead of raw JSON (X-23)** ·

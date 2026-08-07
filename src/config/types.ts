@@ -69,17 +69,23 @@ export interface CompactionSettings {
   contextLength?: number;
 }
 
-/** What JLCode tells the model about the world around the conversation (X-25).
- *  The **per-turn** half only — the `<environment_details>` block appended to
- *  each user turn. X-15's static half (`AGENTS.md`, read once into the system
- *  prompt) is a sibling key here when it lands; the two must stay separate
- *  because only the static half can live in the cached system message. */
+/** What JLCode tells the model about the world around the conversation. Two
+ *  halves, deliberately separate because only one of them can live in the cached
+ *  system message: the **per-turn** half (X-25 — the `<environment_details>`
+ *  block appended to each user turn) and the **static** half (X-15 — the
+ *  workspace's own instruction file, read once into the system prompt). */
 export interface EnvironmentSettings {
   /** Stamp each user turn with the time it was sent (X-25). **Default on** —
    *  absent means on, and it takes an explicit `false` to turn it off, because
    *  the failure being fixed (a model writing today's notes under a date from
    *  its training cutoff) is silent. */
   turnTimestamps?: boolean;
+  /** Read the workspace's own agent-instruction file (`AGENTS.md`, `CLAUDE.md`,
+   *  …) into the system prompt at session start (X-15). **Default on** — a repo
+   *  that ships instructions did so meaning them to be followed, and the file is
+   *  the user's own, not a third party's. Explicit `false` opts out, e.g. for a
+   *  client config that must run only under its own addendum. */
+  projectInstructions?: boolean;
 }
 
 /** A named model configuration a user works under (e.g. "Client A — Opus"). */

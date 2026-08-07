@@ -7,7 +7,8 @@ import { resolvePaths } from "../paths.js";
 import { createLogger } from "../logger.js";
 import { getVersion } from "../version.js";
 import { loadConfig, saveConfig } from "../config/store.js";
-import { resolveForCwd, findModelConfig } from "../config/operations.js";
+import { resolveForCwd, findModelConfig, projectInstructionsEnabled } from "../config/operations.js";
+import { summarizeProjectInstructions } from "../workspace/instructions.js";
 import { OpenRouterClient } from "../llm/client.js";
 import type { LlmDriver } from "../llm/types.js";
 import type { ModelConfig } from "../config/types.js";
@@ -285,6 +286,10 @@ export async function runServe(args: string[]): Promise<number> {
         (startupBudget.refusedThreshold !== undefined
           ? `\n  ⚠ compaction.thresholdTokens ${startupBudget.refusedThreshold.toLocaleString()} is not below the window — ignored`
           : ""),
+      // What this workspace tells the agent about itself (X-15f). Injected text
+      // that nothing ever names is text nobody can debug — and a truncated file
+      // has to say so somewhere a person actually looks.
+      `project instructions: ${summarizeProjectInstructions(projectInstructionsEnabled(config), cwd)}`,
       `listening on ${base}  (pid ${process.pid})`,
       `  ${client}`,
       ...authLines,

@@ -210,6 +210,36 @@ jlcode config set work --turn-timestamps off   # "on" puts it back
 jlcode config which                            # states which it is
 ```
 
+### It reads your project's `AGENTS.md`
+
+Drop an `AGENTS.md` in a repo and JLCode follows it — no config, no flag. That is
+how a project's harness auto-integrates: the rules live in the repo, next to the
+code they describe, and every session in that folder starts having read them.
+`CLAUDE.md` counts too, as do `.clinerules`, `.kilocoderules` and `.cursorrules`;
+the first one found wins, looked for in the folder you launched in and then up to
+the repo root. Your model config's own `--system` text is appended *after* it, so
+a client-specific instruction still overrules the project's.
+
+Every surface says what it loaded, because injected text nobody can see is
+injected text nobody can debug:
+
+```bash
+jlcode config which          # → project instructions: AGENTS.md (2.1 KB)
+jlcode serve                 # same line in the startup banner
+```
+
+Two things worth knowing. It is read **once, when a thread starts** — that keeps
+the prompt cache warm (a file re-read every turn would re-bill the entire prefix
+every turn), so an edit takes effect in your *next* thread, not the one already
+running. And that applies to the agent too: JLCode can rewrite its own
+`AGENTS.md` with its own tools, and is told plainly that the rewrite lands next
+session. Files over 32 KB are truncated, out loud, since those bytes ride along
+on every single request.
+
+```bash
+jlcode config set work --project-instructions off   # "on" puts it back
+```
+
 ### Serving scope and auth
 
 The bind address declares the exposure, and auth follows from it (D-40):

@@ -63,6 +63,12 @@ export interface SessionOptions {
   config: ModelConfig;
   driver: LlmDriver;
   systemPrompt?: string;
+  /** The workspace's own agent instructions, already read and rendered (X-15).
+   *  A **string, read by the caller**, not a directory this session reads for
+   *  itself: the read must happen exactly once — the system message is the
+   *  cached prefix (D-26), and re-rendering it per turn is the defect D-58 fixed
+   *  at 12.3x. `createSessionFactory` is the caller that supplies it. */
+  projectInstructions?: string;
   maxConsecutiveFailures?: number;
   /** How many times a *transient* provider failure is re-sent automatically
    *  before the user is asked to decide (D-57). 0 disables auto-retry. */
@@ -319,9 +325,17 @@ export class Session {
       : (options.gate ?? new AllowAllGate());
     this.maxToolIterations = options.maxToolIterations ?? 12;
     this.onAddRoot = options.onAddRoot;
+    // The system prompt, composed once and never again (X-15c/d). Order is
+    // base → the **workspace's** instructions → the **config's** addendum, and
+    // the addendum sits last deliberately: it is per-client and the more
+    // specific of the two, so where a project and a client disagree, the client
+    // config is what the operator chose most recently. Composed here, at
+    // construction, so `this.systemPrompt` is a frozen string for the life of
+    // the session and every turn replays a byte-identical cached prefix.
+    const project = options.projectInstructions?.trim();
     const addendum = options.config.systemPromptAddendum?.trim();
     const base = options.systemPrompt ?? BASE_SYSTEM;
-    this.systemPrompt = addendum ? `${base}\n\n${addendum}` : base;
+    this.systemPrompt = [base, project, addendum].filter((s): s is string => Boolean(s)).join("\n\n");
     this.stamps = turnTimestampsEnabled(options.config);
     this.conversation = options.conversation ?? newConversation();
     this.pricing = options.config.pricing;

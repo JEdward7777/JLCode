@@ -23,6 +23,15 @@ export function turnTimestampsEnabled(config: { environment?: EnvironmentSetting
   return config?.environment?.turnTimestamps !== false;
 }
 
+/** Is the workspace's own instruction file read into the system prompt (X-15)?
+ *  Same shape and same reason as the stamps above: **absent means on**, so a
+ *  repo that ships an `AGENTS.md` is obeyed without anyone editing a config
+ *  first — which is the entire point of the feature — and only an explicit
+ *  `false` declines. */
+export function projectInstructionsEnabled(config: { environment?: EnvironmentSettings } | undefined): boolean {
+  return config?.environment?.projectInstructions !== false;
+}
+
 /** Fields a caller supplies when creating a config (id/timestamps are generated). */
 export type NewModelConfig = Omit<ModelConfig, "id" | "createdAt" | "updatedAt">;
 
@@ -91,6 +100,9 @@ export interface ModelConfigPatch {
   /** Stamp each user turn with the time it was sent (X-25e). Default on, so
    *  this is written only to record a deliberate choice either way. */
   turnTimestamps?: boolean;
+  /** Read the workspace's `AGENTS.md` into the system prompt (X-15). Default on,
+   *  written only to record a deliberate choice either way. */
+  projectInstructions?: boolean;
 }
 
 /** Edit an existing config in place (merging sampling), bumping updatedAt. */
@@ -119,12 +131,13 @@ export function updateModelConfig(
     else if (patch.thresholdTokens !== undefined) compaction.thresholdTokens = patch.thresholdTokens;
   }
 
-  // Per-turn environment details (X-25), merged the same way, so a future
-  // sibling key (X-15's static half) survives a `--turn-timestamps` flip.
+  // Environment settings — the per-turn half (X-25) and the static half (X-15) —
+  // merged into the one group, so flipping either leaves the other alone.
+  const envPatch: EnvironmentSettings = {};
+  if (patch.turnTimestamps !== undefined) envPatch.turnTimestamps = patch.turnTimestamps;
+  if (patch.projectInstructions !== undefined) envPatch.projectInstructions = patch.projectInstructions;
   const environment: EnvironmentSettings | undefined =
-    patch.turnTimestamps === undefined
-      ? undefined
-      : { ...(target.environment ?? {}), turnTimestamps: patch.turnTimestamps };
+    Object.keys(envPatch).length === 0 ? undefined : { ...(target.environment ?? {}), ...envPatch };
 
   const updated: ModelConfig = {
     ...target,

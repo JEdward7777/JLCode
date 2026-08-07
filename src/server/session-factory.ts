@@ -10,6 +10,8 @@
  * cannot, by construction.
  */
 import { loadConfig, saveConfig } from "../config/store.js";
+import { projectInstructionsEnabled } from "../config/operations.js";
+import { readWorkspaceInstructions, renderProjectInstructions } from "../workspace/instructions.js";
 import type { ModelConfig } from "../config/types.js";
 import type { JlcodePaths } from "../paths.js";
 import type { LlmDriver } from "../llm/types.js";
@@ -63,6 +65,16 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
     const cfg = loadConfig(deps.paths);
     const roots = [deps.cwd, ...(cfg.folderRoots?.[deps.cwd] ?? [])];
     const windows = resolveWindows(config, deps.catalog);
+    // The workspace's own instructions (X-15), read **here** and exactly once
+    // per session — the same reason the module comment gives: the system prompt
+    // is the cached prefix, so this read must not be per turn. Doing it per
+    // session (not once per process) is what makes an edited AGENTS.md apply to
+    // the next thread without a restart, matching how `loadConfig` above is
+    // re-read on every call, and matching D-50: no live reload into a session
+    // that is already running.
+    const workspaceInstructions = projectInstructionsEnabled(config)
+      ? readWorkspaceInstructions(deps.cwd)
+      : undefined;
     return new Session({
       config,
       driver: deps.makeDriver(config),
@@ -73,6 +85,7 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
       mode: config.defaultMode,
       approval: config.defaultApproval,
       buildGate: (mode, approval) => new ModeApprovalGate(mode, approval, cfg.autoSafeAllowlist),
+      projectInstructions: workspaceInstructions ? renderProjectInstructions(workspaceInstructions) : undefined,
       conversation,
       // The compaction budget (D-44/D-44c). Without these two lines nothing in
       // Phase 6 can ever trigger — see the module comment.

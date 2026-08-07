@@ -66,14 +66,21 @@ Each configuration carries:
 | Default mode + approval policy | The mode (Ask/Plan/Code) and approval policy this config starts in. |
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
 | Per-turn environment details (X-25) | `environment.turnTimestamps` — whether each **user turn** is rendered with the time it was sent. **Default on**; off means the model is never told what day it is. |
+| Project instructions (X-15) | `environment.projectInstructions` — whether the workspace's own `AGENTS.md` (or `CLAUDE.md`/rules file) is read into the system prompt at session start. **Default on**; off means only this config's addendum applies. |
 | Compaction settings (§15) | **Compaction model** (default = the working model; overridable to a cheaper one, with the compactor-fit guard); **auto** on/off; an **absolute threshold** in tokens (`thresholdTokens`, X-27 — e.g. condense at 171,500) *or*, absent one, a **headroom buffer** (default ~20K tokens) the threshold is derived from; **keep-recent tokens** (default ~8K verbatim); **trigger modes**. The window comes from the model's `context_length` (from OpenRouter metadata, D-60). |
 
-**Project-scoped instructions (planned, X-15).** The addendum above is per *config* (per client).
-A **workspace** cannot yet ship instructions of its own: nothing reads `AGENTS.md` (or
-`CLAUDE.md`/`.clinerules`) from the launch directory, so a repo's harness does not auto-integrate.
-When added it appends to the base prompt ahead of the per-config addendum, is read **once at
-session start** (the system prompt is the stable prompt-cache prefix, §22/D-26 — re-reading it per
-turn would churn the cache), and is size-capped and visible. See X-15 for the open choices.
+**Project-scoped instructions (X-15, D-64).** The addendum above is per *config* (per client); a
+**workspace** ships its own instructions too. At session start JLCode reads the first of
+`AGENTS.md`, `CLAUDE.md`, `.clinerules`, `.kilocoderules`, `.cursorrules` it finds — in the launch
+directory, else walking up to the repo root — and appends it to the base prompt **ahead of** the
+per-config addendum, so the client-specific text still wins. It is read **once, at session
+construction** (the system prompt is the stable prompt-cache prefix, §22/D-26 — re-reading it per
+turn would churn the entire cache every turn), **capped at 32 KiB** with the truncation stated in
+the prompt and on the console, and **named on the `serve` banner and by `config which`**
+(`project instructions: CLAUDE.md (6.4 KB)`). Because the read is once-per-session, an edit — including
+one the agent makes with its own tools — applies to the **next** session, and the injected block says
+so to the model. Opt out per config with `environment.projectInstructions: false`
+(`config set <name> --project-instructions off`); default on.
 
 **Per-turn environment details (X-25, D-64).** The other half of the same seam, and it goes the
 other way: what varies *per turn* is rendered onto the **user turn**, never into the system prompt.
