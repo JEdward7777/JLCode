@@ -29,10 +29,17 @@ export function abbreviatePath(dir: string, home?: string): string {
   return `${lead}${joiner}${rest[0]}/…/${rest[rest.length - 1]}`;
 }
 
+/** The marker a tab wears while a session wanted you and you were elsewhere
+ *  (X-26f). A leading glyph rather than a trailing one: a collapsed tab strip
+ *  truncates from the right, so anything appended is the first thing lost. */
+export const ATTENTION_MARK = "●";
+
 /** The browser tab's title. The workspace folder identifies the *instance*; a
  *  conversation label (X-09), when there is one, comes first because that's what
- *  changes as you work. */
-export function tabTitle(folder: string | null, label?: string | null): string {
+ *  changes as you work. `attention` prefixes the marker — the silent half of the
+ *  blip (X-26), and the only half that survives a tab you never look at. */
+export function tabTitle(folder: string | null, label?: string | null, attention = false): string {
   const parts = [label?.trim(), folder?.trim()].filter((p): p is string => Boolean(p));
-  return parts.length > 0 ? parts.join(" — ") : "JLCode";
+  const text = parts.length > 0 ? parts.join(" — ") : "JLCode";
+  return attention ? `${ATTENTION_MARK} ${text}` : text;
 }

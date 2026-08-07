@@ -2,6 +2,8 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
 import { fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "./tool-view";
 import { abbreviatePath, folderName, tabTitle } from "./workspace";
+import { newAttentionMemory, stepAttention } from "./attention";
+import { createBlipper } from "./blip";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import {
   answer as apiAnswer,
@@ -166,11 +168,16 @@ export function App() {
   const [peek, setPeek] = useState<PeekState | null>(null);
   // A failed rename/delete has no session slice to carry its `notice` (X-12b).
   const [historyNotice, setHistoryNotice] = useState<string | null>(null);
+  // Attention (X-26): the sound preference, and the tab-title marker's latch.
+  const [blipOn, setBlipOn] = useState(() => readBoolPref("notify.blip", true));
+  const [attention, setAttention] = useState(false);
 
   const focusedRef = useRef<string | null>(null);
   focusedRef.current = focusedId;
   const initializedRef = useRef(false); // first-roster focus/auto-create ran
   const loadingTrees = useRef(new Set<string>()); // in-flight tree fetches
+  const blipper = useRef(createBlipper()); // touches no audio API until armed
+  const attentionMemory = useRef(newAttentionMemory());
 
   const focus = useCallback((id: string) => {
     setFocusedId(id);
@@ -316,9 +323,72 @@ export function App() {
   const focusedTitle = (focusedId ? slices[focusedId]?.title : null) ?? null;
   useEffect(() => {
     // `<label> — <folder>`: the label is what changes as you work, the folder is
-    // which project it belongs to (X-09 + X-10).
-    document.title = tabTitle(workspace, focusedTitle);
-  }, [workspace, focusedTitle]);
+    // which project it belongs to (X-09 + X-10), behind the attention marker
+    // when something wanted you while you were away (X-26).
+    document.title = tabTitle(workspace, focusedTitle, attention);
+  }, [workspace, focusedTitle, attention]);
+
+  // ---- Attention: the blip + the tab marker (X-26). ----
+
+  /**
+   * Arm the audio for a preference remembered from *last* session.
+   *
+   * Browsers only hand out a running `AudioContext` inside a user gesture, so a
+   * ticked box in `localStorage` buys nothing on its own. The first click or
+   * keypress of the session is a gesture like any other — this listener spends
+   * it and then removes itself. Nothing is created on load, which is the whole
+   * point of X-26(b): the toggle's own click covers the same-session case.
+   */
+  useEffect(() => {
+    if (!blipOn) return;
+    const arm = () => blipper.current.arm();
+    window.addEventListener("pointerdown", arm, { once: true });
+    window.addEventListener("keydown", arm, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", arm);
+      window.removeEventListener("keydown", arm);
+    };
+  }, [blipOn]);
+
+  // A session crossed into wanting you. `stepAttention` owns the rules (prime on
+  // first sight, ignore what you are already looking at, one blip per batch);
+  // this only supplies the browser facts and spends the result.
+  useEffect(() => {
+    const step = stepAttention(attentionMemory.current, Object.values(slices), {
+      focusedId,
+      hidden: document.hidden,
+      now: Date.now(),
+    });
+    attentionMemory.current = step.memory;
+    if (step.blip && blipOn) blipper.current.blip();
+    // The marker is *not* gated on the sound preference: it is free, silent, and
+    // the only signal left for a tab you have not looked at in an hour.
+    if (step.mark) setAttention(true);
+  }, [slices, focusedId, blipOn]);
+
+  // Looking at the tab is what clears the marker — it has already done its job,
+  // and the rail's per-session dots say which one it was.
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) setAttention(false);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
+  /** The toggle is the gesture (X-26b). Turning it on arms the context *and*
+   *  plays the blip once — a preview, and the proof that the browser will let it
+   *  through, which is otherwise unknowable until the next time you look away. */
+  const toggleBlip = useCallback(() => {
+    const next = !blipOn;
+    setBlipOn(next);
+    writePref("notify.blip", String(next));
+    if (next) {
+      blipper.current.arm();
+      // `resume()` is async; a beat later the context is running.
+      window.setTimeout(() => blipper.current.blip(), 120);
+    }
+  }, [blipOn]);
 
   // If the focused session vanished (closed), fall back to another (or none).
   useEffect(() => {
@@ -664,6 +734,8 @@ export function App() {
         history={pastConversations}
         historyNotice={historyNotice}
         showAllDirs={showAllDirs}
+        blipOn={blipOn}
+        onToggleBlip={toggleBlip}
         peekId={peek?.row.id ?? null}
         onFocus={focus}
         onNew={() => void newSession()}
@@ -745,6 +817,8 @@ function SessionRail({
   history,
   historyNotice,
   showAllDirs,
+  blipOn,
+  onToggleBlip,
   peekId,
   onFocus,
   onNew,
@@ -763,6 +837,8 @@ function SessionRail({
   history: ConversationRow[];
   historyNotice: string | null;
   showAllDirs: boolean;
+  blipOn: boolean;
+  onToggleBlip: () => void;
   peekId: string | null;
   onFocus: (id: string) => void;
   onNew: () => void;
@@ -940,6 +1016,16 @@ function SessionRail({
             </>
           )}
         </section>
+      </div>
+      {/* NOTIFICATIONS (X-26c). One cluster, at the foot of the rail, deliberately
+          *not* a checkbox scattered wherever its feature happens to live — X-13's
+          auto-read and X-16's default-open reasoning are both told to add a key
+          to `prefs.ts`, and three lone checkboxes in three corners is how a
+          settings surface fails to exist. They join here. */}
+      <div className="rail-notify">
+        <label title="play a short tone when a session settles and you are looking elsewhere (X-26)">
+          <input type="checkbox" checked={blipOn} onChange={onToggleBlip} /> blip on attention
+        </label>
       </div>
     </aside>
   );
