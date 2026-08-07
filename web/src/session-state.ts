@@ -90,6 +90,14 @@ export interface SessionSlice {
    *  actually detected — there is no other signal, since a wedged provider
    *  socket looks exactly like a model thinking hard. */
   lastEventAt: number;
+  /** How many times this session has handed the turn back (X-26). A monotonic
+   *  counter rather than a flag, because **the edge is the signal and a render
+   *  is not**: React batches, and a background tab batches harder — a fast turn
+   *  can go working→settled inside a single render, where a before/after
+   *  comparison of the *level* sees no change at all and the blip never fires.
+   *  Bumped by `reduceEvent` from the wire events that mean "your turn", so the
+   *  count survives any amount of coalescing. */
+  settleSeq: number;
   notice: string | null;
   /** What put the current notice up. Only "retrying" is distinguished, because
    *  it is the one notice that becomes a lie the moment the turn succeeds —
@@ -131,6 +139,7 @@ export function newSlice(id: string, model = ""): SessionSlice {
     persistenceFault: null,
     retryable: false,
     lastEventAt: Date.now(),
+    settleSeq: 0,
     notice: null,
     noticeKind: null,
     input: "",
@@ -173,11 +182,29 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   return next;
 }
 
+/**
+ * The wire events that mean **the session just handed the turn back to you**
+ * (X-26). Every one of them ends the working state, whether by finishing, by
+ * pausing for an answer, or by failing.
+ *
+ * `stopped` is deliberately absent: you pressed Stop, so you already know.
+ */
+const SETTLE_EVENTS: ReadonlySet<string> = new Set([
+  "assistant-end",
+  "awaiting-approval",
+  "awaiting-input",
+  "awaiting-compaction",
+  "awaiting-persistence",
+  "cap-reached",
+  "error",
+  "halted",
+]);
+
 /** Fold one live wire event into a slice (the per-session bus reducer). */
 export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
   // Any event at all is a sign of life, and that is exactly what the hung
   // detector wants: silence is the symptom, not any particular event's absence.
-  s = { ...s, lastEventAt: Date.now() };
+  s = { ...s, lastEventAt: Date.now(), settleSeq: s.settleSeq + (SETTLE_EVENTS.has(e.type) ? 1 : 0) };
   switch (e.type) {
     case "entry": {
       // Live tree growth (D-37): append new nodes, advance the active leaf along

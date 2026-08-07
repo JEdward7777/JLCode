@@ -23,11 +23,11 @@ export type AttentionReason = "fault" | "approval" | "input" | "compaction" | "c
 /**
  * What this session is waiting on right now, or `null` while it is busy.
  *
- * Pauses outrank busy deliberately: `working` is a *live* flag driven by stream
- * events while `status` is a settled snapshot that only refreshes when a state
- * frame arrives, so a tab that connected mid-turn can hold `status: "running"`
- * after the turn ends. Reading a pause through that stale flag is right; missing
- * an `idle` because of it is a silence, which is the safe way to be wrong.
+ * Busy is read off `working` alone — the live flag the stream drives, and the
+ * one `applyState` derives from a settled `status: "running"` anyway. Reading
+ * `status` directly here would be worse than useless: it is a snapshot that only
+ * refreshes when a state frame arrives, so a tab that connected mid-turn would
+ * hold "running" long after the turn ended and go silent forever.
  */
 export function attentionOf(s: SessionSlice): AttentionReason | null {
   if (s.persistenceFault) return "fault";
@@ -35,7 +35,7 @@ export function attentionOf(s: SessionSlice): AttentionReason | null {
   if (s.pendingAsk) return "input";
   if (s.pendingCompaction) return "compaction";
   if (s.capReached) return "cap";
-  if (s.working || s.status === "running") return null;
+  if (s.working) return null;
   return "idle";
 }
 
@@ -49,10 +49,10 @@ export const BLIP_QUIET_MS = 1500;
 /** What the watcher remembers between folds. Opaque to callers; hold it in a ref
  *  and hand it straight back. */
 export interface AttentionMemory {
-  /** Last reason seen per live session id. A session **absent** from this map has
-   *  never been seen, and is primed silently — otherwise every page load would
-   *  blip once per already-settled session. */
-  seen: Record<string, AttentionReason | null>;
+  /** Last observation per live session id. A session **absent** from this map
+   *  has never been seen, and is primed silently — otherwise every page load
+   *  would blip once per already-settled session. */
+  seen: Record<string, { reason: AttentionReason | null; seq: number }>;
   /** When the last blip actually sounded (`Date.now()`), for the debounce. */
   lastBlipAt: number;
 }
@@ -88,9 +88,18 @@ export interface AttentionContext {
 /**
  * Fold the current slices against memory and report the edges.
  *
- * The suppression rule (X-26e) is the cheap one the row names: a transition is
- * only audible when the tab is hidden **or** it happened somewhere other than
- * the pane you are looking at. Clicking *Compact now* and getting the pause you
+ * **Two independent edges, because neither alone is enough.** `settleSeq` is the
+ * wire saying "your turn" and is immune to React batching — a turn that starts
+ * and finishes inside one render still bumps it, where a before/after look at
+ * the *level* would see idle→idle and say nothing (measured in a real background
+ * tab: Chrome throttles it hard enough that a whole fake turn collapsed into a
+ * single DOM mutation). The level change is the belt to that brace: it catches a
+ * session that settled while the SSE bus was disconnected, whose new state
+ * arrives in a roster frame that bumps no counter.
+ *
+ * The suppression rule (X-26e) is the cheap one the row names: an edge is only
+ * audible when the tab is hidden **or** it happened somewhere other than the
+ * pane you are looking at. Clicking *Compact now* and getting the pause you
  * asked for, on screen, in a focused tab, makes no sound.
  */
 export function stepAttention(
@@ -98,16 +107,18 @@ export function stepAttention(
   slices: SessionSlice[],
   ctx: AttentionContext,
 ): AttentionStep {
-  const seen: Record<string, AttentionReason | null> = {};
+  const seen: AttentionMemory["seen"] = {};
   const fired: { id: string; reason: AttentionReason }[] = [];
   for (const s of slices) {
     const reason = attentionOf(s);
-    seen[s.id] = reason;
-    const known = Object.prototype.hasOwnProperty.call(prev.seen, s.id);
-    if (!known) continue; // first sight: adopt the state, say nothing
-    if (reason === null || reason === prev.seen[s.id]) continue;
-    // A *different* pending reason still counts (approval resolved, then it asks
-    // a question): the demand changed, so it is news again.
+    seen[s.id] = { reason, seq: s.settleSeq };
+    const before = prev.seen[s.id];
+    if (!before) continue; // first sight: adopt the state, say nothing
+    // A *different* pending reason counts as much as a new settle (an approval
+    // resolved and it immediately asks a question): the demand changed, so it is
+    // news again. Still busy → nothing to want you for, whatever the counter did.
+    if (reason === null) continue;
+    if (s.settleSeq === before.seq && reason === before.reason) continue;
     if (ctx.hidden || s.id !== ctx.focusedId) fired.push({ id: s.id, reason });
   }
   const blip = fired.length > 0 && ctx.now - prev.lastBlipAt >= BLIP_QUIET_MS;

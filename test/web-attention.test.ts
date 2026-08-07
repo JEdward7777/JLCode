@@ -22,7 +22,8 @@ import {
   type AttentionMemory,
 } from "../web/src/attention";
 import { createBlipper, type BlipAudio } from "../web/src/blip";
-import { newSlice, type SessionSlice } from "../web/src/session-state";
+import { newSlice, reduceEvent, type SessionSlice } from "../web/src/session-state";
+import type { WireEvent } from "../web/src/api";
 import { tabTitle } from "../web/src/workspace";
 
 /** A slice in whatever shape the case needs. */
@@ -36,7 +37,9 @@ const ask = { id: "q1", question: "which one?" } as unknown as SessionSlice["pen
 describe("what counts as wanting you (X-26 trigger states)", () => {
   it("is null while the session is working — busy is not a demand", () => {
     expect(attentionOf(slice("s", { working: true }))).toBeNull();
-    expect(attentionOf(slice("s", { status: "running" }))).toBeNull();
+    // …and busy is read off `working`, never off the settled `status` snapshot,
+    // which a tab that joined mid-turn can hold at "running" indefinitely.
+    expect(attentionOf(slice("s", { status: "running", working: false }))).toBe("idle");
   });
 
   it("names every settled-and-waiting state the row lists", () => {
@@ -50,10 +53,52 @@ describe("what counts as wanting you (X-26 trigger states)", () => {
     expect(attentionOf(slice("s"))).toBe("idle");
   });
 
-  it("lets a pause outrank a stale running status", () => {
-    // `status` is a settled snapshot that only refreshes on a state frame, so a
-    // tab that connected mid-turn can still read "running" at the pause.
-    expect(attentionOf(slice("s", { status: "running", pendingApproval: approval }))).toBe("approval");
+  it("lets a pause outrank the working flag", () => {
+    // The pause events clear `working` themselves, but a state frame and a live
+    // event can cross; the demand is the more important of the two facts.
+    expect(attentionOf(slice("s", { working: true, pendingApproval: approval }))).toBe("approval");
+  });
+});
+
+describe("the settle counter (session-state.ts, X-26)", () => {
+  const fold = (s: SessionSlice, ...events: WireEvent[]) => events.reduce(reduceEvent, s);
+
+  it("counts every way a turn is handed back", () => {
+    const s = newSlice("a");
+    expect(s.settleSeq).toBe(0);
+    expect(fold(s, { type: "assistant-end" } as WireEvent).settleSeq).toBe(1);
+    expect(fold(s, { type: "awaiting-approval", request: approval } as unknown as WireEvent).settleSeq).toBe(1);
+    expect(fold(s, { type: "awaiting-input", question: ask } as unknown as WireEvent).settleSeq).toBe(1);
+    expect(fold(s, { type: "error", message: "boom" } as unknown as WireEvent).settleSeq).toBe(1);
+    expect(fold(s, { type: "halted", reason: "nope" } as unknown as WireEvent).settleSeq).toBe(1);
+  });
+
+  it("does not count the working noise, and does not count Stop", () => {
+    const s = fold(
+      newSlice("a"),
+      { type: "assistant-start", parent: null } as unknown as WireEvent,
+      { type: "text", delta: "hi" } as unknown as WireEvent,
+      { type: "reasoning", delta: "hm" } as unknown as WireEvent,
+      { type: "context", tokens: 10 } as unknown as WireEvent,
+      // You pressed Stop; you already know the turn ended (X-26e).
+      { type: "stopped", scope: "hard" } as unknown as WireEvent,
+    );
+    expect(s.settleSeq).toBe(0);
+  });
+
+  it("survives a whole turn folded in one batch — which is the point", () => {
+    // React batches, and a background tab batches harder: this exact sequence
+    // arrived as **one** render in a real hidden tab, so the level never visibly
+    // changed. The counter is what makes the edge survive that.
+    const before = newSlice("a");
+    const after = fold(
+      before,
+      { type: "assistant-start", parent: null } as unknown as WireEvent,
+      { type: "text", delta: "done" } as unknown as WireEvent,
+      { type: "assistant-end" } as unknown as WireEvent,
+    );
+    expect(attentionOf(after)).toBe(attentionOf(before)); // both "idle" — no visible change
+    expect(after.settleSeq).toBe(before.settleSeq + 1); // but the wire said so
   });
 });
 
@@ -68,19 +113,36 @@ describe("the watcher (stepAttention)", () => {
     expect(step.fired).toEqual([]);
     expect(step.blip).toBe(false);
     expect(step.mark).toBe(false);
-    expect(step.memory.seen).toEqual({ a: "idle", b: "approval" });
+    expect(step.memory.seen).toEqual({ a: { reason: "idle", seq: 0 }, b: { reason: "approval", seq: 0 } });
   });
 
   it("fires on the crossing from working to settled", () => {
-    let mem = stepAttention(newAttentionMemory(), [slice("a", { working: true })], ctx).memory;
+    const mem = stepAttention(newAttentionMemory(), [slice("a", { working: true })], ctx).memory;
     const step = stepAttention(mem, [slice("a")], ctx);
     expect(step.fired).toEqual([{ id: "a", reason: "idle" }]);
     expect(step.blip).toBe(true);
     expect(step.mark).toBe(true); // hidden tab → the title marker latches too
   });
 
+  it("fires on a settle the level never showed — a whole turn inside one render", () => {
+    // The case a real background tab actually produces: `working` was never
+    // observed as true, so idle→idle is all a level comparison can see.
+    const mem = stepAttention(newAttentionMemory(), [slice("a", { settleSeq: 3 })], ctx).memory;
+    const step = stepAttention(mem, [slice("a", { settleSeq: 4 })], ctx);
+    expect(step.fired).toEqual([{ id: "a", reason: "idle" }]);
+    expect(step.blip).toBe(true);
+  });
+
+  it("ignores a settle that left the session busy again", () => {
+    // An `error` mid tool-loop that the session retries out of: the counter
+    // moved, but there is nothing waiting for you.
+    const mem = stepAttention(newAttentionMemory(), [slice("a", { working: true })], ctx).memory;
+    const step = stepAttention(mem, [slice("a", { working: true, settleSeq: 1 })], ctx);
+    expect(step.fired).toEqual([]);
+  });
+
   it("does not fire again while the session sits in the same state", () => {
-    let mem = stepAttention(newAttentionMemory(), [slice("a", { working: true })], ctx).memory;
+    const mem = stepAttention(newAttentionMemory(), [slice("a", { working: true })], ctx).memory;
     const first = stepAttention(mem, [slice("a", { pendingApproval: approval })], { ...ctx, now: 100_000 });
     expect(first.blip).toBe(true);
     // Streaming events re-render constantly; an unanswered approval must not
@@ -91,7 +153,7 @@ describe("the watcher (stepAttention)", () => {
   });
 
   it("fires when one demand replaces another without passing through busy", () => {
-    let mem = stepAttention(newAttentionMemory(), [slice("a", { pendingApproval: approval })], ctx).memory;
+    const mem = stepAttention(newAttentionMemory(), [slice("a", { pendingApproval: approval })], ctx).memory;
     const step = stepAttention(mem, [slice("a", { pendingAsk: ask })], { ...ctx, now: 200_000 });
     expect(step.fired).toEqual([{ id: "a", reason: "input" }]);
   });

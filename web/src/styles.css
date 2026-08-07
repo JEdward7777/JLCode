@@ -226,6 +226,15 @@ body.row-resizing {
   gap: 5px;
   cursor: pointer;
 }
+/* Named like the LIVE/HISTORY headers, minus the caret — this cluster has
+   nothing to collapse yet, and a caret that does nothing reads as broken. */
+.rail-notify-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
 /* A past thread reads quieter than a running one — same shape, less ink. */
 .rail-item.history {
   background: transparent;

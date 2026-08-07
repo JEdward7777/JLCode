@@ -1023,6 +1023,7 @@ function SessionRail({
           to `prefs.ts`, and three lone checkboxes in three corners is how a
           settings surface fails to exist. They join here. */}
       <div className="rail-notify">
+        <div className="rail-notify-title">notifications</div>
         <label title="play a short tone when a session settles and you are looking elsewhere (X-26)">
           <input type="checkbox" checked={blipOn} onChange={onToggleBlip} /> blip on attention
         </label>

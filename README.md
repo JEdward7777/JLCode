@@ -133,6 +133,15 @@ itself after the first exchange (rename it with the ✎ on its rail card), and t
 tab title reads `<thread> — <project folder>`, so two instances in two projects
 stay tellable apart.
 
+When a session hands the turn back — a finished answer, an approval, a question,
+a spend cap — and you are looking somewhere else, you get **a short blip and a
+`●` on the tab title**. It stays quiet for the session you already have on
+screen, several sessions settling at once share one note, and the `●` clears when
+you look at the tab. The switch is *blip on attention* under **NOTIFICATIONS** at
+the foot of the rail; it is on by default, but browsers only allow sound after a
+click, so the first click you make in the tab is what actually arms it (toggling
+it on plays the blip once, which is how you know it got through).
+
 When a turn fails, **↻ Retry** sits on the error. A failed attempt writes nothing
 to the thread, so retrying re-sends exactly what was sent before — go top up your
 OpenRouter credits, come back, click it, and the answer lands under the message

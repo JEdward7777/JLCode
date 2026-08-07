@@ -983,3 +983,94 @@ Not exercised visually: the not-UTF-8 and not-a-regular-file fallbacks and the
 400-line cap on a create (all covered by tests, none of them worth seeding a
 binary into a peek workspace for); and the out-of-fence path, where the preview
 is deliberately absent and the card is the soft-fence one already logged in P5b.
+
+---
+
+## X-26 — a blip when a session needs attention · 2026-08-07 · ✅ looked good (and it works, but nobody heard it)
+
+**Screenshots:** [`visual/x26-rail-notify.png`](visual/x26-rail-notify.png) (the
+NOTIFICATIONS cluster, on) ·
+[`visual/x26-rail-notify-off.png`](visual/x26-rail-notify-off.png) (off, and
+persisted) · [`visual/x26-two-pauses.png`](visual/x26-two-pauses.png) (two
+sessions wanting you at once — the state that produced exactly one note)
+
+**Sound is the one thing a screenshot cannot show, and this container has no
+audio device**, so this peek was designed around that rather than pretending
+otherwise. It splits three ways, and the log says which is which every time:
+what was **seen** (the toggle, the rail's attention dots, the state that
+triggers it), what was **read out of the live page** (`document.title`,
+`document.hidden`, `localStorage`), and what was **measured as actual audio** —
+because the shipped `createBlipper` was made to render through the browser's own
+`OfflineAudioContext` and the resulting samples were analysed. Nothing here was
+confirmed by ear. Nobody has heard this feature yet.
+
+Posed with `peek up --ctx 40000 --buffer 8000 --trigger suggest` and two fake-driver
+sessions, then driven over CDP on the tool's own Chrome (9411) — the toggle
+needs a real click (that is the whole point of the autoplay half), a hidden tab
+needs a second target activated, and the audio needs a substituted context, none
+of which `peek shot` does on its own. That is now the **third** slice to hand-roll
+CDP clicks after X-12b and X-23; `peek click` has earned its place.
+
+Confirmed with my own eyes:
+
+- **The NOTIFICATIONS cluster sits at the foot of the rail**, under a header
+  styled like LIVE / HISTORY but with no caret (there is nothing to collapse yet,
+  and a caret that does nothing reads as broken). One checkbox — *blip on
+  attention* — with room beside it for X-13 and X-16, which is the point of
+  putting it here instead of next to whatever feature it belongs to.
+- **Two sessions wanting you at once look like it**: `needs answer` and
+  `needs approval`, both with the amber attention dot, in the same rail as the
+  toggle that decides whether you hear about them.
+
+Read out of the live page (not eyes — the DOM):
+
+- **Nothing audio exists until you click.** On load, with the preference already
+  on, `AudioContext` had been constructed **0** times. That is the autoplay trap
+  in one number: a context built here would be born `suspended` and the feature
+  would be silent forever.
+- **The toggle round-trips.** Click → unchecked, `jlcode.notify.blip = "false"`;
+  click again → checked, `"true"`, and the context was created **once** and
+  resumed once across both clicks.
+- **The tab marker works in a genuinely hidden tab.** With a second target
+  activated (`document.hidden === true` confirmed, not simulated), a turn was
+  posted to the session behind it. `document.title` went from
+  `"Sketch the blip design — work"` to **`"● Sketch the blip design — work"`**,
+  and back to the unmarked form the moment the tab was activated again.
+- **The suppression rule holds, both directions.** A background session settling
+  while the tab was *visible* and a different session focused → the blipper was
+  called. The **focused** session settling on screen in the same visible tab →
+  **zero** notes scheduled. That is X-26(e) working.
+- **A batch is one note.** Two sessions pushed into `awaiting-input` and
+  `awaiting-approval` simultaneously behind a hidden tab scheduled **2**
+  oscillators — i.e. one two-note chirp, not two.
+
+Measured as real audio (rendered by the browser, analysed sample-by-sample):
+
+- The blip the shipped code scheduled, rendered through `OfflineAudioContext`:
+  **two bursts, 65.9 ms each, starting at 0 ms and 89.8 ms, peak 0.0696 and
+  0.0697, and 881 Hz then 1321 Hz** by zero-crossing count. That is the design
+  (880 → 1318.5 Hz, 70 ms, gain 0.07) coming out of a real audio graph, with the
+  ~4 ms shortfall exactly the ramp at each end. It ascends, it is short, and it
+  is quiet.
+
+**The defect this peek caught, which no test would have.** The first
+implementation decided "a session settled" by comparing `attentionOf(slice)`
+before and after each render. In a real backgrounded tab, Chrome throttles hard
+enough that **an entire fake turn arrived as a single DOM mutation** — measured:
+a `setInterval(…, 100)` ran 5 times in 4.5 s, and the rail's status text never
+once said `working…`. So the level went `idle → idle` and the feature did
+nothing at exactly the moment it exists for. Fixed by making the edge a
+monotonic `settleSeq` counter bumped by the wire events themselves, which no
+amount of batching can collapse; the level comparison stays as a second edge for
+a session that settled while the SSE bus was disconnected. Re-peeked after the
+fix — that is where the `●` above comes from.
+
+Not verified: **that it is actually pleasant to hear.** No speaker was involved
+at any point; the waveform is right, but whether 880 → 1318.5 Hz at 0.07 is the
+*right* little blip is Joshua's call the first time a session settles behind his
+tab, and the two constants to turn are `NOTES` and `PEAK` in `web/src/blip.ts`.
+Also not exercised in the browser: the preference **off** path (a one-line `&&`
+in `App.tsx`), a browser with no WebAudio at all (unit-tested — it stays silent
+and the tab marker still works), and re-arming from a *remembered* preference
+across a reload, which uses the same `arm()` the toggle does and was confirmed
+only through an ordinary click in the second pass.
