@@ -129,9 +129,13 @@ check the model's work instead of taking its summary on faith. An approval card
 is also a chance to talk: anything you type in the composer while one is up rides
 along with **Approve**/**Deny** and joins the transcript, so you can redirect the
 run without waiting for the queue to drain at the next turn boundary. Each thread names
-itself after the first exchange (rename it with the ✎ on its rail card), and the
-tab title reads `<thread> — <project folder>`, so two instances in two projects
-stay tellable apart.
+itself after the first exchange and **re-names itself as it wanders** — a thread that
+has roughly doubled in length, or that has just been compacted, gets asked again, so a
+long thread isn't stuck with what it was about in its first two minutes. **Rename it
+yourself with the ✎ on its rail card and it stays put** — your name is never overwritten,
+including after a restart. (`jlcode config set work --auto-retitle off` keeps the opening
+name if you'd rather not pay for the occasional extra call.) The tab title reads
+`<thread> — <project folder>`, so two instances in two projects stay tellable apart.
 
 When a turn fails, **↻ Retry** sits on the error. A failed attempt writes nothing
 to the thread, so retrying re-sends exactly what was sent before — go top up your

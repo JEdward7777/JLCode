@@ -82,6 +82,10 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
       // Name the thread after the first exchange (X-09) — the browser rail and
       // the tab title have somewhere to show it, so the extra call earns its keep.
       autoTitle: true,
+      // …and re-name it as it drifts (X-17), unless this config opted out. A
+      // long thread keeps the label it earned on turn one otherwise, which is
+      // exactly when a label matters most.
+      autoRetitle: config.autoRetitle !== false,
       onAddRoot: (dir) => {
         const current = loadConfig(deps.paths);
         const existing = current.folderRoots?.[deps.cwd] ?? [];

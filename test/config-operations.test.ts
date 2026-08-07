@@ -69,6 +69,18 @@ describe("model config operations", () => {
     expect(step2.updated.id).toBe(added.id); // same config, edited in place
   });
 
+  it("stores the auto-re-title opt-out, and clears it rather than storing the default (X-17)", () => {
+    const { config, added } = addModelConfig(defaultConfig(), base("A", "m"));
+    expect(added.autoRetitle).toBeUndefined(); // on by default, unwritten
+
+    const off = updateModelConfig(config, added.id, { autoRetitle: false });
+    expect(off.updated.autoRetitle).toBe(false);
+    // Turning it back on removes the field instead of writing `true` — the
+    // default is the absence of the setting.
+    const on = updateModelConfig(off.config, added.id, { autoRetitle: true });
+    expect(on.updated.autoRetitle).toBeUndefined();
+  });
+
   it("removing a config prunes bindings that pointed at it", () => {
     const { config, added } = addModelConfig(defaultConfig(), base("A", "m"));
     const bound = setBinding(config, "/work/clientA", added.id);

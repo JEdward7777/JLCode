@@ -193,6 +193,10 @@ export class ConversationStore {
     const entries: Entry[] = [];
     let activeLeaf: string | null = null;
     let title: string | undefined;
+    /** Newest title record wins, and its `source` rides with it (X-17): a
+     *  hand-rename must still read as hand-picked after a restart, or the
+     *  drift re-title would quietly undo it. */
+    let titleSource: "auto" | "manual" | undefined;
     // An explicit `activeLeaf` record is *in force* until an append actually
     // continues from it. While it is, a non-matching append is a turn writing to
     // the branch it was pinned to (H-05) and must not drag the pointer over.
@@ -206,8 +210,12 @@ export class ConversationStore {
           activeLeaf = r.leaf;
           pinned = true;
         }
-      } else if (r.kind === "title") title = typeof r.title === "string" ? r.title : title; // newest wins
-      else {
+      } else if (r.kind === "title") {
+        if (typeof r.title === "string") {
+          title = r.title; // newest wins
+          titleSource = r.source === "manual" ? "manual" : "auto";
+        }
+      } else {
         const entry = r as unknown as Entry;
         entries.push(entry);
         if (typeof entry.id !== "string") continue;
@@ -221,6 +229,7 @@ export class ConversationStore {
     return {
       id: header.id,
       title,
+      titleSource,
       entries,
       activeLeaf,
       createdAt: typeof header.createdAt === "string" ? header.createdAt : new Date().toISOString(),

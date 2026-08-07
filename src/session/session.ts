@@ -39,7 +39,7 @@ import {
   COMPACTION_MAX_TOKENS,
   type CompactionBudget,
 } from "./compaction.js";
-import { buildTitleInstruction, sanitizeTitle, TITLE_MAX_TOKENS } from "./title.js";
+import { buildTitleInstruction, driftedEnough, sanitizeTitle, TITLE_MAX_TOKENS, type TitleMark } from "./title.js";
 import type { CompactionTrigger } from "../config/types.js";
 import type { QueuedMessage } from "./types.js";
 import type {
@@ -107,6 +107,11 @@ export interface SessionOptions {
    *  somewhere to keep and show a label (the server + browser rail) benefits —
    *  a headless session would pay for a string nobody reads. */
   autoTitle?: boolean;
+  /** Re-title the thread as it drifts (X-17). Defaults **on**, but only means
+   *  anything when `autoTitle` is on: it is the same call, asked again after the
+   *  thread has grown enough to be about something else. Set false to keep the
+   *  opening name (and pay for exactly one title call, as X-09 did). */
+  autoRetitle?: boolean;
 }
 
 /** Default watchdog interval — 30 minutes (D-34). */
@@ -260,11 +265,17 @@ export class Session {
   /** The known-prefix size from the last budget-crossing evaluation (D-44), shown
    *  on the pre-send compaction pause card (P6c). Informational only. */
   private lastPrefixTokens = 0;
-  /** Auto-titling ran (or was ruled out) for this conversation (X-09). One
-   *  attempt per session: a nicety must never cost a call per turn. */
-  private titleAttempted = false;
+  /** Where the branch stood when the current title was chosen — or when a title
+   *  call was last *spent* (X-17). `null` means neither has happened, which is
+   *  X-09's "not named yet". Set before the call, so a failed attempt backs off
+   *  on the same schedule instead of retrying every turn. */
+  private titleMark: TitleMark | null = null;
   /** Whether to auto-title at all (X-09) — opt-in, since it costs a call. */
   private readonly autoTitle: boolean;
+  /** Whether to re-title as the thread drifts (X-17). On by default *when
+   *  auto-titling is on at all*; the opt-out keeps the opening name and the one
+   *  call it cost. */
+  private readonly autoRetitle: boolean;
   /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
   private readonly tasks: TaskRegistry;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
@@ -309,6 +320,13 @@ export class Session {
     this.pricing = options.config.pricing;
     this.spendCapUsd = options.spendCapUsd;
     this.autoTitle = options.autoTitle ?? false;
+    this.autoRetitle = options.autoRetitle ?? true;
+    // A conversation that arrives already named is measured from **here**, not
+    // from its first turn (X-17): the log doesn't say how far along the thread
+    // was when that name was chosen, and re-titling on the first settle after
+    // every resume would spend a call on a guess. Drift is measured from where
+    // we found it.
+    if (this.conversation.title) this.titleMark = this.branchTitleMark();
     this.contextWindow = options.contextWindow ?? options.config.compaction?.contextLength;
     // An injected source describes the injected window; falling through to the
     // config override means the window came from the config either way.
@@ -1096,26 +1114,66 @@ export class Session {
     await this.drainQueue();
   }
 
-  /** Name the conversation (X-09). Joshua's design: once the first exchange has
-   *  happened, tag an **ephemeral** question onto the end of the live
-   *  conversation — asked of the active model, `tool_choice:"none"`, never
-   *  appended to the tree — so the title comes from the real context without
-   *  flattening or re-shaping anything, and the prompt-cache reuse that makes
-   *  same-model compaction cheap (D-29) pays for most of it. At most one attempt
-   *  per session, and a failure is swallowed: a label is a nicety and must never
-   *  cost a turn. */
-  private async maybeAutoTitle(): Promise<void> {
-    if (!this.autoTitle || this.titleAttempted || this.conversation.title) return;
+  /** Where this session's active branch stands, for the title trigger (X-17).
+   *  Derived from the tree like `contextTokens` rather than counted into a
+   *  field, so a fork, a rewind or a branch switch is measured on the branch in
+   *  view instead of on whatever the last turn happened to build. */
+  private branchTitleMark(): TitleMark {
+    const branch = pathToLeaf(this.conversation, this.workingLeaf);
+    let turns = 0;
+    let folds = 0;
+    for (const entry of branch) {
+      if (entry.type === "user") turns++;
+      else if (entry.type === "compaction") folds++;
+    }
+    return { turns, folds };
+  }
+
+  /** Should we spend a title call at this settle? (X-09's first name, X-17's
+   *  re-title.) Everything expensive about this feature is decided here. */
+  private shouldTitleNow(): boolean {
+    if (!this.autoTitle) return false;
+    // A name a person chose is **never** overwritten (X-17 (c)). Silently
+    // undoing someone's rename is a worse failure than a stale label, and
+    // X-12b just made renaming a one-click affordance.
+    if (this.conversation.titleSource === "manual") return false;
     // Nothing worth naming until the model has actually said something.
-    if (!this.conversation.entries.some((e) => e.type === "assistant" && e.text.trim() !== "")) return;
+    if (!this.conversation.entries.some((e) => e.type === "assistant" && e.text.trim() !== "")) return false;
+    const mark = this.titleMark;
+    if (!mark) return true; // never named, never asked — X-09's one shot
+    // Opting out of drift re-titling still leaves a failed *first* attempt free
+    // to try again later; what it pins is a name that actually landed.
+    if (this.conversation.title && !this.autoRetitle) return false;
+    return driftedEnough(mark, this.branchTitleMark());
+  }
+
+  /** Name the conversation (X-09), and re-name it as it drifts (X-17). Joshua's
+   *  design: once the first exchange has happened, tag an **ephemeral** question
+   *  onto the end of the live conversation — asked of the active model,
+   *  `tool_choice:"none"`, never appended to the tree — so the title comes from
+   *  the real context without flattening or re-shaping anything, and the
+   *  prompt-cache reuse that makes same-model compaction cheap (D-29) pays for
+   *  most of it. A failure is swallowed: a label is a nicety and must never cost
+   *  a turn.
+   *
+   *  X-17 makes this repeatable rather than once-per-session, on the trigger in
+   *  `shouldTitleNow` / `driftedEnough` — geometric growth plus "a fold is
+   *  drift", so a long thread pays ~log2(turns) title calls over its life. The
+   *  re-ask carries the current name and may answer with it unchanged, in which
+   *  case nothing is emitted, written, or re-rendered. */
+  private async maybeAutoTitle(): Promise<void> {
+    if (!this.shouldTitleNow()) return;
     if (this.stopScope || this.capBlocked()) return; // don't spend past a stop/cap
-    this.titleAttempted = true;
+    // Mark *before* the call: the spend has happened either way, so a failure
+    // (or a "keep the name" answer) backs off on the same schedule instead of
+    // re-asking at every settle.
+    this.titleMark = this.branchTitleMark();
 
     const req: ChatRequest = {
       model: this.config.model,
       messages: [
         ...buildWireMessages(this.conversation, { system: this.systemPrompt, leafId: this.workingLeaf }),
-        { role: "user", content: buildTitleInstruction() },
+        { role: "user", content: buildTitleInstruction(this.conversation.title) },
       ],
       tool_choice: "none",
       max_tokens: TITLE_MAX_TOKENS,
@@ -1145,16 +1203,23 @@ export class Session {
       },
     });
     const title = sanitizeTitle(result.text);
-    if (title) this.setTitle(title, "auto");
+    // An unchanged answer is the *expected* one for a thread that hasn't
+    // drifted — write nothing, so the index takes no record and the rail card
+    // doesn't blink (X-17 (d)).
+    if (title && title !== this.conversation.title) this.setTitle(title, "auto");
   }
 
   /** Set the thread's label (X-09). `manual` is the browser's inline rename;
-   *  persistence is the caller's concern (the server projects the event). */
+   *  persistence is the caller's concern (the server projects the event). A
+   *  manual name **pins** — `titleSource` rides on the conversation and is
+   *  persisted with the title record, so the drift re-title (X-17) leaves it
+   *  alone in this session and after a resume. */
   setTitle(title: string, source: "auto" | "manual" = "manual"): void {
     const clean = sanitizeTitle(title);
     if (!clean) throw new Error("Title is empty.");
-    this.titleAttempted = true; // a hand-picked name is never overwritten by auto
     this.conversation.title = clean;
+    this.conversation.titleSource = source;
+    this.titleMark = this.branchTitleMark(); // drift is measured from this name
     this.emit({ type: "title", title: clean, source });
   }
 

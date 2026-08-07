@@ -35,6 +35,11 @@ function normalizeModelConfig(raw: unknown): ModelConfig | undefined {
       typeof r.systemPromptAddendum === "string" ? r.systemPromptAddendum : undefined,
     defaultMode: (r.defaultMode as ModelConfig["defaultMode"]) ?? "code",
     defaultApproval: (r.defaultApproval as ModelConfig["defaultApproval"]) ?? "manual",
+    // Only `false` means anything here (X-17): the default is on, so anything
+    // else — absent, garbage — reads as on. This normalizer is a **whitelist**;
+    // a field missing from it is silently dropped on load, which is how a
+    // setting can look stored and never reach a session.
+    ...(r.autoRetitle === false ? { autoRetitle: false as const } : {}),
     compaction: r.compaction as ModelConfig["compaction"],
     createdAt: typeof r.createdAt === "string" ? r.createdAt : now,
     updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : now,
