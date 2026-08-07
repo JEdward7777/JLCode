@@ -117,22 +117,41 @@ export interface ApprovalRequest {
   outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string };
   learn?: LearnRequest;
   /** Richer rendering of the pending call — a unified diff for `apply_edits`
-   *  (D-53). Read-only: the raw args below it stay the editable truth. */
+   *  and for overwriting a file, the file itself for a create/delete (D-53,
+   *  X-23). Read-only: the raw args below it stay the editable truth. */
   preview?: ToolPreview;
 }
 
-/** A tool's own rendering of a pending call (D-53). */
-export interface ToolPreview {
+/** A change to existing files, as a unified diff (D-53). */
+export interface ToolPreviewDiff {
   kind: "diff";
   files: {
     path: string;
     patch: string;
     added: number;
     removed: number;
-    sites: number;
+    /** `apply_edits` only — a whole-file write has no anchor sites. */
+    sites?: number;
     error?: string;
   }[];
 }
+
+/** One whole file, shown as itself — nothing to diff against (X-23). */
+export interface ToolPreviewFile {
+  kind: "file";
+  action: "create" | "overwrite" | "delete";
+  path: string;
+  body: string;
+  /** Size of the whole file/content, not of the capped `body`. */
+  lines: number;
+  bytes: number;
+  omitted?: number;
+  note?: string;
+  error?: string;
+}
+
+/** A tool's own rendering of a pending call (D-53, X-23). */
+export type ToolPreview = ToolPreviewDiff | ToolPreviewFile;
 
 /** One MCP server as `GET /mcp` reports it (P7b). */
 export interface McpToolStatus {

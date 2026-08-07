@@ -6,8 +6,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { editTools } from "./edit-tools.js";
-import type { Tool, ToolContext, ToolResult } from "./types.js";
+import { editTools, renderDiff } from "./edit-tools.js";
+import type { FilePreview, Tool, ToolContext, ToolPreview, ToolResult } from "./types.js";
 
 const MAX_READ_CHARS = 100_000;
 const MAX_GLOB = 500;
@@ -37,6 +37,20 @@ const GREP_EXCLUDED_DIRS = new Set([".git"]);
 const GREP_NOISE_DIRS = new Set(["node_modules", "dist", "build", ".venv", "__pycache__", ".next"]);
 /** Generated/minified files: single-line, token-dense, and never worth reading as source. */
 const GREP_NOISE_FILE = /\.(min\.(js|css)|map|bundle\.js|lock)$|^package-lock\.json$/;
+/**
+ * Lines of a **new file's** body shown on the approval card (X-23), matching the
+ * per-file cap the diff card already uses. This is the whole of what you are
+ * approving, so the cap is generous.
+ */
+const MAX_PREVIEW_LINES = 400;
+/**
+ * Lines of a **doomed file's** head shown on the delete card. Deliberately far
+ * shorter: this preview exists to let you *recognize* the file, not to read it
+ * one last time — the size beside it is what says how much is going.
+ */
+const MAX_DELETE_LINES = 40;
+/** Char cap on any preview body — one "line" can be an entire minified file. */
+const MAX_PREVIEW_CHARS = 20_000;
 
 /**
  * Depth-first walk yielding every file under `root`, relative-path style.
@@ -93,6 +107,57 @@ function reqInt(args: Record<string, unknown>, key: string): number | undefined 
   // Models sometimes stringify numeric args; accept a clean integer string.
   if (typeof v === "string" && /^\d+$/.test(v.trim())) return Number(v.trim());
   return undefined;
+}
+
+/** Lines the way `wc -l` and the transcript count them: a trailing newline
+ *  terminates the last line, it does not start another. */
+function countLines(text: string): number {
+  if (text === "") return 0;
+  return text.replace(/\n$/, "").split("\n").length;
+}
+
+/**
+ * Not text: a NUL byte survives the utf8 decode, and anything else invalid comes
+ * back as U+FFFD. Either way the "content" is already mangled, so a preview
+ * shows the file's size rather than pretending to render it.
+ */
+function looksBinary(text: string): boolean {
+  return /[\u0000\uFFFD]/.test(text);
+}
+
+/** Cap a body for an approval card: whole lines only, so the tail is never half
+ *  a line, and never more than `MAX_PREVIEW_CHARS` however few lines that is. */
+function capBody(text: string, maxLines: number): { body: string; omitted: number } {
+  const lines = text === "" ? [] : text.replace(/\n$/, "").split("\n");
+  const kept: string[] = [];
+  let size = 0;
+  for (const line of lines.slice(0, maxLines)) {
+    if (kept.length > 0 && size + line.length + 1 > MAX_PREVIEW_CHARS) break;
+    kept.push(line);
+    size += line.length + 1;
+  }
+  // A single line longer than the whole budget still shows its head — better a
+  // clipped first line than an empty box.
+  if (kept.length === 1 && kept[0]!.length > MAX_PREVIEW_CHARS) {
+    kept[0] = `${kept[0]!.slice(0, MAX_PREVIEW_CHARS)}…`;
+  }
+  return { body: kept.join("\n"), omitted: lines.length - kept.length };
+}
+
+/** Read a file for a preview: never throws, and says why when it can't. */
+function previewSource(abs: string): { text: string; bytes: number } | { error: string } {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    return { error: "missing" };
+  }
+  if (!stat.isFile()) return { error: "not a regular file" };
+  try {
+    return { text: fs.readFileSync(abs, "utf8"), bytes: stat.size };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
 }
 
 const readFile: Tool = {
@@ -184,6 +249,60 @@ const writeFile: Tool = {
       },
     },
   },
+
+  /**
+   * What is about to be written, readably (X-23). Overwriting an existing file
+   * is a **diff against what is on disk** — that is the honest framing, and it
+   * is usually a small change the raw JSON buries. Creating one has nothing to
+   * diff against, so it shows the body itself with its size.
+   */
+  preview(args, ctx): ToolPreview | undefined {
+    const p = reqStr(args, "path");
+    const content = reqStr(args, "content");
+    if (p === undefined || content === undefined) return undefined;
+    const r = ctx.sandbox.resolve(p);
+    // Out of fence: that is what the card is asking about, and reading the
+    // target before the user allows it is exactly what the fence prevents.
+    if (!r.ok) return undefined;
+
+    const bytes = Buffer.byteLength(content);
+    const asBody = (action: "create" | "overwrite", note?: string): FilePreview => {
+      const { body, omitted } = capBody(content, MAX_PREVIEW_LINES);
+      return {
+        kind: "file",
+        action,
+        path: p,
+        body,
+        lines: countLines(content),
+        bytes,
+        ...(omitted > 0 ? { omitted } : {}),
+        ...(note ? { note } : {}),
+      };
+    };
+
+    const src = previewSource(r.path);
+    if ("error" in src) {
+      if (src.error === "missing") return asBody("create");
+      if (src.error === "not a regular file") {
+        return {
+          kind: "file",
+          action: "overwrite",
+          path: p,
+          body: "",
+          lines: 0,
+          bytes: 0,
+          error: `${p} is not a regular file — this write will fail`,
+        };
+      }
+      return asBody("overwrite", `couldn't read the existing ${p} to diff against (${src.error})`);
+    }
+    if (looksBinary(src.text)) {
+      return asBody("overwrite", `the existing ${p} is not UTF-8 text, so there is nothing to diff against`);
+    }
+    const { patch, added, removed } = renderDiff(p, src.text, content);
+    return { kind: "diff", files: [{ path: p, patch, added, removed }] };
+  },
+
   async execute(args, ctx) {
     const p = reqStr(args, "path");
     const content = reqStr(args, "content");
@@ -215,6 +334,42 @@ const deleteFile: Tool = {
       parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
     },
   },
+
+  /**
+   * What is about to be lost (X-23). A path alone is not enough to approve the
+   * most destructive tool JLCode has — this shows the file's size and enough of
+   * its head to *recognize* it, and says outright when the delete would fail.
+   */
+  preview(args, ctx): ToolPreview | undefined {
+    const p = reqStr(args, "path");
+    if (p === undefined) return undefined;
+    const r = ctx.sandbox.resolve(p);
+    if (!r.ok) return undefined;
+    const base: FilePreview = { kind: "file", action: "delete", path: p, body: "", lines: 0, bytes: 0 };
+
+    const src = previewSource(r.path);
+    if ("error" in src) {
+      const why =
+        src.error === "missing"
+          ? "no such file — this delete will fail"
+          : src.error === "not a regular file"
+            ? `${p} is not a regular file — this delete will fail`
+            : `couldn't read ${p} (${src.error})`;
+      return { ...base, error: why };
+    }
+    if (looksBinary(src.text)) {
+      return { ...base, bytes: src.bytes, note: "not UTF-8 text — showing its size only" };
+    }
+    const { body, omitted } = capBody(src.text, MAX_DELETE_LINES);
+    return {
+      ...base,
+      body,
+      lines: countLines(src.text),
+      bytes: src.bytes,
+      ...(omitted > 0 ? { omitted } : {}),
+    };
+  },
+
   async execute(args, ctx) {
     const p = reqStr(args, "path");
     if (p === undefined) return err("delete_file requires a string 'path'");

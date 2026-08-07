@@ -116,6 +116,15 @@ that the user edited it and what actually ran, so the agent learns of the correc
 result channel. The **debug journal** (§14) keeps both the original and edited command. This
 is a KiloCode gap Joshua specifically wants closed.
 
+**Readable before approval (agreed, D-53/D-63).** A pause is only a safeguard if you can tell what
+you are agreeing to, so a tool may render itself better than its arguments do: `apply_edits` and an
+**overwriting** `write_file` show a read-only unified diff against the files as they are on disk, a
+**new** file shows its body with a line/byte count, and `delete_file` shows the size and head of
+what it would destroy. Previews are computed server-side from the *pending* call, so a batch that
+cannot apply says so on the card instead of after approval, and nothing out of fence is read to
+build one. The preview never becomes a second editor — the raw-args box stays the single editable
+truth (D-16).
+
 **Output stays visible (planned, X-11).** Approving a command must not be the last time you see
 it. The **tool result stays in the transcript** as its own item — the full output, not a preview —
 so you can check what the model is reasoning about instead of taking its summary on faith. Today

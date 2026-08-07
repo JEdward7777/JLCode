@@ -6,7 +6,7 @@
  * output in the transcript instead of only in the journal.
  */
 import { describe, it, expect } from "vitest";
-import { formatBytes, outputStats, prettyArgs, summarizeArgs } from "../web/src/tool-view";
+import { fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "../web/src/tool-view";
 
 describe("output stats (the size hint, X-11)", () => {
   it("reports lines and bytes", () => {
@@ -84,5 +84,43 @@ describe("expanded arguments", () => {
   it("passes unparsable args through verbatim — better raw than hidden", () => {
     expect(prettyArgs("{oops")).toBe("{oops");
     expect(prettyArgs(undefined)).toBe("");
+  });
+});
+
+/**
+ * `write_file` args in the transcript (X-23). The approval card's diff is gone
+ * once the call is approved, so these args are the only durable record of what
+ * was written — and `JSON.stringify` renders a file as one line of `\n`
+ * escapes. Deliberately *not* a stored diff: the transcript is read long after
+ * the fact, when the file it diffed against has moved on.
+ */
+describe("write_file args read as a file, not as JSON (X-23)", () => {
+  it("splits a write into its path and its body verbatim", () => {
+    const args = JSON.stringify({ path: "src/a.ts", content: "const a = 1;\nconst b = 2;\n" });
+    expect(fileArgs("write_file", args)).toEqual({ path: "src/a.ts", body: "const a = 1;\nconst b = 2;\n" });
+  });
+
+  it("leaves every other tool on the JSON path", () => {
+    const args = JSON.stringify({ path: "a.txt", content: "x" });
+    expect(fileArgs("apply_edits", args)).toBeNull();
+    expect(fileArgs("read_file", args)).toBeNull();
+    expect(fileArgs(undefined, args)).toBeNull();
+  });
+
+  it("falls back to JSON rather than hide an unexpected argument", () => {
+    // An extra field would simply vanish from a path/body rendering, which is a
+    // worse failure than showing escapes.
+    expect(fileArgs("write_file", JSON.stringify({ path: "a.txt", content: "x", mode: "0644" }))).toBeNull();
+    expect(fileArgs("write_file", JSON.stringify({ path: "a.txt" }))).toBeNull();
+    expect(fileArgs("write_file", JSON.stringify({ path: 1, content: "x" }))).toBeNull();
+  });
+
+  it("falls back to JSON for a truncated/repaired call (D-31)", () => {
+    expect(fileArgs("write_file", '{"path": "a.txt", "content": "half')).toBeNull();
+    expect(fileArgs("write_file", undefined)).toBeNull();
+  });
+
+  it("keeps an empty file an empty body, not a missing one", () => {
+    expect(fileArgs("write_file", JSON.stringify({ path: "e.txt", content: "" }))).toEqual({ path: "e.txt", body: "" });
   });
 });

@@ -453,7 +453,8 @@ presets too, and `jlcode config which` should show the effective window. Whoever
 also add the test that would have caught it: an assertion at the **`serve` wiring level** that a
 session built by `newSession` has a budget, not just a `Session` unit test that injects one.
 
-**Filed 2026-08-04: X-23 — `write_file` shows no preview but raw JSON, so a file write is unreadable
+**Filed 2026-08-04, FIXED 2026-08-06 (D-63) — see the X-23 block in the status section above: X-23 —
+`write_file` shows no preview but raw JSON, so a file write is unreadable
 at the moment you're asked to approve it.** Joshua, from real use. The mechanism to fix it already
 exists and `write_file` simply doesn't use it: `ToolPreview` (`src/tools/types.ts:38`, D-53) lets a
 tool render something richer than its arguments at the pause, and **`apply_edits` is the only tool
@@ -627,9 +628,10 @@ read-once-for-cache, size-cap and self-modification calls spelled out. Nothing h
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
 reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
 
-**506 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-06, 56 files). **H-06 is fixed (D-60)**,
-**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)** and **X-12b is DONE**. **Next: P7c** — live validation against the real
-`file_utils` server. Rendered surfaces get a real-browser peek per slice, logged in `VISUAL-LOG.md`.
+**525 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 56 files). **H-06 is fixed (D-60)**,
+**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)** and **X-23 is fixed (D-63)**; **X-12b is DONE**.
+**Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
+real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 **X-12b shipped 2026-08-06 — a past thread can now be renamed and removed.** The three parts the row
 named, all of which X-12a designed and cut. (1) **Delete is a reversible masking flag**: `DELETE
@@ -670,6 +672,28 @@ H-06); an assumed window (D-60 `fallback`) is marked `~`. Peeked in Chrome (VISU
 server tsconfig then hands the browser client to Vite/esbuild, which strips types without checking
 them, so H-06 had left two live type errors in `session-state.ts` that nothing reported.
 `tsc -p web/tsconfig.json` is now in both `build` and `typecheck`.
+
+**X-23 FIXED 2026-08-06 (D-63) — a write is now readable at the moment you're asked to approve
+it.** `write_file` had no `preview()`, so the card fell back to `primaryArgKey` (which picks `path`)
+and dumped `content` into the raw-JSON box: a 300-line file rendered as one string of `\n` escapes.
+The framing is now **what the write does to the file**, which splits three ways. An **overwrite is a
+diff against what is on disk** — the same `DiffPreview` card `apply_edits` gets, and usually a
+*small* diff the JSON buried; a **new file shows its body** with a `NEW FILE` badge and a
+`17 lines · 338 B` header rather than a full-body `+` wall (X-23 (a): against empty, every line is
+"added", so green marks nothing); and **`delete_file`, which had the same silence and is strictly
+more destructive, now shows size + head** (X-23 (c)), capped at 40 lines against a create's 400 —
+what you need there is to recognize *which* file is going. `ToolPreview` became the union
+`DiffPreview | FilePreview` for it, and `sites` is optional now that a tool without anchors uses the
+diff shape. **The transcript half stores no diff** (X-23 (b), taking the row's own recommendation):
+`ToolBlock` pretty-prints `content` as text, because it is read long after the fact and a diff
+against a file that has since changed is a lie waiting to happen, while the content is what was
+actually sent. **D-16 is untouched** (X-23 (d)) — both new cards are read-only and the raw-JSON box
+is still the one editable truth. Two things fell out of building it: an **identical** write is
+labelled *"identical — this changes nothing"* instead of showing `+0 −0` over an empty box, and a
+preview is **never computed out of fence**, since reading the target before the user allows it is
+what the fence is for. Peeked in Chrome (VISUAL-LOG "X-23"), where the sharpest case appeared by
+accident: two files that look identical in the composer differing only by a **trailing newline** —
+`+1 −1` on the card, invisible in the raw JSON. **19 new Tier-0/1 tests.**
 
 **Peeks are now a tool, not a recipe** (Joshua's call, 2026-08-06): `harness/peek/peek.mjs`
 (`up` / `chat` / `new` / `shot` / `state` / `down`) does the isolated-config + fake-driver + CDP
