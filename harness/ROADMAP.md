@@ -628,10 +628,40 @@ read-once-for-cache, size-cap and self-modification calls spelled out. Nothing h
 code since it was filed — the system prompt is still `BASE_SYSTEM` + `systemPromptAddendum` and
 reads nothing from the workspace. Note it shares its injection seam with **X-25** (the date).
 
-**525 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 56 files). **H-06 is fixed (D-60)**,
-**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)** and **X-23 is fixed (D-63)**; **X-12b is DONE**.
+**546 Tier-0/1 green on the X-17 branch** (+2 replayed Fable; 56 files — X-17 adds 21 tests and no
+new file; three sibling branches land their own counts alongside it). **H-06 is fixed (D-60)**,
+**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)** and **X-23 is fixed (D-63)**; **X-12b is DONE**
+and **X-17 is DONE (D-66)**.
 **Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
+
+**X-17 FIXED 2026-08-07 (D-66) — a thread is re-named as it becomes something else.** X-09 named a
+thread from its opening exchange and stopped, so the threads worth finding in a list — the long ones —
+kept whatever they were about in their first two minutes. The re-ask is X-09's same ephemeral question
+(D-29 cache reuse, never appended to the tree); **everything decided here is *when* to spend it.** The
+trigger is **geometric**: the branch must have roughly **doubled in user turns** since the current name
+was chosen and grown by at least **6** turns — so a long thread pays about **log2(turns)** title calls
+over its life, ≤8 across 200 turns, which a unit test asserts rather than hopes. Independently, **a
+compaction is drift**: a fold is the system saying the early topic is no longer being sent, and it
+arrives beside a summary call that dwarfs the title. Rejected: every-N-turns (linear cost, wrong at both
+ends), a token threshold (measures how much was *said*, and reads 0 right after a fold), and a
+refresh-button (nobody re-titles by hand — that is the defect). **A name a person chose is never
+overwritten**, and the durable half of that was missing: `store.title()` has recorded `source` since
+X-09 and nothing ever read it back, so a resumed thread would have re-titled over Joshua's own rename at
+the next threshold — `load()` now folds `titleSource` onto the conversation (no source recorded reads as
+`auto`). **The index needed no new write path**, which is what X-12b's row demanded: the re-title calls
+the same `setTitle` the rail rename calls, emitting the `title` event the server already projects to the
+log *and* the index row, so history, rail card and resume all move from one write — and **no `web/`
+change was required**, since `session-state.ts` already folds that event. **A re-ask that keeps the name
+writes nothing at all** (the model is shown the current name and may reply with it verbatim), so the
+expected outcome on an undrifted thread is silence, not a rewrite of the same string. Opt-out per model
+config: `config set <name> --auto-retitle off`, read back by `config which`. *Found in passing and
+fixed:* `normalizeModelConfig` is a **whitelist**, so the new config field was silently dropped on load
+and the opt-out did nothing — H-06's class exactly, caught only because the CLI test asserted the round
+trip through disk. **21 new Tier-0/1 tests**, including the store round trip, the drift policy as a pure
+function, the HTTP index/live-session composition, and the `serve` **session factory** (the level H-06
+lived at). No peek: the slice is server-side and the only browser-visible surface is a title event the
+rail has rendered since X-09.
 
 **X-12b shipped 2026-08-06 — a past thread can now be renamed and removed.** The three parts the row
 named, all of which X-12a designed and cut. (1) **Delete is a reversible masking flag**: `DELETE
@@ -1267,7 +1297,6 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
-**auto-re-title a thread as it drifts (X-17)** ·
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **TTS auto-read when the agent hands the turn back (X-13)** ·
 **auto-read the workspace's `AGENTS.md` into the system prompt (X-15)** ·

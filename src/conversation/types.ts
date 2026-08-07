@@ -58,6 +58,12 @@ export interface Conversation {
   /** Human label for the thread (X-09) — auto-titled after the first exchange,
    *  renameable by hand. Absent until then, and on logs written before titles. */
   title?: string;
+  /** Where `title` came from (X-17). `manual` **pins** the name: auto-titling
+   *  never overwrites a name a person chose, and this is what carries that
+   *  across a resume — the source is recorded per title record in the log, so a
+   *  hand-rename survives a restart as a hand-rename. Absent on logs written
+   *  before the source was folded back, which read as `auto`. */
+  titleSource?: "auto" | "manual";
   entries: Entry[];
   activeLeaf: string | null;
   createdAt: string;

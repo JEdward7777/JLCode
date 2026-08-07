@@ -76,6 +76,9 @@ export interface ModelConfigPatch {
   /** Absolute compaction threshold in tokens (X-27); `null` clears it, putting
    *  the config back on the `window − buffer` derivation. */
   thresholdTokens?: number | null;
+  /** Re-title a thread as it drifts (X-17). Only `false` is stored — the
+   *  default is on, and writing `true` everywhere would be noise. */
+  autoRetitle?: boolean;
 }
 
 /** Edit an existing config in place (merging sampling), bumping updatedAt. */
@@ -112,6 +115,8 @@ export function updateModelConfig(
     ...(patch.systemPromptAddendum !== undefined ? { systemPromptAddendum: patch.systemPromptAddendum } : {}),
     ...(patch.defaultMode !== undefined ? { defaultMode: patch.defaultMode } : {}),
     ...(patch.defaultApproval !== undefined ? { defaultApproval: patch.defaultApproval } : {}),
+    // X-17: on is the default, so `true` clears the field rather than storing it.
+    ...(patch.autoRetitle === undefined ? {} : patch.autoRetitle ? { autoRetitle: undefined } : { autoRetitle: false }),
     ...(compaction ? { compaction } : {}),
     sampling: Object.keys(mergedSampling).length > 0 ? mergedSampling : undefined,
     updatedAt: new Date().toISOString(),

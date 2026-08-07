@@ -179,8 +179,10 @@ Nothing project-specific is written into the project folder.
 - **Conversation labels (planned, X-09):** a conversation carries a **human-readable label**,
   **auto-derived** from its opening exchange and **hand-editable** at any time. Today the index
   row is `id` + `workingDir` + `createdAt` only, so the history list and the session rail can't
-  tell two threads apart. Open questions live with X-09: whether an auto-title refreshes as a
-  thread drifts, whether a manual rename pins it, and what a fork inherits.
+  tell two threads apart. **Settled by X-17 (D-66):** the auto-title **does** refresh as a thread
+  drifts — on roughly a doubling in turns, or on a compaction — and a **manual rename pins**, in
+  this session and across a resume; auto-titling never overwrites a name a person chose. Still
+  open with X-09: what a fork inherits.
 
 ## 9. File access
 

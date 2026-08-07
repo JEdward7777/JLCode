@@ -84,6 +84,12 @@ export interface ModelConfig {
   systemPromptAddendum?: string;
   defaultMode: Mode;
   defaultApproval: ApprovalPolicy;
+  /** Re-title a thread as it drifts (X-17). Default **on**; `false` keeps the
+   *  name the opening exchange earned. The opt-out exists because every
+   *  re-title is a billed model call — cheap (the question rides the cached
+   *  live prefix, D-29/D-26) and rare (roughly log2(turns) over a thread's
+   *  life), but not free. Auto-*titling* itself stays on either way. */
+  autoRetitle?: boolean;
   compaction?: CompactionSettings;
   createdAt: string;
   updatedAt: string;

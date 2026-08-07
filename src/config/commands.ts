@@ -59,6 +59,10 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
                          171500. Must be below the context window. Omit it and
                          the threshold stays derived (window − buffer);
                          "none" clears it back to that.
+  --auto-retitle <on|off>
+                         re-title a thread as it drifts (X-17); on by default.
+                         Off keeps the name the opening exchange earned, and the
+                         single model call it cost.
   --offline              (set/which) don't refresh the model catalog
 `;
 
@@ -116,6 +120,13 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
       }
       patch.thresholdTokens = n;
     }
+  }
+  // Drift re-titling (X-17). On/off rather than a bare flag, so `--auto-retitle
+  // on` can turn it back on after it was turned off.
+  const retitle = flagString(flags, "auto-retitle");
+  if (retitle !== undefined) {
+    if (retitle !== "on" && retitle !== "off") throw new Error(`--auto-retitle must be "on" or "off"`);
+    patch.autoRetitle = retitle === "on";
   }
   return patch;
 }
@@ -221,6 +232,11 @@ export async function runConfig(args: string[]): Promise<number> {
       // And where compaction actually fires under it (X-27) — a threshold you
       // can set is only useful if you can read it back.
       process.stdout.write(thresholdLines(budget));
+      // Drift re-titling (X-17) — stated only when it is off, since a setting
+      // that is on by default and printed every time is just noise.
+      if (selected.autoRetitle === false) {
+        process.stdout.write(`    auto re-title off — threads keep their opening name\n`);
+      }
       return 0;
     }
 
