@@ -166,7 +166,13 @@ describe("X-12 — the history filter's working directory", () => {
   it("matches a directory reached through a symlink", async () => {
     // The papercut in the wild: `list()` compared raw strings, so launching via
     // a symlinked path hid every conversation recorded through the real one.
-    const link = path.join(os.tmpdir(), `jlcode-link-${Date.now()}`);
+    // The link name comes from mkdtemp, not `Date.now()`: two suites running at
+    // once (parallel worktrees are a normal workflow now) can land in the same
+    // millisecond, and the loser died with EEXIST on a test that has nothing to
+    // do with timing. mkdtemp gives us the unique name; the symlink goes beside
+    // it, since symlinkSync needs a path that does not exist yet.
+    const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-link-"));
+    const link = path.join(linkDir, "workspace");
     fs.symlinkSync(workDir, link, "dir");
     try {
       await post(makeApp(workDir), "/chat", { text: "recorded through the real path" });
@@ -174,6 +180,7 @@ describe("X-12 — the history filter's working directory", () => {
       expect(viaLink.conversations.length).toBe(1);
     } finally {
       fs.unlinkSync(link);
+      fs.rmSync(linkDir, { recursive: true, force: true });
     }
   });
 
