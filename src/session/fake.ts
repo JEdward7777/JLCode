@@ -86,7 +86,7 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   edit: <path> | <a> => <b>   → an apply_edits batch (unified-diff card, D-53)
  *   run: <command>              → a run_command call (approval card, edit-approve)
  *   read: <path>                → a read_file call
- *   ask: <question>             → a single-question ask_user form
+ *   ask: <q> [| a, b, c]        → a single-question ask_user form (D-72 escape hatch)
  *   form:                       → a multi-question ask_user form
  *   mcp: <tool> <json>          → a bridged MCP call, e.g. `mcp: srv__echo {"text":"hi"}`
  *
@@ -196,8 +196,17 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     if (msg.startsWith("delete:")) return toolCall("delete_file", { path: after("delete:") || "note.txt" });
     if (msg.startsWith("run:")) return toolCall("run_command", { command: after("run:") || "echo hi" });
     if (msg.startsWith("read:")) return toolCall("read_file", { path: after("read:") || "README.md" });
+    // `ask: <question>` — or `ask: <question> | a, b, c` to name the options,
+    // which is what poses the D-72 card with something other than Yes/No.
     if (msg.startsWith("ask:")) {
-      return toolCall("ask_user", { question: after("ask:") || "How should I proceed?", options: ["Yes", "No"] });
+      const [q, opts] = after("ask:").split("|");
+      const options = opts
+        ? opts
+            .split(",")
+            .map((o) => o.trim())
+            .filter(Boolean)
+        : ["Yes", "No"];
+      return toolCall("ask_user", { question: (q ?? "").trim() || "How should I proceed?", options });
     }
     // A bridged MCP tool by its namespaced name, args verbatim (P7b) — the only
     // way to drive an MCP call offline, and how the D-48 learn card is peeked.

@@ -85,9 +85,13 @@ Plan mode's git allowlist is a small fixed set (`git add`, `git commit`, and rea
   `rename`, `list_dir`, `glob`, `grep`. All paths pass through the **sandbox** (§6).
 - **Shell:** `run_command`, local execution, gated by §4.
 - **ask_user (D-18):** pauses the loop and emits an awaiting-input event. Two shapes — a
-  prose question waits on the text box; a structured call (questions, options, multiSelect,
-  optional free-text) renders buttons/fields. Resumes when the POSTed answer returns as the
-  tool result. Approvals reuse this awaiting-input machinery with an approve/deny/edit form.
+  prose question waits on the text box; a structured call (questions, options, multiSelect)
+  renders buttons/fields. Resumes when the POSTed answer returns as the tool result.
+  Options are suggestions only: **a free-text box sits beside them on every question and is
+  not the model's to withhold, and any question may be declined unless the model marked it
+  `required`** — the answer carries `chosen`/`typed`/`declined` so the result can tell the
+  three apart (D-72). Approvals reuse this awaiting-input machinery with an
+  approve/deny/edit form.
 - **MCP client (later):** generic; the sandbox validates path-bearing arguments
   *before* forwarding, so `file_utils` and others stay fenced even though they don't
   self-enforce.

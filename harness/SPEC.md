@@ -268,6 +268,15 @@ the remote system viewing the page (needed for the web/remote case; redundant in
   **`ask_user` tool** delivers **suggested-answer buttons** and/or **multiple questions at once**
   with options and/or text fields (same shape as this project's own structured-question tool).
   The agent chooses the shape; the frontend renders it; a plain-text frontend falls back to text.
+- **The person answering always has a way out (agreed, D-72).** Options are *suggestions*, never
+  a menu you are trapped in. A **free-text box sits beside the options on every question** and is
+  not the agent's to withhold; a question may be **declined**, and a decline comes back to the
+  model saying so — *"the user chose none of the offered options; do not substitute the closest
+  one"* — because a forced pick and a considered agreement must not produce the same tool result.
+  The agent may mark a question **`required`**, which removes the decline but never forces one of
+  the options: a typed answer always satisfies it. Enforced server-side, so it means the same to
+  every frontend. Same argument as edit-before-approve (§6, D-16): the human's answer has to be
+  expressible, and it cannot be conditional on the machine having anticipated it.
 
 ## 14. Diagnostics & logging
 

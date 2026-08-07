@@ -1141,3 +1141,69 @@ in `App.tsx`), a browser with no WebAudio at all (unit-tested — it stays silen
 and the tab marker still works), and re-arming from a *remembered* preference
 across a reload, which uses the same `arm()` the toggle does and was confirmed
 only through an ordinary click in the second pass.
+
+---
+
+## X-28 — the way out of an `ask_user` question · 2026-08-07 · ✅ looked good
+
+**Screenshots:** [`visual/x28-ask-escape.png`](visual/x28-ask-escape.png) (a
+single question with options — the free-text box and the Skip that were not
+there before) · [`visual/x28-ask-form.png`](visual/x28-ask-form.png) (the P5b
+multi-question form, every field with a text box) ·
+[`visual/x28-ask-required-blocked.png`](visual/x28-ask-required-blocked.png)
+(the one case where the skip is withheld, and it says why) ·
+[`visual/x28-ask-result.png`](visual/x28-ask-result.png) (what the model is
+actually handed — the point of the whole slice)
+
+Posed with `JLCODE_PEEK_PORT=7821 JLCODE_PEEK_CDP_PORT=9431 peek up`, the fake
+driver's `ask:` and `form:` seeds, and `peek click` for the mouse. The `ask:`
+seed now takes options (`ask: <q> | a, b, c`), because posing this card with a
+Yes/No question is posing the one shape where "pick one" is nearly honest.
+
+What was confirmed by eye:
+
+- **`ask: Which database should I use for the ledger? | sqlite, postgres`** —
+  the shape the defect was reported against. Two option buttons, and beneath
+  them a text box reading *"…or say something else — you don't have to pick
+  one"* and a dashed **Skip this question** beside Submit, with one line under
+  the actions saying what skipping means. Before this slice the same call
+  rendered two buttons and a disabled Submit, full stop.
+- **Skip actually skips, and the model is told so.** Clicking it (`peek click
+  ".ask-skip"`) settled the turn, and the tool result on disk reads *"The user
+  declined to answer: … declined — the user did not answer this"* followed by
+  the instruction not to substitute the closest option. Not an empty string,
+  which is what a blank would have been.
+- **The multi-question form (P5b) got the same treatment field by field** —
+  including the two that only ever had buttons. The `choose any` hint and the
+  header chips are untouched; the text box is simply always there now.
+- **`required` is the only thing that takes the escape away, and it shows its
+  work.** With `Ticket` required and left blank, *both* buttons go disabled and
+  an amber line names the offender: *"An answer is required: Which ticket is
+  this for?"*. A disabled button with no explanation would have been the same
+  defect wearing a different hat. With two of four answered the labels read
+  **Submit 2 of 4** / **Skip the rest**, so the card says what pressing either
+  one would send.
+- **What the model receives, read in the transcript** (expanded with `peek
+  click ".tool-head"`): four labelled lines, each keeping its own shape —
+  `picked none of the offered options and typed: duckdb`, two `declined`, and
+  one plain `JL-411` — then the decline note, once. That is the whole argument
+  of D-72 in one screenshot: three different things that used to flatten into
+  one comma-joined string.
+- **Live, against the real server, not a mock:** POSTing the form with the
+  required field blank came back **400** (`This question requires an answer:
+  Which ticket is this for?`) and the session stayed `awaiting-input`; the same
+  POST with `JL-411` typed went through. `required` is enforced on the server,
+  so it means the same thing to a CLI as to the card.
+
+**A defect this turned up that no test had reached:** `submitAnswer` cleared
+`pendingAsk` optimistically and never restored it on failure. Until D-72 gave
+`answer()` a reason to refuse, nothing could fail there — so a rejected answer
+would have left the session sitting in `awaiting-input` with the card gone and
+no way to answer it. Fixed by putting the request back on the error path.
+
+Not exercised visually: typing into a field (peek has no keyboard — the typed
+cases were driven over HTTP against the same live server and are unit-tested),
+and Enter-to-submit on a single question for the same reason. Also unchanged and
+deliberately so: the **approval** card, whose Deny button, editable raw-args box
+(D-16) and composer note (D-51) already give the refusal and the override this
+slice was adding — see D-72's rationale.

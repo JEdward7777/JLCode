@@ -128,7 +128,12 @@ tool, its arguments and a size hint, expandable to the full output — so you ca
 check the model's work instead of taking its summary on faith. An approval card
 is also a chance to talk: anything you type in the composer while one is up rides
 along with **Approve**/**Deny** and joins the transcript, so you can redirect the
-run without waiting for the queue to drain at the next turn boundary. Each thread names
+run without waiting for the queue to drain at the next turn boundary. When the agent
+**asks you a question**, its suggested answers are buttons — but they are only
+suggestions: every question also has a text box for saying something it didn't think
+of, and a **Skip** for saying nothing at all. A skipped question goes back as *"the
+user declined — none of these"*, not as the closest option, so the agent can't quietly
+proceed on an answer you never gave. Each thread names
 itself after the first exchange and **re-names itself as it wanders** — a thread that
 has roughly doubled in length, or that has just been compacted, gets asked again, so a
 long thread isn't stuck with what it was about in its first two minutes. **Rename it

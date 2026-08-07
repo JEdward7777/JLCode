@@ -453,6 +453,31 @@ presets too, and `jlcode config which` should show the effective window. Whoever
 also add the test that would have caught it: an assertion at the **`serve` wiring level** that a
 session built by `newSession` has a budget, not just a `Session` unit test that injects one.
 
+**Filed 2026-08-07, FIXED 2026-08-07 (D-72) — see the X-28 block in the status section above:
+X-28 — `ask_user` forces a choice, with no skip and no free-text escape.** Joshua, from real use,
+via `observed_items_needing_filed_in_harness.txt`. The card (`AskForm`, `web/src/App.tsx:2795`)
+rendered a question's `options` as buttons and gated Submit on `q.selected.length > 0`; the
+free-text input was drawn only when the model set `allowFreeText`, which it essentially never did
+because the flag is opt-in and the schema described it as "allow a typed answer too". So a
+three-option question had exactly three expressible answers, and there was no skip, no "none of
+these", and no way to say the thing the question failed to ask about. **Why this is worse than a
+UI annoyance:** the tool exists to get a human's *actual intent*, and a forced pick produced a tool
+result byte-identical to a considered agreement — nothing downstream could tell them apart, nothing
+errored, and the model proceeded confidently on an answer the person did not mean. That is the
+H-06/D-58 shape (a defect that never raises anything) applied to intent rather than to cost. The
+escape had in fact existed in the type since P5b (D-41 built the multi-question form D-18
+designed); it was simply the model's to withhold, which is the part that was wrong. The neighbouring
+principle was already in the codebase: **D-16** keeps the raw-args box as the single editable truth
+at an approval pause precisely so the human's override is expressible, and **D-48**'s learn
+questions on that same card are declinable by construction ("unanswered stays fenced"). This is
+that argument one surface over. Decisions taken and recorded in **D-72**: free text is
+unconditional and no longer a flag; a decline is explicit, distinct from every option, and carries
+an instruction not to substitute the closest one; `required` exists but can only compel *an*
+answer, never a choice among the offered ones, and is enforced server-side; the multi-question form
+(P5b) declines per field, so answering two of three is a normal outcome; and the approval card is
+deliberately left as it is. A question the user simply never answers is unchanged — the loop stays
+paused, which is correct — except that abandoning the card is no longer the only way to say no.
+
 **Filed 2026-08-04, FIXED 2026-08-06 (D-63) — see the X-23 block in the status section above: X-23 —
 `write_file` shows no preview but raw JSON, so a file write is unreadable
 at the moment you're asked to approve it.** Joshua, from real use. The mechanism to fix it already
@@ -654,12 +679,38 @@ operating guide. **30 new Tier-0/1 tests**, including four at the **`serve` sess
 the level H-06 and D-60 both hid at, and the only level that can see a prompt production forgets to
 compose. No peek: nothing rendered in the browser changed.
 
-**626 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-07, 59 files). **H-06 is fixed (D-60)**,
-**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
-(D-64)**, **X-26 is fixed (D-65)**, **X-17 is fixed (D-66)** and **X-15 is fixed (D-69)**; **X-12b is DONE**, and `peek` grew
-a mouse and a movable port (D-67).
+**PLACEHOLDER-STATUS-LINE**
 **Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
+
+**X-28 FIXED 2026-08-07 (D-72) — a question the agent asks now has a way out.** A call with N
+options rendered N buttons and a Submit that stayed disabled until one was clicked, so the only
+answers a person could give were the ones the model had already thought of — *"I want to tell you
+something you didn't anticipate"* became *"pick the closest wrong answer"*, and the model then
+proceeded on it confidently. **Free text is now on every question, unconditionally**: the
+`allowFreeText` flag is gone from the tool schema, the types and the card, because a flag *letting*
+the person speak is the wrong shape for a tool whose whole purpose is to hear what was not
+anticipated (the same argument as D-16 one surface over — the human's override has to be
+expressible, and cannot be conditional on the machine having offered). **A blank is an explicit
+decline and reaches the model as one**: `AskUserAnswer` carries `chosen`/`typed`/`declined` beside
+the flat answer, so the tool result distinguishes *chose "postgres"* from *picked none of the
+offered options and typed: duckdb* from *declined*, where all three used to flatten into one
+comma-joined string — and it says outright, once per result, that a decline means *none of these*
+and the closest option must not be substituted. A blank with **no** flag reads as a decline too, so
+a plain-text frontend gets the honest rendering for free. **`required` can compel an answer, never
+a choice**: enforced in `Session.answer()` rather than only in the card (so a CLI sees the same
+rule — a blank required question is a 400 and the pause survives it), and a typed answer always
+satisfies it. The card gains a visible **Skip** beside Submit, labelled for what it would send
+(`Skip this question` / `Skip the rest` / `Skip all`, and `Submit 2 of 4`), because the way out has
+to be something you can see rather than an empty form you reason your way to; when `required`
+withholds it, an amber line names the question rather than leaving a dead button. **The approval
+card is deliberately untouched** — Deny is its refusal, the raw-args box its override (D-16), the
+composer note its free text (D-51), and its D-48 learn questions are already declinable. The gating
+logic moved to `web/src/ask-form.ts`, since it was a *rendering* decision with no test at all,
+which is how it survived since P5b. Peeked in Chrome (VISUAL-LOG "X-28"), which also turned up a
+latent hole the new refusal made reachable: the card was cleared optimistically and never restored
+on error, so a rejected answer would have stranded the session in `awaiting-input` with nothing to
+answer it. **26 new Tier-0 tests.**
 
 **X-17 FIXED 2026-08-07 (D-66) — a thread is re-named as it becomes something else.** X-09 named a
 thread from its opening exchange and stopped, so the threads worth finding in a list — the long ones —
@@ -837,12 +888,12 @@ nothing and only created the obligation to remember. Joshua's call on seeing the
 A field nobody has invented yet (`futureSetting`) is asserted to survive load and a save→load round
 trip, standing in for the next one.
 
-**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (5 items as of 2026-08-06):
+**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (4 items as of 2026-08-07):
 the header model chip truncating from the wrong end (confirmed by eye during the H-06 peek —
 `openai/gpt-4o-mi…` hides the model and keeps the vendor), auto-scroll stealing the viewport while
-you read further up, `ask_user` forcing a choice with no skip/free-text escape, TTS jamming
-intermittently, and no todo tool for the agent (that last one Joshua flagged as needing a
-question-answering round before implementing).
+you read further up, TTS jamming intermittently, and no todo tool for the agent (that last one
+Joshua flagged as needing a question-answering round before implementing). **`ask_user` forcing a
+choice with no skip/free-text escape is now filed and fixed** — X-28 above, D-72.
 
 ---
 
