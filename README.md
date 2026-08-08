@@ -151,6 +151,20 @@ the foot of the rail; it is on by default, but browsers only allow sound after a
 click, so the first click you make in the tab is what actually arms it (toggling
 it on plays the blip once, which is how you know it got through).
 
+Under it is the louder neighbour: **read replies aloud**. With it on, the session
+you have on screen *speaks* its reply the moment the turn comes back — or, if it
+paused, tells you why: the question it is asking, the command it wants to run,
+the context window filling up. It is **off by default**, since a voice starting
+up unannounced is a fright rather than a notification. Only the session in view
+ever speaks, so several running at once can never talk over each other — a
+background one blips instead, which is the same division the two switches make
+everywhere. Start typing and it stops mid-sentence, as does answering the thing
+it just read to you or switching to another session; the ◼ beside the message (or
+in the rail, for a pause) stops it by hand. Each reply still has its own 🔊 if you
+would rather ask for one at a time. Same autoplay rule as the blip: the browser
+wants a click first, so turning it on says *"Auto-read is on."* back at you —
+which is also how you find out the machine has a voice installed at all.
+
 When a turn fails, **↻ Retry** sits on the error. A failed attempt writes nothing
 to the thread, so retrying re-sends exactly what was sent before — go top up your
 OpenRouter credits, come back, click it, and the answer lands under the message

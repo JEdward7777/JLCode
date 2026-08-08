@@ -20,7 +20,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-Built, tested (**626 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
+Built, tested (**PLACEHOLDER-TOTAL Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
 
 > **Cost (2026-08-04, D-58/D-59).** Two compounding defects found by reading the debug journal of a
@@ -680,10 +680,9 @@ the level H-06 and D-60 both hid at, and the only level that can see a prompt pr
 compose. No peek: nothing rendered in the browser changed.
 
 **PLACEHOLDER-STATUS-LINE**
-**630 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-08, 60 files). **H-06 is fixed (D-60)**,
 **X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
-(D-64)**, **X-26 is fixed (D-65)** and **X-17 is fixed (D-66)**; **X-12b is DONE**, and `peek` grew
-a mouse and a movable port (D-67).
+(D-64)**, **X-26 is fixed (D-65)**, **X-17 is fixed (D-66)** and **X-13 + H-07 are fixed (D-70)**;
+**X-12b is DONE**, and `peek` grew a mouse and a movable port (D-67).
 **Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
@@ -859,6 +858,37 @@ so the committed Fable tests replay with `turnTimestamps: false`, and the offlin
 the block before reading the user's words (or `write: a.txt | hi` would write the timestamp into the
 file). **26 new Tier-0/1 tests.** No peek: nothing rendered changed in the browser.
 
+**X-13 FIXED 2026-08-08 (D-70) — the reply reads itself, and the TTS that used to jam no longer can.**
+TTS was per-message and manual, so hearing a reply meant noticing it first. The session **you are
+looking at** now reads its reply aloud the moment the turn comes back — and *only* that session:
+speech is serial and unattributable, so **the two notifications divide the sessions between them**,
+a background one gets X-26's blip and the one in front of you gets read out. That disposes of X-13's
+queue question (one voice, nothing to queue) and of the worst failure mode it could have had (four
+panes talking at once). **A pause reads why it stopped** — the question and its options, the tool an
+approval is about and *never* the file body it would write, the compaction pause, the cap, a stalled
+write — in X-26's attention precedence. A failed turn reads its notice, which is why `noticeKind`
+now names the event that raised it: the notice *text* cannot tell "the provider refused" from "you
+pressed Stop, and know it", and only one of those is worth saying aloud. `tts.autoRead` joins
+`notify.blip` in the NOTIFICATIONS cluster, **default off** — the one place this parts company with
+its neighbour, because a chirp nobody asked for is a notification and a voice reading a page of
+prose at someone who did not know the feature existed is a fright. Typing stops it mid-sentence;
+so does answering, switching session, or turning it off. Nothing empty is read, the reply is taken
+from the branch actually on screen (`pathToLeaf` — a sibling's reply is H-05's hazard in audio), and
+a session whose tree has just loaded is primed in silence. **No server change** — the settled states
+already ride the state frame — and the trigger keys on **content, not a counter**, which is the one
+place it is simpler than X-26: an entry id changes whether or not React batched the render, so
+`settleSeq` was not needed. Peeked in Chrome (VISUAL-LOG "X-13"), where the browser taught two
+things: the arming gesture is **sticky**, so one ordinary click buys an utterance fired from a timer
+fourteen seconds later (which is the only reason auto-read can work — it never fires from a click);
+and auto-read was lighting a **stop button nobody could see**, because `.msg-tools` is `opacity: 0`
+until you hover the turn. One CSS rule now keeps the controls of a message that is *being read*
+visible. **41 new Tier-0 tests**, and it shipped with H-07 below, which is the same object.
+
+**H-07 FIXED 2026-08-08 (D-70) — "TTS jamming intermittently" was a five-out-of-five reproducible
+latch.** Filed off Joshua's unfiled list and fixed in the same slice as X-13, because auto-read
+would have turned an occasional stuck button into a feature that stops working. See the hardening
+section below for the reproduction and the fix.
+
 **X-26 FIXED 2026-08-07 (D-65) — a session that stops while you are looking elsewhere now says so.**
 Nothing in the client made a sound except TTS, so "the agent handed the turn back" was only ever
 discoverable by looking at it. It now plays a **two-note chirp** (880 → 1318.5 Hz, ~70ms each,
@@ -892,12 +922,12 @@ nothing and only created the obligation to remember. Joshua's call on seeing the
 A field nobody has invented yet (`futureSetting`) is asserted to survive load and a save→load round
 trip, standing in for the next one.
 
-**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (as of 2026-08-08): TTS jamming
-intermittently, and no todo tool for the agent (that last one Joshua flagged as needing a
-question-answering round before implementing — the questions are drafted for him in
-`QUESTIONS-FOR-JOSHUA.md`). Three of the five have now been filed *and* fixed: `ask_user`'s missing
-escape as **X-28 (D-72)**, and the two rendering defects as **X-29 and X-30 (D-71)** — both entries
-above.
+**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (as of 2026-08-08): **one item
+left** — no todo tool for the agent, which Joshua flagged as needing a question-answering round
+before implementing; the questions are drafted for him in `QUESTIONS-FOR-JOSHUA.md`. The other four
+have all been filed *and* fixed in the same stretch: `ask_user`'s missing escape as **X-28 (D-72)**,
+the chip and the scroll theft as **X-29 and X-30 (D-71)**, and the intermittent TTS jam as
+**H-07 (D-70)**.
 **X-29 and X-30 FIXED 2026-08-08 (D-71) — two surfaces that were right about the data and wrong
 about what the human was looking at.** Both came off Joshua's observed list as one line of prose
 each, and both had survived every test suite, because a test only fails on what it was pointed at.
@@ -1291,6 +1321,43 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
+- **H-07 — the browser's TTS jams: an utterance that fails leaves the UI stuck "speaking" forever.**
+  On Joshua's unfiled observed-items list as one line ("TTS jamming intermittently") from
+  2026-08-06; **reproduced and FIXED 2026-08-08 (D-70)**, shipped with X-13 because auto-read makes
+  an intermittent jam constant.
+  - **Symptom.** The per-message 🔊 turns to ◼ and stays there with nothing being read. Clicking the
+    same message again clears it, which is why it read as a shrug rather than a bug — and why it
+    looked intermittent: it depends on which terminal event the engine happened to pick.
+  - **Cause.** `toggleSpeak` (`web/src/App.tsx`) registered `u.onend` and **no `onerror`**. Chrome
+    fires `error` **instead of** `end` on every failure path, and those paths are ordinary, not
+    exotic: `interrupted` whenever one reply replaces another, `synthesis-failed` on a cold engine,
+    `not-allowed` with no user gesture. Any of them left `speakingId` latched, and the single
+    `speakingId` invariant is what the whole feature rests on.
+  - **Observed** (real Chrome, VISUAL-LOG "X-13"). Twenty replies each replacing the last:
+    **19 ended `error: "interrupted"` with no `end` event**, and one was accepted by `speak()` and
+    **never started at all** (~5% dropped outright — the "intermittent" in one number). The
+    deterministic case is simpler: click 🔊 once on a cold engine and wait — **five fresh browsers,
+    five permanently latched buttons**, every one `error: "synthesis-failed"` with `speakingId`
+    still set fifteen seconds later.
+  - **The fix — one owner, and every exit accounted for.** `web/src/tts.ts` owns `speechSynthesis`
+    for the whole client; the 🔊 button and auto-read are both callers, so the UI's idea of
+    "speaking" and the engine's cannot drift. Every terminal event is handled; our own cancels are
+    told apart by a **generation counter** rather than an error code (the replaced utterance's
+    `interrupted` arrives *after* the replacement is registered); `speak()` **never shares a task
+    with `cancel()`**; and two watchdogs — no `start` within 4s, no `end` within a generous estimate
+    — reset the channel even when the engine says nothing at all. Re-measured in the same rig:
+    **0/5 latched**, cleared at 61ms by the `onerror` handler, with neither watchdog needed. That
+    ordering matters: the fix addresses the cause, and the watchdogs are the backstop.
+  - **Deliberately not done: chunking.** It is the usual hedge against Chrome's ~15s cutoff on long
+    utterances, which **could not be reproduced here** (an 1,800-character utterance ran past 40s
+    with no cutoff). Chunking would pay a certain ~300ms gap at every sentence boundary — the
+    measured `start` latency, once per chunk — against a bug this container cannot demonstrate. A
+    periodic `resume()`, free on a healthy engine, hedges it instead. **If Joshua ever hears a reply
+    cut off at about fifteen seconds, chunking is the fallback and `tts.ts` is where it goes.**
+  - **Coverage.** `test/web-tts.test.ts` — the fake engine is built to the *measured* behaviour
+    (error instead of end, asynchronous `start`, a `speaking` flag that lies), so each test is a
+    state the old shape could enter and never leave.
+
 - **H-05 — a fork or branch-switch *during a running turn* re-parents the in-flight reply; the
   pointer moves even when the edit is rejected.** Found 2026-07-28 by inspection + a scratch
   repro, after Joshua asked what happens if you edit a message while the model is working.
@@ -1460,7 +1527,6 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
-**TTS auto-read when the agent hands the turn back (X-13)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
 **a `write_file` preview instead of raw JSON (X-23)** ·

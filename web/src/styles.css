@@ -1955,3 +1955,12 @@ figure.mermaid svg {
   color: var(--text);
   border-color: var(--accent);
 }
+/* A message that is being read shows its controls without being hovered.
+   `.msg-tools` is `opacity: 0` until the pointer is over the turn (P5d), which
+   is right for affordances you go looking for and wrong for a state you did not
+   ask for: auto-read lights the ◼ on the reply it is reading, and the peek found
+   that nobody can see it. The stop control for a thing that started by itself
+   has to be visible by itself. */
+.msg-tools:has(.icon.on) {
+  opacity: 1;
+}

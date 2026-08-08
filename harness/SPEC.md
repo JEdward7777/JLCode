@@ -233,7 +233,10 @@ Nothing project-specific is written into the project folder.
   awaiting-input), POST for browser→server actions (send, approve/deny/edit, answer, switch).
 - **Rich rendering:** the chat view renders **markdown**, including **Mermaid diagrams**
   and inline images (§16). *(Near-term.)*
-- **Text-to-speech button** to read the agent's output aloud. *(Nice-to-have.)*
+- **Text-to-speech** for the agent's output: a per-message button, and an **auto-read**
+  preference that speaks the reply of the session you are looking at as soon as it hands the
+  turn back — a finished answer, or the reason it paused (X-13, D-70). One voice: a background
+  session announces itself with the blip instead (X-26), so several sessions never talk at once.
 - **Whimsical "percolating" messages (nice-to-have):** while the agent works, cycle a random
   playful status line (à la `Reticulating splines…`) to raise a smile. Ship a list of ~20 and
   let it grow. Starter set:

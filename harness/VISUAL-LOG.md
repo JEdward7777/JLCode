@@ -1246,3 +1246,132 @@ construction and is covered by `isViewSwitch`'s tests.
 message, because `activeLeaf` advances with each appended entry and the code read
 that as a branch switch. See D-71(c) — the fix is a pure `isViewSwitch`, and the
 regression is now pinned by tests that can actually reach it.
+## X-13 — auto-read, and the jam underneath it (H-07) · 2026-08-08 · ✅ looked good (and this time the API was made to testify)
+
+**Screenshots:** [`visual/x13-rail-notify-off.png`](visual/x13-rail-notify-off.png)
+(the NOTIFICATIONS cluster with the new toggle, **off** — the default) ·
+[`visual/x13-rail-notify-on.png`](visual/x13-rail-notify-on.png) (on, persisted,
+and the *◼ reading aloud* row that appears only while something is being read) ·
+[`visual/x13-reading-reply.png`](visual/x13-reading-reply.png) (a reply being
+read: the ◼ lit on the message itself **and** the rail row, together)
+
+**A screenshot cannot show speech, and this container has no voice at all** —
+`speechSynthesis.getVoices()` returns **0** and every utterance is handled by a
+null engine. So, as in X-26, the log says which of three kinds each claim is:
+what was **seen** (the cluster, the lit ◼, the states that trigger it), what was
+**read out of the live page** (`localStorage`, `speechSynthesis.speaking`, and a
+recorder wrapped around `speak`/`cancel` that still delegates to the real
+engine), and what was **measured as engine behaviour** (utterance event traces,
+timed). **Nothing here was confirmed by ear. Nobody has heard this feature yet.**
+
+Posed with `peek up` on 7801/9411 and the fake agent driver. The toggle and the
+arming gesture need a real mouse (`peek click` did the toggle); the rest needed
+peek's own Chrome driven directly, because a recorder has to be installed
+*before* the turn arrives and `peek shot` opens a fresh tab per command.
+
+### The jam first — H-07, "TTS jamming intermittently"
+
+Reproduced before anything was written, against the **shipped** `toggleSpeak`
+shape run verbatim in the browser.
+
+- **What Chrome actually does.** `error` is a normal outcome and it fires
+  **instead of** `end`. Twenty replies each replacing the last (a reply every
+  900 ms — the auto-read case and the impatient-clicker case at once) produced
+  **19 utterances that ended in `error: "interrupted"` with no `end` event**, and
+  one — run 16 — that `speak()` accepted and which **never started at all**
+  before dying `interrupted`. That single silent drop is ~5%, and 5% is exactly
+  what "jams intermittently" feels like from the outside.
+- **The deterministic case, and the actual defect.** The simplest thing a user
+  can do: click 🔊 once, on a cold engine, and wait. **Five fresh browsers, five
+  latched buttons** — every trial failed `error: "synthesis-failed"` and the UI's
+  `speakingId` was **still set 15 seconds later with nothing being read**. The
+  shipped code registered `u.onend` and no `onerror`, so this is a state it can
+  enter and never leave: the ◼ stays up, and the next auto-read believes it is
+  still busy.
+- **Why it is intermittent and not constant.** It depends entirely on which
+  terminal event the engine picks, which varies with how cold it is and whether
+  anything interrupted it. In one 20-reply run the last utterance happened to
+  `end` cleanly and the UI cleared; in another the first two failed outright.
+  Same code, same browser, same page.
+- **Two smaller facts the browser volunteered**, both of which shape the fix:
+  `start` is asynchronous (**130–620 ms** after `speak()`), so "did it begin?"
+  cannot be answered in the calling task; and the failing error can arrive
+  **synchronously inside `speak()` itself**, which means a naive fix that
+  attaches `onerror` *after* `synth.speak(u)` would silently miss it.
+- **The fix, measured the same way, in the same rig.** Five fresh browsers,
+  same single click: **0/5 latched.** The trace says which mechanism did it —
+  `engine.cancel@0 → ui=e1@0 → engine.speak@61 → error:synthesis-failed@61 →
+  ui=null@61`. The **`onerror` handler** cleared it, immediately; neither
+  watchdog was needed. That is the point worth being careful about: the fix
+  addresses the *cause* (a terminal event with no handler), and the watchdogs
+  are the backstop for the case where the engine says nothing at all, not the
+  thing doing the work here.
+- **What was *not* reproduced:** Chrome's ~15 s cutoff on long utterances. An
+  1,800-character utterance here started and was still going 40 s later with no
+  cutoff and no error — consistent with the null engine's simulated ~14
+  characters/second (≈126 s for that text), not with a watchdog. So chunking is
+  **not** what shipped: it would pay a certain ~300 ms gap at every sentence
+  boundary (that measured `start` latency, once per chunk) to hedge a bug this
+  container cannot demonstrate. A periodic `resume()` — free on a healthy engine
+  — hedges it instead. If Joshua ever hears a reply cut off mid-sentence at
+  about fifteen seconds, chunking is the fallback and `tts.ts` is where it goes.
+
+### Auto-read, read out of the live page
+
+A recorder wrapping `speechSynthesis.speak` (still delegating) says what the
+shipped client asked to have said, and when:
+
+- **The toggle round-trips and speaks its own confirmation.** Click →
+  `checked`, `jlcode.tts.autoRead = "true"`, and one utterance: *"Auto-read is
+  on."* That click is both the preference and the gesture.
+- **A settled reply is read, and it is the reply.** Posting a turn produced
+  exactly one utterance, `"You said: Tell me what changed in the notifications
+  cluster."` — at settle, not during the stream.
+- **A pause reads why it stopped, not the prose before it.** An `ask:` pause
+  produced `"A question for you. Should the migration run now? Options: Yes,
+  No."` That is X-13 (b) working end to end: the question, and its options, and
+  nothing about the paragraph above it.
+- **A background session says nothing.** A second session was posted a turn
+  while the first was on screen; it settled; **zero** utterances.
+- **…and switching to it stays silent.** Focusing that session afterwards
+  produced **zero** utterances — it does not read out what it said while you
+  were away. It has already blipped; it is history by the time you look.
+- **Typing stops it mid-sentence.** One `input` event on the composer → exactly
+  **one** `cancel()`.
+- **Nothing speaks before a gesture, and the design depends on this being
+  sticky.** The first attempt at the reply screenshot came back with no ◼ and no
+  rail row, because that tab had never been clicked — `speak()` refused, exactly
+  as intended. Measured separately: a `speak()` with no gesture anywhere in the
+  document's history fails `not-allowed`, but **one ordinary click is enough for
+  an utterance fired from a timer fourteen seconds later** (`isActive: false`,
+  `hasBeenActive: true`). That is what makes auto-read possible at all, since it
+  always fires from a wire event and never from a click.
+
+### The defect this peek caught, which no test would have
+
+**Auto-read lit a stop button nobody could see.** A reply being read gets `.on`
+on its own 🔊/◼ — but `.msg-tools` is `opacity: 0` until the turn is hovered
+(P5d), which is right for an affordance you go looking for and wrong for a state
+you did not ask for. So the only visible sign that the machine had started
+talking was in the rail. Fixed with one rule — `.msg-tools:has(.icon.on)` stays
+visible — and the reply screenshot above is after the fix: the ◼ is lit on the
+message *and* the rail row is up, which is what makes "what is being read" and
+"make it stop" answerable without hunting.
+
+**Screenshot honesty.** `x13-reading-reply.png` was taken with
+`speechSynthesis.speak`/`cancel` **stubbed to no-ops** — the same substitution
+X-26 made with `OfflineAudioContext`, and for the same reason. This engine fails
+most utterances synchronously in ~60 ms, which is not a window a shutter can
+catch; a `speak` that neither fails nor ends holds the app in the state a real
+voice would hold it in, until the 4 s start-watchdog resolves it. Everything
+rendered in that image is the real client. `x13-rail-notify-on.png` needed no
+stub at all — it caught a genuine utterance in flight.
+
+**Not verified: any of how it sounds.** Whether the reply is pleasant to listen
+to, whether *"A question for you."* is the right preamble or grates by the tenth
+time, whether the default rate is too slow, and whether reading a very long
+reply in full is what Joshua wants rather than a cap — none of that can be known
+without a voice. Also not exercised in the browser: an approval pause read aloud
+(covered at Tier-0, and the ask pause exercised the same code path), the
+compaction and cap pauses, and a browser with no `speechSynthesis` at all
+(unit-tested — it stays silent and returns false rather than throwing).
