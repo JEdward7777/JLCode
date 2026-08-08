@@ -1848,6 +1848,9 @@ figure.mermaid svg {
   font-size: 11px;
   color: var(--muted);
   margin-top: -2px;
+}
+
+/* ==========================================================================
    D-71 — the model chip and the tail-following transcript (branch ui-chip-scroll)
    Appended as one block on purpose: three branches merge into this file.
    ========================================================================== */
