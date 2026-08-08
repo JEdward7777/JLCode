@@ -152,7 +152,11 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     // model would: a few words off the opening message, not an echo of the ask.
     if (msg.startsWith("Ignore the task for one moment. Name this conversation.")) {
       const opening = req.messages.find((m) => m.role === "user");
-      const words = (typeof opening?.content === "string" ? opening.content : "")
+      // The opening turn carries X-25's environment block too, and it must come
+      // off *before* the words are counted — otherwise a short message (or a
+      // bare driver prefix like `form:`, which leaves nothing behind) titles the
+      // thread `<environment_details> # Current Time …`. Seen in a peek.
+      const words = stripEnvironmentDetails(typeof opening?.content === "string" ? opening.content : "")
         .replace(/^\w+:\s*/, "") // drop a driver prefix like `run:` / `read:`
         .split(/\s+/)
         .filter((w) => w !== "")

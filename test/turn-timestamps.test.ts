@@ -19,6 +19,8 @@
  *    (the exact defect D-58 fixed at a measured 12.3x);
  *  - **gap-legible**: two turns a day apart carry two different stamps.
  */
+import { fakeAgentDriver } from "../src/session/fake";
+import { withEnvironmentDetails } from "../src/conversation/wire";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
@@ -416,5 +418,45 @@ describe("config set --turn-timestamps (X-25e)", () => {
     await runConfig(["set", "Opus", "--turn-timestamps", "off", "--offline"]);
     expect(stored().compaction?.thresholdTokens).toBe(171_500);
     expect(stored().environment?.turnTimestamps).toBe(false);
+  });
+});
+
+/**
+ * The stamp must never leak into a *title*. The fake driver answers X-09's
+ * ephemeral naming question from the opening user turn, and that turn now
+ * carries an `<environment_details>` block — so counting words before stripping
+ * it names a short thread after the timestamp. Found by eye in an X-28 peek,
+ * where a bare `form:` seed left nothing but the block and the rail card read
+ * `<environment_de…`.
+ */
+describe("the stamp never becomes the thread's name", () => {
+  const NAME_ASK = "Ignore the task for one moment. Name this conversation.";
+  const stamped = (text: string) =>
+    withEnvironmentDetails(text, [{ heading: "Current Time", lines: ["Current time in ISO 8601 UTC format: 2026-08-08T20:30:00.000Z"] }]);
+
+  const titleFor = async (opening: string): Promise<string> => {
+    const driver = fakeAgentDriver();
+    let out = "";
+    for await (const ev of driver.streamChat({
+      model: "fake",
+      messages: [
+        { role: "user", content: stamped(opening) },
+        { role: "user", content: NAME_ASK },
+      ],
+    })) {
+      if (ev.type === "text") out += ev.delta;
+    }
+    return out;
+  };
+
+  it("names the thread from the words, not the block", async () => {
+    expect(await titleFor("fix the scroll defect")).toBe("Fix the scroll defect");
+  });
+
+  it("does not read the block when the seed leaves no words behind", async () => {
+    const title = await titleFor("form:");
+    expect(title).not.toContain("environment_details");
+    expect(title).not.toContain("Current Time");
+    expect(title).toBe("A new conversation");
   });
 });
