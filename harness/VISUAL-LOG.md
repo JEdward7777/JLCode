@@ -1207,3 +1207,42 @@ and Enter-to-submit on a single question for the same reason. Also unchanged and
 deliberately so: the **approval** card, whose Deny button, editable raw-args box
 (D-16) and composer note (D-51) already give the refusal and the override this
 slice was adding — see D-72's rationale.
+## X-29 / X-30 — the chip that hid the model, and the scroll that stole the view · 2026-08-08 · ✅ looked good
+
+**Screenshots:** [`visual/d71-chip-before.png`](visual/d71-chip-before.png) →
+[`visual/d71-chip-after.png`](visual/d71-chip-after.png) (the chip) ·
+[`visual/d71-scroll-before.png`](visual/d71-scroll-before.png) →
+[`visual/d71-scroll-after.png`](visual/d71-scroll-after.png) (reading up while a
+reply streams) · [`visual/d71-jump-new.png`](visual/d71-jump-new.png) (the count
+building) · [`visual/d71-jumped.png`](visual/d71-jumped.png) (back at the tail)
+
+Posed on `JLCODE_PEEK_PORT=7811 JLCODE_PEEK_CDP_PORT=9421` (D-67's movable port,
+so this ran while a sibling drove its own browser on 7801/9411) with the fake
+driver, a config id of `anthropic/claude-opus-5:online`, and turns long enough
+that a reply takes real time to render.
+
+Confirmed with my own eyes:
+
+- **The chip before is `an…`** — two letters of "anthropic", which names neither
+  the vendor nor the model. It is worse than the filed report suggested: the
+  report cited `openai/gpt-4o-mi…`, but at the width the chip actually gets,
+  what survives is the *first two characters of the namespace*.
+- **The chip after is `…/claude-opus-5:online`** — the model, and the `:online`
+  suffix that changes what it *is*, with the vendor peeled off the front. The
+  full id is in the `title`, so nothing is lost, only deprioritized.
+- **Reading up during a stream stays put.** Scrolled to the middle of a long
+  thread, the next tokens no longer yank the viewport; the before/after pair is
+  the same moment of the same reply, one chasing the bottom and one not.
+- **The count is entries, not tokens.** A streaming reply is one message in
+  progress, so the jump button reads a number that means something instead of
+  racing upward.
+
+Not exercised visually: the middle-elision path (no real model id is long enough
+to need it at the shipped budget — it is unit-tested at absurd widths), and the
+resumed-thread reset, which renders identically to a branch switch by
+construction and is covered by `isViewSwitch`'s tests.
+
+*Caught by the peek and not by the suite:* the first cut re-pinned on every
+message, because `activeLeaf` advances with each appended entry and the code read
+that as a branch switch. See D-71(c) — the fix is a pure `isViewSwitch`, and the
+regression is now pinned by tests that can actually reach it.

@@ -5,6 +5,8 @@ import { abbreviatePath, folderName, tabTitle } from "./workspace";
 import { newAttentionMemory, stepAttention } from "./attention";
 import { createBlipper } from "./blip";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
+import { fitModelLabel } from "./model-label";
+import { isViewSwitch, newFollow, stepFollow, type FollowEvent, type FollowState } from "./scroll";
 import {
   answer as apiAnswer,
   approve as apiApprove,
@@ -1332,11 +1334,6 @@ function ChatPane({
   }, [slice.working, slice.lastEventAt]);
   const looksHung = slice.working && quietSince > HUNG_AFTER_MS;
 
-  // Keep the newest message / prompt in view.
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [slice.entries, slice.activeLeaf, slice.live, slice.working, slice.pendingApproval, slice.pendingAsk, slice.pendingCompaction]);
-
   const path = pathToLeaf(slice.entries, slice.activeLeaf);
   // Tool results render in flow (X-11), between the turn that called them and the
   // turn that reasons about them — the approval card is gone by then, so this is
@@ -1353,6 +1350,86 @@ function ChatPane({
     for (const call of e.toolCalls ?? []) if (call.id) argsByCall.set(call.id, call.arguments);
   }
 
+  // ---- Following the tail without stealing it (D-71, `scroll.ts`) ----------
+  //
+  // The state lives in a ref *and* in React state: the ref so the scroll
+  // listener (which fires far more often than we want to render) can fold
+  // against the current value without being re-created, the state so the jump
+  // button re-renders. `stepFollow` returns the same object when nothing moved,
+  // which is what keeps a stream of scroll events from re-rendering the pane.
+  const followRef = useRef<FollowState>(newFollow());
+  const [follow, setFollow] = useState<FollowState>(followRef.current);
+  const applyFollow = useCallback((ev: FollowEvent) => {
+    const next = stepFollow(followRef.current, ev);
+    if (next !== followRef.current) {
+      followRef.current = next;
+      setFollow(next);
+    }
+    return next;
+  }, []);
+  const toBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight });
+  }, []);
+
+  // What the last commit was looking at. The leaf is the discriminator that
+  // matters — and it is a **trap**: `activeLeaf` moves on every appended entry
+  // (`reduceEvent` walks the tip forward whenever `entry.parent === activeLeaf`),
+  // so reading a changed leaf as a changed *view* re-pins on every message. That
+  // is the original defect wearing a new hat, and the first peek of this fix
+  // caught it doing exactly that.
+  const renderedCount = rendered.length;
+  const onPath = new Set(path.map((e) => e.id));
+  const viewRef = useRef<{ session: string; leaf: string | null; count: number }>({ session: id, leaf: null, count: 0 });
+
+  // Everything that grows or replaces the thread: entries, stream tokens, and
+  // the cards that appear below it. While pinned we ride the tail; while the
+  // reader is elsewhere we only count, and a user turn re-pins wherever they were.
+  useEffect(() => {
+    const prev = viewRef.current;
+    // A different session, or a leaf that has *left* the branch we now render, is
+    // a different view: a branch switch (H-05), a session swap, a resumed thread
+    // that renders at once. The tip merely advancing is not — that is new content
+    // on the branch you were already reading.
+    const switchedView = isViewSwitch(prev, { session: id, onPath });
+    const added = Math.max(0, renderedCount - prev.count);
+    const fromUser = added > 0 && rendered.slice(renderedCount - added).some((e) => e.type === "user");
+    viewRef.current = { session: id, leaf: slice.activeLeaf, count: renderedCount };
+    const next = switchedView ? applyFollow({ kind: "reset" }) : applyFollow({ kind: "content", added, fromUser });
+    if (next.pinned) toBottom();
+    // The render-scoped values above are read, not watched: this fires on the
+    // things that move the thread and uses whatever came with them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, slice.entries, slice.activeLeaf, slice.live, slice.working, slice.pendingApproval, slice.pendingAsk, slice.pendingCompaction]);
+
+  // Re-pinning is only half an answer — the view has to actually go there, after
+  // the render that removed the jump button (which is itself in the scroll box).
+  useEffect(() => {
+    if (follow.pinned) toBottom();
+  }, [follow.pinned, toBottom]);
+
+  // Sending re-pins immediately rather than waiting for the turn to come back:
+  // the message you just typed is the one you want to watch, and the entry that
+  // proves it lands a round trip later. (`content`'s `fromUser` covers the same
+  // ground for a turn typed in another tab.)
+  const sendHere = useCallback(() => {
+    applyFollow({ kind: "sent" });
+    onSubmit(id);
+  }, [applyFollow, onSubmit, id]);
+  const queueHere = useCallback(() => {
+    applyFollow({ kind: "sent" });
+    onQueue(id);
+  }, [applyFollow, onQueue, id]);
+
+  const onThreadScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    applyFollow({
+      kind: "scrolled",
+      metrics: { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
+    });
+  }, [applyFollow]);
+
   // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
   // background command is running, or a prompt is open. While busy, the composer
   // queues (D-34) instead of sending.
@@ -1368,8 +1445,11 @@ function ChatPane({
   return (
     <div className="pane">
       <header className="topbar">
+        {/* Elided from the *front* when it doesn't fit (D-71): the vendor is what
+            you can infer, and `:online` — the part you can't — lives at the end.
+            The `title` always carries the id whole. */}
         <span className="pane-model" title={slice.model}>
-          {slice.model || "session"}
+          {fitModelLabel(slice.model) || "session"}
         </span>
         <div className="controls">
           <button className="ghost" title="debug journal (D-15)" onClick={onOpenDrawer}>
@@ -1425,7 +1505,7 @@ function ChatPane({
         </div>
       </header>
 
-      <div className="thread" ref={scrollRef}>
+      <div className="thread" ref={scrollRef} onScroll={onThreadScroll}>
         {rendered.length === 0 && !slice.live && !slice.pendingApproval && !slice.pendingAsk && (
           <div className="empty">Say something to get started.</div>
         )}
@@ -1513,6 +1593,23 @@ function ChatPane({
             )}
           </div>
         )}
+        {/* The way back (D-71). Sticky *inside* the scroll box, so it rides the
+            bottom edge of whatever you are reading rather than needing a new
+            positioned wrapper around the transcript. Present only while the tail
+            is not being followed — when it is, the latest is what you're looking
+            at and a button saying so would be noise. */}
+        {!follow.pinned && (
+          <button
+            className="jump-latest"
+            onClick={() => {
+              applyFollow({ kind: "jumped" });
+              toBottom();
+            }}
+            title="follow the newest message again"
+          >
+            ↓ {follow.unseen > 0 ? <span className="jump-count">{follow.unseen} new</span> : "latest"}
+          </button>
+        )}
       </div>
 
       {slice.queue.length > 0 && (
@@ -1543,18 +1640,18 @@ function ChatPane({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if (blocked) onQueue(id);
-              else onSubmit(id);
+              if (blocked) queueHere();
+              else sendHere();
             }
           }}
           rows={2}
         />
         {blocked ? (
-          <button onClick={() => onQueue(id)} disabled={!slice.input.trim()}>
+          <button onClick={queueHere} disabled={!slice.input.trim()}>
             Queue
           </button>
         ) : (
-          <button onClick={() => onSubmit(id)} disabled={!slice.input.trim()}>
+          <button onClick={sendHere} disabled={!slice.input.trim()}>
             Send
           </button>
         )}

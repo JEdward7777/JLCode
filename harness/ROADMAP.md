@@ -680,6 +680,10 @@ the level H-06 and D-60 both hid at, and the only level that can see a prompt pr
 compose. No peek: nothing rendered in the browser changed.
 
 **PLACEHOLDER-STATUS-LINE**
+**630 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-08, 60 files). **H-06 is fixed (D-60)**,
+**X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
+(D-64)**, **X-26 is fixed (D-65)** and **X-17 is fixed (D-66)**; **X-12b is DONE**, and `peek` grew
+a mouse and a movable port (D-67).
 **Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
@@ -888,12 +892,33 @@ nothing and only created the obligation to remember. Joshua's call on seeing the
 A field nobody has invented yet (`futureSetting`) is asserted to survive load and a save→load round
 trip, standing in for the next one.
 
-**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (4 items as of 2026-08-07):
-the header model chip truncating from the wrong end (confirmed by eye during the H-06 peek —
-`openai/gpt-4o-mi…` hides the model and keeps the vendor), auto-scroll stealing the viewport while
-you read further up, TTS jamming intermittently, and no todo tool for the agent (that last one
-Joshua flagged as needing a question-answering round before implementing). **`ask_user` forcing a
-choice with no skip/free-text escape is now filed and fixed** — X-28 above, D-72.
+**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (as of 2026-08-08): TTS jamming
+intermittently, and no todo tool for the agent (that last one Joshua flagged as needing a
+question-answering round before implementing — the questions are drafted for him in
+`QUESTIONS-FOR-JOSHUA.md`). Three of the five have now been filed *and* fixed: `ask_user`'s missing
+escape as **X-28 (D-72)**, and the two rendering defects as **X-29 and X-30 (D-71)** — both entries
+above.
+**X-29 and X-30 FIXED 2026-08-08 (D-71) — two surfaces that were right about the data and wrong
+about what the human was looking at.** Both came off Joshua's observed list as one line of prose
+each, and both had survived every test suite, because a test only fails on what it was pointed at.
+**X-29, the model chip:** it truncated from the *end*, so `openai/gpt-4o-mi…` kept the vendor — the
+part you can infer — and hid the model. It now peels namespace segments from the front and renders
+`…/claude-opus-5:online`, elides the **middle** only when the bare model name still will not fit, and
+carries the full id in a `title`. Truncating from the end is the one thing it will not do: Joshua
+runs `anthropic/claude-opus-5:online`, and the variant suffix that changes what the model *is* lives
+at the end. **X-30, the transcript:** it scrolled to `scrollHeight` on every render, so reading
+something further up during a streaming reply was undone by the next token. It now follows the tail
+**only while the reader is on it** — `atBottom` is a 24px threshold rather than an equality, since a
+fractional-DPI display makes the exact test false while the reader is visibly pinned — and otherwise
+**counts** new entries behind a sticky *jump to latest*. A user turn, a jump and a view replacement
+all re-pin; an assistant turn never does, which is the whole defect. *The part worth remembering:*
+the first cut re-introduced the defect it was fixing — `activeLeaf` advances on **every** appended
+entry, so "the leaf changed" re-pinned on every message — and the fold tests stayed green through it,
+because that comparison lived inline in `App.tsx` where nothing could reach it. The browser caught
+what 596 tests could not. It is now `isViewSwitch` in `scroll.ts`, pure and pinned by its own tests,
+in the shape D-65's `attention.ts` and D-72's `ask-form.ts` established. Peeked in Chrome before and
+after, both defects (VISUAL-LOG "X-29 / X-30"). **34 new Tier-0 tests.**
+
 
 ---
 

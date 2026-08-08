@@ -1848,4 +1848,70 @@ figure.mermaid svg {
   font-size: 11px;
   color: var(--muted);
   margin-top: -2px;
+   D-71 — the model chip and the tail-following transcript (branch ui-chip-scroll)
+   Appended as one block on purpose: three branches merge into this file.
+   ========================================================================== */
+
+/* The chip's width is decided in JS, by `fitModelLabel` (web/src/model-label.ts),
+   which elides from the *front*. `30ch` restates that budget (28 characters plus
+   slack for the font's rounding) in the chip's own monospace units, so the CSS
+   backstop can never be the thing that cuts — its only cut is `ellipsis` at the
+   end, which is exactly the defect. `flex: 0 0 auto` is the other half: the chip
+   was the only shrinkable thing in a header full of unshrinkable instruments, so
+   flex squeezed it to `an…` — 30px — long before `max-width` was ever consulted. */
+.pane-model {
+  max-width: 30ch;
+  flex: 0 0 auto;
+}
+
+/* Making room for it, honestly. The header was capped at the transcript's 900px
+   reading measure, and eight instruments already fill that; a chip that cannot
+   shrink has to be given somewhere to stand. The header is instruments, not
+   prose, so it does not want a prose measure — it gets the pane. Wrapping is the
+   backstop for a genuinely narrow window: the header grows a second row rather
+   than clipping a control off the edge or re-crushing the chip. */
+.pane .topbar {
+  max-width: none;
+}
+.topbar {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* "Jump to latest" — sticky inside `.thread`, which is the scroll container, so
+   it rides the bottom edge of the visible transcript without a positioned
+   wrapper around it. It is the last child, so its normal position is the end of
+   the content and `bottom` pins it anywhere above that. */
+.jump-latest {
+  position: sticky;
+  bottom: 10px;
+  align-self: center;
+  z-index: 3;
+  padding: 6px 14px;
+  /* It floats over message bubbles, so it needs to read as a control rather than
+     as a tooltip that drifted in: an accent hairline, full-strength text, and a
+     shadow that lifts it off whatever it happens to be covering. */
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7);
+}
+.jump-latest:hover {
+  background: var(--accent);
+  color: #08111f;
+}
+.jump-latest:hover .jump-count {
+  color: #08111f;
+}
+.jump-latest .jump-count {
+  color: var(--accent);
+  font-weight: 600;
 }
