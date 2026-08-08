@@ -1918,3 +1918,40 @@ figure.mermaid svg {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* ===========================================================================
+   X-13 — TTS auto-read. Appended as one block on purpose: three branches were
+   editing this file the same week, and a diff that only ever grows at the end
+   merges without anyone having to think about it.
+   =========================================================================== */
+
+/* The second toggle in the NOTIFICATIONS cluster (X-26c built the first). Just
+   enough air between the two that they read as a list rather than one wrapped
+   line. */
+.rail-notify label + label {
+  margin-top: 4px;
+}
+/* "something is being read to you, and here is how to stop it" — present only
+   while it is true, so the cluster does not grow a permanently dimmed control.
+   Styled as text with a hit area rather than as a button, because it is a
+   status line first and an affordance second. */
+.rail-hush {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.rail-hush:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}

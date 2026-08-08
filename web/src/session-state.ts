@@ -99,10 +99,15 @@ export interface SessionSlice {
    *  count survives any amount of coalescing. */
   settleSeq: number;
   notice: string | null;
-  /** What put the current notice up. Only "retrying" is distinguished, because
-   *  it is the one notice that becomes a lie the moment the turn succeeds —
-   *  every other notice is about something that really did happen. */
-  noticeKind: "retrying" | null;
+  /** What put the current notice up.
+   *
+   *  "retrying" was originally the only case distinguished, because it is the
+   *  one notice that becomes a lie the moment the turn succeeds. X-13 needs the
+   *  rest of the cause too: **a notice is the only thing auto-read has to go on
+   *  when a turn fails**, and reading one aloud is only safe if "the provider
+   *  refused the call" can be told from "you pressed Stop, and know it". The
+   *  notice *text* cannot answer that; naming the event that raised it can. */
+  noticeKind: "retrying" | "stopped" | "error" | "halted" | "cap" | "truncation" | null;
   input: string;
 }
 
@@ -232,6 +237,7 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
         capReached: true,
         working: false,
         notice: `Spend cap reached ($${(e.spendUsd as number).toFixed(4)} / $${(e.capUsd as number).toFixed(2)}). Raise it to continue.`,
+        noticeKind: "cap",
       };
     case "stopped":
       return {
@@ -241,6 +247,7 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
           e.scope === "hard"
             ? "Stopped — aborted the turn and killed all tasks."
             : "Stopping after the current work — no further turn.",
+        noticeKind: "stopped",
       };
     case "queue":
       return { ...s, queue: (e.queue as QueuedMessage[]) ?? [] };
@@ -312,7 +319,7 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
     case "awaiting-input":
       return { ...s, working: false, live: null, pendingAsk: e.question as AskUserRequest };
     case "truncation":
-      return { ...s, notice: e.message as string };
+      return { ...s, notice: e.message as string, noticeKind: "truncation" };
     case "retrying": {
       // Still working — the session is mid-backoff, not stalled. Saying so keeps
       // an automatic retry from reading as a hang and getting "helpfully" retried
@@ -325,11 +332,12 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       };
     }
     case "error":
-      return { ...s, notice: e.message as string, noticeKind: null, working: false, live: null, retryable: Boolean(e.retryable) };
+      return { ...s, notice: e.message as string, noticeKind: "error", working: false, live: null, retryable: Boolean(e.retryable) };
     case "halted":
       return {
         ...s,
         notice: `halted: ${e.reason as string}`,
+        noticeKind: "halted",
         working: false,
         live: null,
         retryable: Boolean(e.retryable),

@@ -4,6 +4,7 @@ import { fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from ".
 import { abbreviatePath, folderName, tabTitle } from "./workspace";
 import { newAttentionMemory, stepAttention } from "./attention";
 import { createBlipper } from "./blip";
+import { createSpeaker, newAutoReadMemory, plainText, stepAutoRead } from "./tts";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import { fitModelLabel } from "./model-label";
 import { isViewSwitch, newFollow, stepFollow, type FollowEvent, type FollowState } from "./scroll";
@@ -175,6 +176,14 @@ export function App() {
   // Attention (X-26): the sound preference, and the tab-title marker's latch.
   const [blipOn, setBlipOn] = useState(() => readBoolPref("notify.blip", true));
   const [attention, setAttention] = useState(false);
+  /** Auto-read (X-13), the loud neighbour of the blip. **Default off**, which is
+   *  the one place this deliberately parts company with X-26: a 150ms chirp that
+   *  nobody asked for is a notification, and a voice reading a page of prose at
+   *  someone who did not know the feature existed is a fright. It costs nothing
+   *  to discover — it sits in the same cluster, one line under the toggle that
+   *  *is* on by default, and the per-message 🔊 already says the client can
+   *  talk. */
+  const [autoReadOn, setAutoReadOn] = useState(() => readBoolPref("tts.autoRead", false));
 
   const focusedRef = useRef<string | null>(null);
   focusedRef.current = focusedId;
@@ -182,6 +191,11 @@ export function App() {
   const loadingTrees = useRef(new Set<string>()); // in-flight tree fetches
   const blipper = useRef(createBlipper()); // touches no audio API until armed
   const attentionMemory = useRef(newAttentionMemory());
+  // One speaker for the whole client: the per-message 🔊 and auto-read are the
+  // same channel, so there is one utterance in flight and one place that knows
+  // what is being spoken (H-07 — that is exactly what used to drift apart).
+  const speaker = useRef(createSpeaker());
+  const autoReadMemory = useRef(newAutoReadMemory());
 
   const focus = useCallback((id: string) => {
     setFocusedId(id);
@@ -191,6 +205,7 @@ export function App() {
     setJournal([]);
     setDrawerOpen(false);
     setPeek(null); // focusing a live session leaves the peek (X-12)
+    speaker.current.cancel(); // one voice, and it belongs to the pane in view (X-13)
   }, []);
 
   // Handle one multiplexed bus frame (D-43): fold session events into their
@@ -394,6 +409,72 @@ export function App() {
     }
   }, [blipOn]);
 
+  // ---- Auto-read: speak the reply when the turn comes back (X-13). ----
+
+  // The speaker is the single source of truth for "something is being read", so
+  // the button state follows it rather than the other way round.
+  useEffect(() => {
+    speaker.current.onChange((key) => setSpeakingId(key));
+  }, []);
+
+  /** Same arming story as the blip, and for the same reason — measured, not
+   *  assumed (VISUAL-LOG X-13): a `speak()` with no gesture anywhere in the
+   *  document's history fails with `not-allowed`, while **sticky** activation is
+   *  enough, so one ordinary click buys every later utterance, including ones
+   *  fired from a wire event minutes afterwards. Spend the session's first click
+   *  on a preference carried over from last time; the toggle's own click covers
+   *  the same-session case. */
+  useEffect(() => {
+    if (!autoReadOn) return;
+    const arm = () => speaker.current.arm();
+    window.addEventListener("pointerdown", arm, { once: true });
+    window.addEventListener("keydown", arm, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", arm);
+      window.removeEventListener("keydown", arm);
+    };
+  }, [autoReadOn]);
+
+  // `stepAutoRead` owns the rules (focused pane only, prime on first sight and
+  // on a tree that has only just loaded, never mid-turn); this spends the
+  // result. Note the memory is folded even while the preference is **off**, so
+  // switching auto-read on does not immediately read out a backlog.
+  useEffect(() => {
+    const step = stepAutoRead(autoReadMemory.current, Object.values(slices), {
+      focusedId,
+      enabled: autoReadOn,
+    });
+    autoReadMemory.current = step.memory;
+    if (step.speak) speaker.current.speak(step.speak.key, step.speak.text);
+  }, [slices, focusedId, autoReadOn]);
+
+  /** What stops it mid-sentence. Typing is the honest signal that you are back
+   *  and reading with your eyes — at that point the voice is competing with your
+   *  own thinking rather than saving you a look. Deliberately *not* any keypress
+   *  anywhere: a Cmd-Tab or a scroll is not an interruption. Focusing another
+   *  session cancels for a different reason — one voice, and it would otherwise
+   *  be reading the pane you just left. */
+  const hushSpeech = useCallback(() => speaker.current.cancel(), []);
+
+  /** Turning it on is the gesture, and it says one short line back — the same
+   *  move as the blip's preview, and worth more here: it proves the browser will
+   *  let this document speak *and* that a voice exists, neither of which is
+   *  knowable until something is actually said (a machine with no voice
+   *  installed fails at `speak()`, silently, exactly like a healthy one that has
+   *  nothing to read). Turning it off stops anything in flight — otherwise the
+   *  first thing "off" does is keep talking. */
+  const toggleAutoRead = useCallback(() => {
+    const next = !autoReadOn;
+    setAutoReadOn(next);
+    writePref("tts.autoRead", String(next));
+    if (next) {
+      speaker.current.arm();
+      speaker.current.speak("preview", "Auto-read is on.");
+    } else {
+      speaker.current.cancel();
+    }
+  }, [autoReadOn]);
+
   // If the focused session vanished (closed), fall back to another (or none).
   useEffect(() => {
     if (focusedId && !slices[focusedId]) {
@@ -424,7 +505,10 @@ export function App() {
 
   // ---- Per-session actions (operate on the given session id). ----
 
-  const setInput = useCallback((id: string, input: string) => dispatch({ t: "patch", id, patch: { input } }), []);
+  const setInput = useCallback((id: string, input: string) => {
+    speaker.current.cancel(); // you started typing — the reading has done its job (X-13)
+    dispatch({ t: "patch", id, patch: { input } });
+  }, []);
 
   const submit = useCallback(
     async (id: string) => {
@@ -535,6 +619,7 @@ export function App() {
       // Anything sitting in the composer rides along with the decision (D-51):
       // the pause is an opening to say something, without the queue's wait.
       const note = (slices[id]?.input ?? "").trim();
+      hushSpeech(); // you have answered the thing being read out (X-13)
       dispatch({ t: "patch", id, patch: { pendingApproval: null, working: true, ...(note ? { input: "" } : {}) } });
       try {
         await apiApprove(id, { ...decision, ...(note ? { note } : {}) });
@@ -542,7 +627,7 @@ export function App() {
         dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
       }
     },
-    [slices],
+    [slices, hushSpeech],
   );
 
   // The card is cleared optimistically, so a rejected answer has to put it back
@@ -550,13 +635,16 @@ export function App() {
   // way to answer it. Only reachable since D-72 gave `answer()` a refusal at all
   // (a blank `required` question), which is what turned this up.
   const submitAnswer = useCallback(async (id: string, answers: AskAnswer[], asked: AskUserRequest) => {
+    // Answering is one of the things that stops the reading (D-70e): the pause
+    // was read aloud, and you have just dealt with it.
+    hushSpeech();
     dispatch({ t: "patch", id, patch: { pendingAsk: null, working: true } });
     try {
       await apiAnswer(id, answers);
     } catch (err) {
       dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false, pendingAsk: asked } });
     }
-  }, []);
+  }, [hushSpeech]);
 
   const changeCap = useCallback(
     async (id: string, next: number | null) => {
@@ -671,23 +759,21 @@ export function App() {
   );
 
   // Read an assistant reply aloud, or stop if it's already speaking (§11 TTS).
-  const toggleSpeak = useCallback(
-    (entryId: string, text: string) => {
-      const synth = window.speechSynthesis;
-      if (!synth) return;
-      if (speakingId === entryId) {
-        synth.cancel();
-        setSpeakingId(null);
-        return;
-      }
-      synth.cancel();
-      const u = new SpeechSynthesisUtterance(plainText(text));
-      u.onend = () => setSpeakingId((s) => (s === entryId ? null : s));
-      setSpeakingId(entryId);
-      synth.speak(u);
-    },
-    [speakingId],
-  );
+  //
+  // The button no longer drives `speechSynthesis` itself (H-07): it asks the
+  // speaker, and `speakingId` is whatever the speaker last said it was doing —
+  // including when a watchdog decided the engine had gone quiet. The old shape
+  // set `speakingId` here and cleared it from `onend` alone, which is a state
+  // the engine is under no obligation to ever reach.
+  const toggleSpeak = useCallback((entryId: string, text: string) => {
+    // The click is itself the gesture browsers gate the first utterance on.
+    speaker.current.arm();
+    if (speaker.current.speaking() === entryId) {
+      speaker.current.cancel();
+      return;
+    }
+    speaker.current.speak(entryId, plainText(text));
+  }, []);
 
   // ---- Rail actions. ----
 
@@ -744,6 +830,10 @@ export function App() {
         showAllDirs={showAllDirs}
         blipOn={blipOn}
         onToggleBlip={toggleBlip}
+        autoReadOn={autoReadOn}
+        onToggleAutoRead={toggleAutoRead}
+        speaking={speakingId !== null}
+        onHushSpeech={hushSpeech}
         peekId={peek?.row.id ?? null}
         onFocus={focus}
         onNew={() => void newSession()}
@@ -827,6 +917,10 @@ function SessionRail({
   showAllDirs,
   blipOn,
   onToggleBlip,
+  autoReadOn,
+  onToggleAutoRead,
+  speaking,
+  onHushSpeech,
   peekId,
   onFocus,
   onNew,
@@ -847,6 +941,10 @@ function SessionRail({
   showAllDirs: boolean;
   blipOn: boolean;
   onToggleBlip: () => void;
+  autoReadOn: boolean;
+  onToggleAutoRead: () => void;
+  speaking: boolean;
+  onHushSpeech: () => void;
   peekId: string | null;
   onFocus: (id: string) => void;
   onNew: () => void;
@@ -1029,12 +1127,30 @@ function SessionRail({
           *not* a checkbox scattered wherever its feature happens to live — X-13's
           auto-read and X-16's default-open reasoning are both told to add a key
           to `prefs.ts`, and three lone checkboxes in three corners is how a
-          settings surface fails to exist. They join here. */}
+          settings surface fails to exist. They join here.
+
+          The two sound toggles read as a pair on purpose, quiet above loud: the
+          blip says *look over here*, auto-read says *here is what it said*. They
+          divide the sessions between them — a background session chirps, the one
+          in front of you speaks — so ticking both is coherent rather than
+          doubled. */}
       <div className="rail-notify">
         <div className="rail-notify-title">notifications</div>
         <label title="play a short tone when a session settles and you are looking elsewhere (X-26)">
           <input type="checkbox" checked={blipOn} onChange={onToggleBlip} /> blip on attention
         </label>
+        <label title="read the reply out loud when the session in view hands the turn back (X-13)">
+          <input type="checkbox" checked={autoReadOn} onChange={onToggleAutoRead} /> read replies aloud
+        </label>
+        {/* Only while something is actually being read. A reply lights up its own
+            message's ◼, but a question or an approval has no message to light —
+            and that is exactly when you most want a stop button you can find
+            without hunting. */}
+        {speaking ? (
+          <button className="rail-hush" title="stop reading" onClick={onHushSpeech}>
+            ◼ reading aloud
+          </button>
+        ) : null}
       </div>
     </aside>
   );
@@ -1800,16 +1916,6 @@ function PeekPane({
       </footer>
     </div>
   );
-}
-
-/** Strip the loudest markdown so text-to-speech doesn't read `##`/`*`/backticks. */
-function plainText(md: string): string {
-  return md
-    .replace(/```[\s\S]*?```/g, " code block ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/[*_#>]/g, "")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .trim();
 }
 
 /** How full the context window is, continuously (X-24).
