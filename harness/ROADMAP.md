@@ -20,7 +20,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-Built, tested (**PLACEHOLDER-TOTAL Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
+Built, tested (**729 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
 
 > **Cost (2026-08-04, D-58/D-59).** Two compounding defects found by reading the debug journal of a
@@ -679,7 +679,11 @@ operating guide. **30 new Tier-0/1 tests**, including four at the **`serve` sess
 the level H-06 and D-60 both hid at, and the only level that can see a prompt production forgets to
 compose. No peek: nothing rendered in the browser changed.
 
-**PLACEHOLDER-STATUS-LINE**
+**729 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-08, 63 files). **H-06 is fixed (D-60)**,
+**X-24 (D-61)**, **X-27 (D-62)**, **X-23 (D-63)**, **X-25 (D-64)**, **X-26 (D-65)**, **X-17 (D-66)**,
+**X-15 (D-69)**, **X-13 + H-07 (D-70)**, **X-29 + X-30 (D-71)** and **X-28 (D-72)** are all fixed;
+**X-12b is DONE**, `peek` grew a mouse and a movable port (D-67), and the config loader stopped
+whitelisting fields it never validated (D-68).
 **X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
 (D-64)**, **X-26 is fixed (D-65)**, **X-17 is fixed (D-66)** and **X-13 + H-07 are fixed (D-70)**;
 **X-12b is DONE**, and `peek` grew a mouse and a movable port (D-67).
