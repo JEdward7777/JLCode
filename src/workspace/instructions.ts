@@ -31,21 +31,21 @@ import path from "node:path";
  *
  * `AGENTS.md` is the emerging cross-tool convention and is the primary.
  * `CLAUDE.md` is honored because it is what most repos that have thought about
- * this already have on disk (this one included). The three dotfiles are the
- * KiloCode / Cline / Cursor formats, kept because porting KiloCode setups
- * verbatim is a stated goal (X-01).
+ * this already have on disk (this one included).
+ *
+ * **Two files, deliberately — Joshua's call, 2026-08-09.** The first cut also
+ * tried `.clinerules`, `.kilocoderules` and `.cursorrules`, reasoning that a repo
+ * already driven by KiloCode should port over verbatim (X-01). They are gone:
+ * five candidates mean "which file is my agent actually reading?" needs the
+ * precedence order to answer, and a stale `.cursorrules` someone committed two
+ * years ago would silently outrank having none. A repo that needs one is a
+ * rename or a symlink away, and that leaves no doubt about what is in the prompt.
  *
  * They are alternatives, not layers: a repo carrying both `AGENTS.md` and
  * `CLAUDE.md` almost always carries the *same* rules twice (often a symlink), and
  * concatenating would bill for them twice on every turn.
  */
-export const INSTRUCTION_FILENAMES = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  ".clinerules",
-  ".kilocoderules",
-  ".cursorrules",
-] as const;
+export const INSTRUCTION_FILENAMES = ["AGENTS.md", "CLAUDE.md"] as const;
 
 /**
  * The size cap (X-15e): 32 KiB, roughly 8k tokens.

@@ -654,7 +654,7 @@ auto-integrates.** Joshua asked twice (2026-07-28, again 2026-08-04 from real us
 not for JLCode, in JLCode's own repo. The system prompt is now base → the workspace's file → the
 per-config addendum, with the **addendum last on purpose**: it is the more specific of the two, so
 where a project and a client disagree the client config — chosen most recently by the operator — wins.
-Precedence is `AGENTS.md` → `CLAUDE.md` → `.clinerules` → `.kilocoderules` → `.cursorrules`, **first
+Precedence is `AGENTS.md` → `CLAUDE.md`, **first
 hit wins, never concatenated** (a repo carrying two of them is carrying the same rules twice, and
 concatenating bills for both every turn), matched case-insensitively off a directory listing so one
 repo behaves the same on Linux and macOS, searched in the launch dir and then **up to the repo root**
@@ -1530,19 +1530,32 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
+
+> **Convention (Joshua's call, 2026-08-09): nothing leaves this list.** A row that
+> ships is struck and tagged with the decision that closed it, so the list still
+> answers *what's left* at a glance while staying the index of everything ever
+> deferred — including the ones already done, which is where a year-from-now
+> question starts. The filed-and-fixed entries above carry the reasoning.
+
+**Still open:**
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
-**a `write_file` preview instead of raw JSON (X-23)** ·
-**a context-usage meter beside the spend chip (X-24)** ·
-**per-user-turn timestamps so the model knows the date and feels elapsed time (X-25)** ·
-**a blip when a session needs attention (X-26)** ·
-**a settable compaction threshold, e.g. 171.5k (X-27 — behind H-06)** ·
 Notifications (external push, P-02) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·
 browser-driven app testing · VS Code webview · response-caching product feature (§21) ·
 file viewer & upload/download chrome.
+
+**Shipped since:**
+~~a `write_file` preview instead of raw JSON (X-23)~~ ✅ D-63 ·
+~~a context-usage meter beside the spend chip (X-24)~~ ✅ D-61 ·
+~~per-user-turn timestamps so the model knows the date (X-25)~~ ✅ D-64 ·
+~~a blip when a session needs attention (X-26)~~ ✅ D-65 ·
+~~a settable compaction threshold, e.g. 171.5k (X-27)~~ ✅ D-62 ·
+~~TTS auto-read when the agent hands the turn back (X-13)~~ ✅ D-70 ·
+~~auto-read the workspace's `AGENTS.md` into the system prompt (X-15)~~ ✅ D-69 ·
+~~auto-re-title a thread as it drifts (X-17)~~ ✅ D-66.
 
 ---
 

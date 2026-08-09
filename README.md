@@ -234,9 +234,10 @@ jlcode config which                            # states which it is
 Drop an `AGENTS.md` in a repo and JLCode follows it — no config, no flag. That is
 how a project's harness auto-integrates: the rules live in the repo, next to the
 code they describe, and every session in that folder starts having read them.
-`CLAUDE.md` counts too, as do `.clinerules`, `.kilocoderules` and `.cursorrules`;
-the first one found wins, looked for in the folder you launched in and then up to
-the repo root. Your model config's own `--system` text is appended *after* it, so
+`CLAUDE.md` counts too, and the first of the two found wins, looked for in the
+folder you launched in and then up to the repo root. Nothing else is read: two
+deliberate filenames beat five, since a stale rules file from another tool should
+never quietly become your system prompt. Your model config's own `--system` text is appended *after* it, so
 a client-specific instruction still overrules the project's.
 
 Every surface says what it loaded, because injected text nobody can see is

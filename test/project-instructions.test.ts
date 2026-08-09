@@ -156,11 +156,15 @@ describe("finding the workspace's instruction file (X-15a/b)", () => {
       // …but nothing above it is.
       expect(readWorkspaceInstructions(home, { home })?.text).toBe("home rules");
       const parent = path.dirname(home);
-      write(parent, ".cursorrules", "way up there\n");
+      // A distinctive name, injected through `filenames`, so this asserts the
+      // *scope* of the walk and not the default chain (which is AGENTS.md /
+      // CLAUDE.md only — those exist all over a real machine, including above
+      // $HOME, which is precisely what must not be reached).
+      write(parent, "ABOVE-HOME.md", "way up there\n");
       try {
-        expect(readWorkspaceInstructions(work, { home, filenames: [".cursorrules"] })).toBeUndefined();
+        expect(readWorkspaceInstructions(work, { home, filenames: ["ABOVE-HOME.md"] })).toBeUndefined();
       } finally {
-        fs.rmSync(path.join(parent, ".cursorrules"), { force: true });
+        fs.rmSync(path.join(parent, "ABOVE-HOME.md"), { force: true });
       }
     } finally {
       fs.rmSync(home, { recursive: true, force: true });

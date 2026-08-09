@@ -71,7 +71,7 @@ Each configuration carries:
 
 **Project-scoped instructions (X-15, D-64).** The addendum above is per *config* (per client); a
 **workspace** ships its own instructions too. At session start JLCode reads the first of
-`AGENTS.md`, `CLAUDE.md`, `.clinerules`, `.kilocoderules`, `.cursorrules` it finds — in the launch
+`AGENTS.md`, `CLAUDE.md` it finds — in the launch
 directory, else walking up to the repo root — and appends it to the base prompt **ahead of** the
 per-config addendum, so the client-specific text still wins. It is read **once, at session
 construction** (the system prompt is the stable prompt-cache prefix, §22/D-26 — re-reading it per
