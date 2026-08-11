@@ -30,14 +30,21 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > and the composer: leaving edit mode is the commit, and it queues a nudge stating the count without
 > spending a model call. Peeked in a real browser (VISUAL-LOG "X-31").
 >
-> **Freshly filed and not yet triaged: X-32 … X-35**, from Joshua relaying a field report by Opus 5
-> driving JLCode (2026-08-11) — the model cannot see its own output budget (X-32); `run_command` is
-> killable by a *human* but the agent can neither background, tail nor time-limit it (X-33); no
-> symbol-level navigation, so every lookup costs grep-then-read (X-34); and two small ergonomics
-> fixes, `run_command` without `cwd` and an `apply_edits` refusal that knows which other file the
-> stray anchor matched and doesn't say (X-35). **Joshua asked for these to be filed for discussion,
-> not built** — a triage round is the next thing to ask him for. Also open and unblocked: X-14, X-16,
-> X-18. The earlier stretch (P6c → P7c) fixed, in order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23
+> **X-32 … X-35 are triaged (D-75, 2026-08-11)** — the field report Joshua relayed from Opus 5
+> driving JLCode. Outcomes: **X-32 is closed no-fix** (the per-call ceiling could be stamped, but the
+> *meter* cannot exist — the only channel to a generating model is a prompt already sent; D-30's
+> truncation notice stays the whole answer). **X-33 is scoped down to what already exists**: the
+> watchdog has always asked *the model* (`decide_kill`, out-of-band), so the work is exposing
+> `watchdogMs` in config, telling the model in `run_command`'s description that the check exists —
+> today it claims "there is no timeout" — and adding a per-call `timeout` for the scale 30 minutes
+> cannot cover; the background/poll/tail half is split to **X-36**. **X-34 is deferred with its
+> sizing done** and is an MCP question, not a native one: npm `tree-sitter-wasms` = 39 grammars /
+> 51.7 MB, Python `tree-sitter-language-pack` = 371 languages / 7.7 MB over the `uvx` path P7c
+> validated; Joshua leans a **separate server** over `file_utils`, to decide again later. **X-35 both
+> build** — `cwd` on `run_command`, and a refused `apply_edits` naming the sibling file its anchor
+> would have matched, only when that is exactly one site in exactly one other file.
+> **Next to build: X-33 then X-35** (neither started; no code has changed for either). Also open and
+> unblocked: X-14, X-16, X-18, and X-34/X-36 as deferred rows. The earlier stretch (P6c → P7c) fixed, in order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23
 > (D-63), X-25 (D-64), X-26 (D-65), X-17 (D-66), the peek tool's port + click (D-67), the config
 > loader's whitelist (D-68), X-15 (D-69), X-13 and H-07 (D-70), X-29/X-30 (D-71), X-28 (D-72), and
 > H-08 (D-73). Upstream, `file_utils`' `uvx` crash is capped and **merged by Joshua** as PR #1.
@@ -1645,6 +1652,10 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
+**a visible, configurable command watchdog + a per-call `timeout` (X-33)** ·
+**`run_command` `cwd` + an `apply_edits` refusal that names the sibling file (X-35)** ·
+agent-facing background commands — start/poll/tail/kill (X-36) ·
+symbol navigation over MCP, route sized, home undecided (X-34) ·
 Notifications (external push, P-02) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·
@@ -1661,6 +1672,10 @@ file viewer & upload/download chrome.
 ~~auto-read the workspace's `AGENTS.md` into the system prompt (X-15)~~ ✅ D-69 ·
 ~~auto-re-title a thread as it drifts (X-17)~~ ✅ D-66 ·
 ~~the agent's shared todo list (X-31)~~ ✅ D-74.
+
+**Closed without a fix:**
+~~the model seeing its own output budget (X-32)~~ — no fix (D-75): the ceiling could be stamped, but
+a live meter cannot exist, since the only channel to a generating model is a prompt already sent.
 
 ---
 
