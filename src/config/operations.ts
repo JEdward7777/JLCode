@@ -6,6 +6,7 @@
 import { newId } from "../util/id.js";
 import type {
   ApprovalPolicy,
+  CommandSettings,
   CompactionSettings,
   Config,
   EnvironmentSettings,
@@ -14,6 +15,12 @@ import type {
   ReasoningEffort,
   SamplingParams,
 } from "./types.js";
+
+/** The default watchdog interval — 30 minutes (D-34). Stated here because both
+ *  the Session (which arms the timer) and `run_command` (whose description tells
+ *  the model the number) have to agree on it, and a description promising a
+ *  check at a different time than the one that fires is worse than none. */
+export const DEFAULT_WATCHDOG_MINUTES = 30;
 
 /** Are user turns stamped with the time they were sent (X-25e)? Stated once,
  *  here, because the default is the interesting part: **absent means on**, so a
@@ -30,6 +37,15 @@ export function turnTimestampsEnabled(config: { environment?: EnvironmentSetting
  *  `false` declines. */
 export function projectInstructionsEnabled(config: { environment?: EnvironmentSettings } | undefined): boolean {
   return config?.environment?.projectInstructions !== false;
+}
+
+/** Minutes before the command watchdog asks the model to kill or keep (X-33),
+ *  and `0` when the check is switched off. Absent means the default, for the
+ *  same reason the two above default to on: a config nobody has edited — which
+ *  is every config written before X-33 — must still get the behaviour. */
+export function commandWatchdogMinutes(config: { commands?: CommandSettings } | undefined): number {
+  const m = config?.commands?.watchdogMinutes;
+  return typeof m === "number" && Number.isFinite(m) && m >= 0 ? m : DEFAULT_WATCHDOG_MINUTES;
 }
 
 /** Fields a caller supplies when creating a config (id/timestamps are generated). */
@@ -103,6 +119,9 @@ export interface ModelConfigPatch {
   /** Read the workspace's `AGENTS.md` into the system prompt (X-15). Default on,
    *  written only to record a deliberate choice either way. */
   projectInstructions?: boolean;
+  /** Minutes before the command watchdog asks the model to kill or keep (X-33);
+   *  `0` switches the check off, `null` clears the field back to the default. */
+  watchdogMinutes?: number | null;
 }
 
 /** Edit an existing config in place (merging sampling), bumping updatedAt. */
@@ -139,6 +158,16 @@ export function updateModelConfig(
   const environment: EnvironmentSettings | undefined =
     Object.keys(envPatch).length === 0 ? undefined : { ...(target.environment ?? {}), ...envPatch };
 
+  // The command watchdog (X-33). `null` clears rather than writes, the same way
+  // back to the default that `thresholdTokens` has — and `0` is a *value* here,
+  // not an absence, since switching the check off is a deliberate choice.
+  let commands: CommandSettings | undefined;
+  if (patch.watchdogMinutes !== undefined) {
+    commands = { ...(target.commands ?? {}) };
+    if (patch.watchdogMinutes === null) delete commands.watchdogMinutes;
+    else commands.watchdogMinutes = patch.watchdogMinutes;
+  }
+
   const updated: ModelConfig = {
     ...target,
     ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -151,6 +180,7 @@ export function updateModelConfig(
     ...(patch.autoRetitle === undefined ? {} : patch.autoRetitle ? { autoRetitle: undefined } : { autoRetitle: false }),
     ...(compaction ? { compaction } : {}),
     ...(environment ? { environment } : {}),
+    ...(commands ? { commands } : {}),
     sampling: Object.keys(mergedSampling).length > 0 ? mergedSampling : undefined,
     updatedAt: new Date().toISOString(),
   };

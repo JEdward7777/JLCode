@@ -11,7 +11,7 @@
 import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
-import { turnTimestampsEnabled } from "../config/operations.js";
+import { DEFAULT_WATCHDOG_MINUTES, turnTimestampsEnabled } from "../config/operations.js";
 import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
@@ -109,7 +109,9 @@ export interface SessionOptions {
   /** Background-task registry (D-34); a fresh one is created if omitted. */
   tasks?: TaskRegistry;
   /** How long a background command may run before the watchdog asks the model
-   *  whether to kill it (D-34). Default 30 min; small values drive tests. */
+   *  whether to kill it (D-34). Default 30 min; small values drive tests; `0`
+   *  disables it. Set from `commands.watchdogMinutes` by the factory (X-33),
+   *  which hands the same number to `run_command`'s description. */
   watchdogMs?: number;
   /** The working model's context window (`context_length`) for the compaction
    *  budget (D-27/D-44). Injected in P6a — tests dial it low to force the
@@ -135,8 +137,9 @@ export interface SessionOptions {
   autoRetitle?: boolean;
 }
 
-/** Default watchdog interval — 30 minutes (D-34). */
-const WATCHDOG_MS = 30 * 60 * 1000;
+/** Default watchdog interval — 30 minutes (D-34), stated once in the config
+ *  layer so the timer and the number `run_command` advertises cannot drift. */
+const WATCHDOG_MS = DEFAULT_WATCHDOG_MINUTES * 60 * 1000;
 
 const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
 
@@ -303,7 +306,10 @@ export class Session {
   private readonly onAddRoot: ((dir: string) => void) | undefined;
   private consecutiveFailures = 0;
   private readonly pricing: ModelConfig["pricing"];
-  private readonly watchdogMs: number;
+  /** Public for the same reason `contextWindowSource` is: it is a setting that
+   *  travels from config through a factory, and the H-06 class of defect is a
+   *  factory that quietly stops carrying one. Readable = assertable (X-33). */
+  readonly watchdogMs: number;
   /** Injected context window for the compaction budget (D-44); undefined → no
    *  window known → no trigger fires. Falls back to the config override. */
   private readonly contextWindow: number | undefined;

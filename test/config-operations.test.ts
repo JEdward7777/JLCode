@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { defaultConfig } from "../src/config/store";
 import {
+  DEFAULT_WATCHDOG_MINUTES,
   addModelConfig,
   cloneModelConfig,
+  commandWatchdogMinutes,
   filterModelConfigs,
   findModelConfig,
   removeModelConfig,
@@ -79,6 +81,33 @@ describe("model config operations", () => {
     // default is the absence of the setting.
     const on = updateModelConfig(off.config, added.id, { autoRetitle: true });
     expect(on.updated.autoRetitle).toBeUndefined();
+  });
+
+  it("stores the command watchdog interval, and tells 0 apart from unset (X-33)", () => {
+    const { config, added } = addModelConfig(defaultConfig(), base("A", "m"));
+    expect(commandWatchdogMinutes(added)).toBe(DEFAULT_WATCHDOG_MINUTES); // absent = the default
+
+    const five = updateModelConfig(config, added.id, { watchdogMinutes: 5 });
+    expect(five.updated.commands).toEqual({ watchdogMinutes: 5 });
+    expect(commandWatchdogMinutes(five.updated)).toBe(5);
+
+    // 0 is a *value* — "no check at all" — not an absence, so it must survive
+    // both the store and the reader that would otherwise supply the default.
+    const off = updateModelConfig(five.config, added.id, { watchdogMinutes: 0 });
+    expect(off.updated.commands).toEqual({ watchdogMinutes: 0 });
+    expect(commandWatchdogMinutes(off.updated)).toBe(0);
+
+    // …and `null` is the way back, without hand-editing JSON.
+    const cleared = updateModelConfig(off.config, added.id, { watchdogMinutes: null });
+    expect(cleared.updated.commands?.watchdogMinutes).toBeUndefined();
+    expect(commandWatchdogMinutes(cleared.updated)).toBe(DEFAULT_WATCHDOG_MINUTES);
+  });
+
+  it("leaves other settings alone when the watchdog is patched", () => {
+    const { config, added } = addModelConfig(defaultConfig(), base("A", "m"));
+    const withEnv = updateModelConfig(config, added.id, { turnTimestamps: false, watchdogMinutes: 5 });
+    expect(withEnv.updated.environment).toEqual({ turnTimestamps: false });
+    expect(withEnv.updated.commands).toEqual({ watchdogMinutes: 5 });
   });
 
   it("removing a config prunes bindings that pointed at it", () => {

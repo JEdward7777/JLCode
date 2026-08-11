@@ -2,7 +2,7 @@
 import type { ToolDef } from "../llm/types.js";
 import type { Tool } from "./types.js";
 import { fileTools } from "./file-tools.js";
-import { runCommandTool } from "./shell-tool.js";
+import { runCommandTool, type ShellToolOptions } from "./shell-tool.js";
 import { todoTools } from "./todo-tools.js";
 
 export class ToolRegistry {
@@ -25,7 +25,15 @@ export class ToolRegistry {
   }
 }
 
-/** The default native tool set: file tools + shell + the shared todo list. */
-export function defaultTools(): Tool[] {
-  return [...fileTools(), runCommandTool(), ...todoTools()];
+/**
+ * The default native tool set: file tools + shell + the shared todo list.
+ *
+ * `options` reaches `run_command` only, and only to state the configured
+ * watchdog interval in its description (X-33). It is optional because every
+ * caller that does not care — tests, bare embeddings — should get the same
+ * 30-minute default the Session arms, and stating a number the session will not
+ * honour is the one outcome worth ruling out.
+ */
+export function defaultTools(options: ShellToolOptions = {}): Tool[] {
+  return [...fileTools(), runCommandTool(options), ...todoTools()];
 }

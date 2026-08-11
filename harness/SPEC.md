@@ -67,6 +67,7 @@ Each configuration carries:
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
 | Per-turn environment details (X-25) | `environment.turnTimestamps` — whether each **user turn** is rendered with the time it was sent. **Default on**; off means the model is never told what day it is. |
 | Project instructions (X-15) | `environment.projectInstructions` — whether the workspace's own `AGENTS.md` (or `CLAUDE.md`/rules file) is read into the system prompt at session start. **Default on**; off means only this config's addendum applies. |
+| Command watchdog (X-33) | `commands.watchdogMinutes` — minutes a `run_command` may run before the watchdog asks the **model** to kill or keep it (§26). **Default 30**; `0` disables the check entirely. Per config rather than global because the check is a billed model call. The value is also what `run_command`'s description states, so it must reach both the timer and the tool from one place. |
 | Compaction settings (§15) | **Compaction model** (default = the working model; overridable to a cheaper one, with the compactor-fit guard); **auto** on/off; an **absolute threshold** in tokens (`thresholdTokens`, X-27 — e.g. condense at 171,500) *or*, absent one, a **headroom buffer** (default ~20K tokens) the threshold is derived from; **keep-recent tokens** (default ~8K verbatim); **trigger modes**. The window comes from the model's `context_length` (from OpenRouter metadata, D-60). |
 
 **Project-scoped instructions (X-15, D-64).** The addendum above is per *config* (per client); a
@@ -220,6 +221,14 @@ Nothing project-specific is written into the project folder.
 - Runs **locally inside JLCode** (not pushed into the shared `file_utils` server, which
   is happy without it).
 - Gated by mode (§5) and approval policy (§6).
+- **`cwd`** (X-35a) runs a command in a subdirectory instead of the workspace root. It is a
+  fenced path argument (§9/D-19), so a directory outside the fence asks the user first; the
+  *command* is not fenced and never was, which is what the approval gate is for.
+- **`timeout`** (seconds, X-33) bounds one call: the process group is killed and the output
+  collected so far is returned, marked as the caller's own limit rather than a failure of the
+  command. There is **no default** time limit — see the watchdog in §26.
+
+
 
 ## 11. Interface
 
@@ -600,6 +609,13 @@ behind the per-case handling (truncation §23, approvals §6).
   task. The big red button, distinct from the gentle queued-message path and the targeted
   per-task kill.
 - All three are POST actions on the transport (§11); status and kill/stop states flow back over SSE.
+- **The watchdog asks the model, and says so (X-33).** A command still running after
+  `commands.watchdogMinutes` (default **30**, `0` disables) pauses for one out-of-band
+  kill-or-keep decision by the model, carrying its elapsed time and output so far; the exchange
+  never joins the conversation. The interval is **stated in `run_command`'s own description**,
+  because a mechanism the model cannot see is one it cannot use — the tool previously said "there
+  is no timeout" and hid its own escape hatch. A per-call `timeout` (§10) covers the shorter
+  scale the watchdog cannot.
 
 ## 27. Concurrency, sessions & orchestration
 

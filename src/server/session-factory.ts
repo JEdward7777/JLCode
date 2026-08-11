@@ -10,7 +10,7 @@
  * cannot, by construction.
  */
 import { loadConfig, saveConfig } from "../config/store.js";
-import { projectInstructionsEnabled } from "../config/operations.js";
+import { commandWatchdogMinutes, projectInstructionsEnabled } from "../config/operations.js";
 import { readWorkspaceInstructions, renderProjectInstructions } from "../workspace/instructions.js";
 import type { ModelConfig } from "../config/types.js";
 import type { JlcodePaths } from "../paths.js";
@@ -75,10 +75,18 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
     const workspaceInstructions = projectInstructionsEnabled(config)
       ? readWorkspaceInstructions(deps.cwd)
       : undefined;
+    // The command watchdog (X-33), read once here and used **twice**: the Session
+    // arms the timer with it, and `run_command`'s description states it to the
+    // model. Both come off this one line deliberately — a description promising a
+    // check at 30 minutes while the timer fires at 5 is the H-06 failure with a
+    // new face, a setting that looks stored and reaches only half of what it
+    // governs.
+    const watchdogMinutes = commandWatchdogMinutes(config);
     return new Session({
       config,
       driver: deps.makeDriver(config),
-      tools: new ToolRegistry([...defaultTools(), askUserTool(), ...deps.mcpTools()]),
+      tools: new ToolRegistry([...defaultTools({ watchdogMinutes }), askUserTool(), ...deps.mcpTools()]),
+      watchdogMs: watchdogMinutes * 60_000,
       sandbox: new Sandbox(roots),
       // Live-switchable gate (D-07/D-08): rebuilt when the user changes
       // mode/approval from the browser. Starts from the config defaults.

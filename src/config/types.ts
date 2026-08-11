@@ -88,6 +88,18 @@ export interface EnvironmentSettings {
   projectInstructions?: boolean;
 }
 
+/** How `run_command` behaves (D-34, X-33). Per model config rather than global
+ *  because the watchdog's check is a **billed model call** — how patient to be
+ *  with a long command is a question about the model you are paying for. */
+export interface CommandSettings {
+  /** Minutes a background command may run before the watchdog asks the model
+   *  whether to kill it (D-34). Absent = the 30-minute default; **0 disables the
+   *  check entirely**, after which only a person (or a per-call `timeout`) ends
+   *  a runaway. The number is also stated in `run_command`'s description, so
+   *  changing it changes what the model is told. */
+  watchdogMinutes?: number;
+}
+
 /** A named model configuration a user works under (e.g. "Client A — Opus"). */
 export interface ModelConfig {
   id: string;
@@ -112,6 +124,8 @@ export interface ModelConfig {
   compaction?: CompactionSettings;
   /** Per-turn environment details (X-25). Absent = defaults, i.e. stamped. */
   environment?: EnvironmentSettings;
+  /** `run_command` behaviour — the watchdog interval (X-33). Absent = defaults. */
+  commands?: CommandSettings;
   createdAt: string;
   updatedAt: string;
 }

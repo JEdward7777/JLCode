@@ -49,7 +49,15 @@ export interface PlannedEdit {
 
 export type EditPlan =
   | { ok: true; output: string; edits: PlannedEdit[] }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      reason: string;
+      /** The anchor that matched nothing, when that is why this plan failed —
+       *  carried out so `planAll`, which holds the batch's other buffers, can
+       *  look for it next door (X-35b). Absent for every other kind of failure,
+       *  which is what keeps the search from running on unrelated errors. */
+      missingAnchor?: string;
+    };
 
 /** 1-based line number of a character offset. */
 function lineOf(text: string, index: number): number {
@@ -111,6 +119,7 @@ export function planFileEdits(source: string, edits: EditSpec[]): EditPlan {
       return {
         ok: false,
         reason: `${at}: anchor found ${hits.length} time(s), expected ${expected}${hint}`,
+        ...(hits.length === 0 ? { missingAnchor: e.old_string } : {}),
       };
     }
     planned.push({ index: i, lines: hits.map((h) => lineOf(buf, h)) });
@@ -169,12 +178,41 @@ function readFilesArg(args: Record<string, unknown>): FileEditsArg[] | string {
   return out;
 }
 
+export interface PlannedFile {
+  path: string;
+  before: string;
+  plan: EditPlan;
+}
+
+/**
+ * Name the file a missing anchor *would* have matched, when the batch already
+ * has the answer in hand (X-35b).
+ *
+ * The case this was written for: a batch touching `__init__.py` and
+ * `exceptions.py` listed, under the first, an anchor whose text lives in the
+ * second. The refusal was correct and complete — and said only "found 0
+ * time(s)", while the buffer that would have explained it was sitting in the
+ * same array. This reports that and **nothing more**: the batch still fails,
+ * still writes nothing, and the anchor is never redirected to the file named,
+ * because guessing which site was meant is the rail D-53 exists to hold.
+ *
+ * Only an **unambiguous** near-miss is reported — one site, in one other file.
+ * An anchor that appears in three files is boilerplate, and listing all three
+ * turns a refusal that says one useful thing into one that says three useless
+ * ones (D-75).
+ */
+function nearMiss(anchor: string, self: string, planned: PlannedFile[]): string | undefined {
+  const hits = planned
+    .filter((p) => p.path !== self)
+    .map((p) => ({ path: p.path, count: occurrences(p.before, anchor).length }))
+    .filter((h) => h.count > 0);
+  if (hits.length !== 1 || hits[0]!.count !== 1) return undefined;
+  return ` — it matches exactly once in '${hits[0]!.path}', which is also in this batch; did you mean that file?`;
+}
+
 /** Plan every file: resolve, read, verify anchors. Never writes. */
-function planAll(
-  files: FileEditsArg[],
-  ctx: ToolContext,
-): { path: string; before: string; plan: EditPlan }[] {
-  return files.map((f) => {
+function planAll(files: FileEditsArg[], ctx: ToolContext): PlannedFile[] {
+  const planned: PlannedFile[] = files.map((f) => {
     const r = ctx.sandbox.resolve(f.path);
     if (!r.ok) return { path: f.path, before: "", plan: { ok: false, reason: r.reason } as EditPlan };
     let before: string;
@@ -185,6 +223,15 @@ function planAll(
     }
     return { path: f.path, before, plan: planFileEdits(before, f.edits) };
   });
+
+  // A second pass, because the answer only exists once every buffer is read —
+  // which is also why `planFileEdits` stays pure and per-file (X-35b).
+  for (const p of planned) {
+    if (p.plan.ok || p.plan.missingAnchor === undefined) continue;
+    const hint = nearMiss(p.plan.missingAnchor, p.path, planned);
+    if (hint) p.plan = { ...p.plan, reason: p.plan.reason + hint };
+  }
+  return planned;
 }
 
 const applyEdits: Tool = {

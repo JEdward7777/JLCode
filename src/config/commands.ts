@@ -25,6 +25,7 @@ import {
   filterModelConfigs,
   findModelConfig,
   projectInstructionsEnabled,
+  commandWatchdogMinutes,
   removeModelConfig,
   resolveForCwd,
   setBinding,
@@ -72,6 +73,13 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
   --project-instructions <on|off>
                          read the workspace's own AGENTS.md / CLAUDE.md into the
                          system prompt at session start (X-15). On by default.
+  --command-watchdog <minutes|off|default>
+                         how long a run_command may run before the watchdog asks
+                         the model to kill or keep it (X-33); 30 by default. The
+                         number is stated in the tool's own description, so the
+                         model is told what it can rely on. "off" removes the
+                         check (only a person or a per-call timeout ends a
+                         runaway); "default" clears it back to 30.
   --offline              (set/which) don't refresh the model catalog
 `;
 
@@ -149,6 +157,22 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
   const projectInstructions = flags["project-instructions"];
   if (projectInstructions !== undefined) {
     patch.projectInstructions = onOff(projectInstructions, "project-instructions");
+  }
+  // The command watchdog interval (X-33). Not an on/off flag: "off" is 0 and a
+  // number is the interval, so the three states the setting actually has —
+  // default, a chosen interval, no check at all — are all reachable.
+  const watchdog = flagString(flags, "command-watchdog");
+  if (watchdog !== undefined) {
+    const v = watchdog.trim().toLowerCase();
+    if (v === "default") patch.watchdogMinutes = null;
+    else if (v === "off" || v === "none") patch.watchdogMinutes = 0;
+    else {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(`--command-watchdog must be a positive number of minutes, "off", or "default"`);
+      }
+      patch.watchdogMinutes = n;
+    }
   }
   return patch;
 }
@@ -394,6 +418,16 @@ export async function runConfig(args: string[]): Promise<number> {
         `Updated → ${updated.name}  ${updated.model}  effort:${updated.reasoningEffort ?? "-"}` +
           `${mt !== undefined ? `  max_tokens:${mt}` : ""}  ${shortId(updated.id)}\n`,
       );
+      // Read the watchdog back when this command touched it, since "off" and a
+      // number are easy to mistype into each other and the model is told which.
+      if (patch.watchdogMinutes !== undefined) {
+        const m = commandWatchdogMinutes(updated);
+        process.stdout.write(
+          m <= 0
+            ? `    run_command: no watchdog — a hung command runs until a person or a per-call timeout ends it\n`
+            : `    run_command: the watchdog asks to kill or keep after ${m} min\n`,
+        );
+      }
       // Read the threshold back whenever this command touched it — the effective
       // one, so a compactor-fit tightening (D-44a) is visible rather than silent.
       if (patch.thresholdTokens !== undefined || patch.contextLength !== undefined) {

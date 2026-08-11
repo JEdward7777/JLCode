@@ -222,6 +222,95 @@ describe("apply_edits tool", () => {
   });
 });
 
+/**
+ * X-35b — the batch already knows which sibling the stray anchor belongs to.
+ *
+ * From the field report: a batch touching `__init__.py` and `exceptions.py`
+ * listed, under the first, an anchor whose text lives in the second. The refusal
+ * was right and complete, and said only "found 0 time(s)" — while the buffer
+ * that explained it sat in the same array. Nothing about the refusal changes
+ * here; it just stops withholding what it computed.
+ */
+describe("apply_edits — naming the near-miss (X-35b)", () => {
+  const batch = (missingIn: string, anchor: string) =>
+    apply({
+      files: [
+        { path: missingIn, edits: [{ old_string: anchor, new_string: "x" }] },
+        { path: "exceptions.py", edits: [{ old_string: "class Boom", new_string: "class Bang" }] },
+      ],
+    });
+
+  beforeEach(() => {
+    write("__init__.py", "from .exceptions import Boom\n");
+    write("exceptions.py", "class Boom(Exception):\n    pass\n");
+  });
+
+  it("names the file the anchor would have matched", async () => {
+    const res = await batch("__init__.py", "class Boom(Exception):");
+    expect(res.isError).toBe(true);
+    expect(res.content).toContain("found 0 time(s)");
+    expect(res.content).toContain("matches exactly once in 'exceptions.py'");
+    expect(res.content).toContain("did you mean that file?");
+  });
+
+  it("still refuses the whole batch and writes nothing", async () => {
+    // The hint is text on a refusal, not a redirect: guessing which site was
+    // meant is the rail D-53 exists to hold.
+    await batch("__init__.py", "class Boom(Exception):");
+    expect(read("__init__.py")).toBe("from .exceptions import Boom\n");
+    expect(read("exceptions.py")).toBe("class Boom(Exception):\n    pass\n");
+  });
+
+  it("says nothing when the anchor is nowhere else in the batch", async () => {
+    const res = await batch("__init__.py", "def totally_absent():");
+    expect(res.content).toContain("found 0 time(s)");
+    expect(res.content).not.toContain("did you mean");
+  });
+
+  it("says nothing when two files in the batch could have matched", async () => {
+    // Boilerplate. Listing every candidate turns one useful sentence into
+    // several useless ones, so it stays silent (D-75).
+    write("a.py", "import os\n");
+    write("b.py", "import os\n");
+    const res = await apply({
+      files: [
+        { path: "__init__.py", edits: [{ old_string: "import os", new_string: "import sys" }] },
+        { path: "a.py", edits: [{ old_string: "import os", new_string: "import sys" }] },
+        { path: "b.py", edits: [{ old_string: "import os", new_string: "import sys" }] },
+      ],
+    });
+    expect(res.content).toContain("found 0 time(s)");
+    expect(res.content).not.toContain("did you mean");
+  });
+
+  it("says nothing when the one other file matches it twice", async () => {
+    // "Exactly one site, in exactly one other file" — two sites is the same
+    // ambiguity the anchor rail refuses to guess through.
+    write("twice.py", "log()\nlog()\n");
+    const res = await apply({
+      files: [
+        { path: "__init__.py", edits: [{ old_string: "log()", new_string: "logger()" }] },
+        { path: "twice.py", edits: [{ old_string: "log()\nlog()", new_string: "log()" }] },
+      ],
+    });
+    expect(res.content).toContain("found 0 time(s)");
+    expect(res.content).not.toContain("did you mean");
+  });
+
+  it("carries the hint onto the approval card too", async () => {
+    const preview = reg.get("apply_edits")!.preview!(
+      {
+        files: [
+          { path: "__init__.py", edits: [{ old_string: "class Boom(Exception):", new_string: "x" }] },
+          { path: "exceptions.py", edits: [{ old_string: "class Boom", new_string: "class Bang" }] },
+        ],
+      },
+      ctx as never,
+    );
+    expect(preview!.files[0]!.error).toContain("matches exactly once in 'exceptions.py'");
+  });
+});
+
 describe("read_file paging (D-53)", () => {
   const run = (args: Record<string, unknown>) => reg.get("read_file")!.execute(args, ctx);
 

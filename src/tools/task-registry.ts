@@ -13,8 +13,11 @@ import { newId } from "../util/id.js";
 export type TaskStatus = "running" | "exited" | "killed";
 
 /** Why a task was terminated — surfaced to the model so a killed task reads
- *  differently from a natural exit (D-34). */
-export type KillReason = "user" | "stop" | "watchdog";
+ *  differently from a natural exit (D-34). `timeout` is the per-call bound the
+ *  model set on `run_command` itself (X-33); it goes through the same kill path
+ *  as the rest so the task list can say why, rather than showing a task that
+ *  stopped for no stated reason. */
+export type KillReason = "user" | "stop" | "watchdog" | "timeout";
 
 /** The UI-facing view of a task (no full output — that rides separately). */
 export interface TaskView {

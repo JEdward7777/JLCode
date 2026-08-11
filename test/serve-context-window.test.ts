@@ -98,6 +98,49 @@ describe("serve's session factory — the compaction budget", () => {
   });
 });
 
+/**
+ * X-33's setting goes through the same seam, and would fail the same way: a
+ * `commands.watchdogMinutes` that reaches the config file and not the session is
+ * H-06 wearing a smaller hat. It is worse here than for the window, because the
+ * number is *also* stated in `run_command`'s description — so a half-wired
+ * setting doesn't just fail to apply, it tells the model something untrue.
+ */
+describe("serve's session factory — the command watchdog (X-33)", () => {
+  const runCommandDescription = (session: { buildRequest: () => { tools?: unknown[] } }) => {
+    const tools = (session.buildRequest().tools ?? []) as {
+      function: { name: string; description?: string };
+    }[];
+    return tools.find((t) => t.function.name === "run_command")!.function.description!;
+  };
+
+  it("arms the timer with the configured interval", () => {
+    const session = factory()(modelConfig({ commands: { watchdogMinutes: 5 } }));
+    expect(session.watchdogMs).toBe(5 * 60_000);
+  });
+
+  it("defaults to 30 minutes for a config that has never heard of the setting", () => {
+    expect(factory()(modelConfig()).watchdogMs).toBe(30 * 60_000);
+  });
+
+  it("switches the check off at 0 rather than falling back to the default", () => {
+    expect(factory()(modelConfig({ commands: { watchdogMinutes: 0 } })).watchdogMs).toBe(0);
+  });
+
+  it("tells the model the same number it armed", () => {
+    // The two halves come off one line in the factory; this is the assertion
+    // that keeps them there.
+    const session = factory()(modelConfig({ commands: { watchdogMinutes: 5 } }));
+    expect(session.watchdogMs).toBe(5 * 60_000);
+    expect(runCommandDescription(session)).toContain("5 min");
+    expect(runCommandDescription(session)).not.toContain("30 min");
+  });
+
+  it("promises no check to the model when there is none", () => {
+    const session = factory()(modelConfig({ commands: { watchdogMinutes: 0 } }));
+    expect(runCommandDescription(session)).toContain("nothing will check on it");
+  });
+});
+
 describe("resolveWindows — the compactor-fit input (D-44a)", () => {
   it("resolves a separate compactor's window", () => {
     const resolved = resolveWindows(

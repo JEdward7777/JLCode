@@ -213,7 +213,7 @@ export interface TaskView {
   startedAt: number;
   status: "running" | "exited" | "killed";
   exitCode?: number | null;
-  killReason?: "user" | "stop" | "watchdog";
+  killReason?: "user" | "stop" | "watchdog" | "timeout";
 }
 
 /** A message queued for the next turn boundary (D-34). */

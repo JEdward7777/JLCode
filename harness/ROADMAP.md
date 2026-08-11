@@ -43,8 +43,18 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > validated; Joshua leans a **separate server** over `file_utils`, to decide again later. **X-35 both
 > build** — `cwd` on `run_command`, and a refused `apply_edits` naming the sibling file its anchor
 > would have matched, only when that is exactly one site in exactly one other file.
-> **Next to build: X-33 then X-35** (neither started; no code has changed for either). Also open and
-> unblocked: X-14, X-16, X-18, and X-34/X-36 as deferred rows. The earlier stretch (P6c → P7c) fixed, in order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23
+> **X-33 and X-35 are built and pushed (D-76). 784 Tier-0/1 green, 65 files.** `run_command` gained
+> `cwd` (a fenced path arg, so an out-of-fence directory asks first) and `timeout` (seconds; kills
+> through the registry as a fourth `KillReason`, so a timed-out task reads as killed everywhere and
+> the note names it as the caller's bound rather than a failure of the command). The watchdog
+> interval is `commands.watchdogMinutes` (`config set <n> --command-watchdog 5|off|default`), read
+> **once** in the factory and handed to both the timer and `run_command`'s description — asserted
+> together in `serve-context-window.test.ts`, the file H-06 created, because a description promising
+> a check the timer will not honour is worse than the original defect. `apply_edits` now names the
+> sibling file a missing anchor would have matched, when that is exactly one site in exactly one
+> other file of the batch; the refusal is otherwise unchanged and never redirects. No browser peek:
+> the task panel lists only *running* tasks and never rendered a kill reason, so nothing new is
+> drawn. Also open and unblocked: X-14, X-16, X-18, and X-34/X-36 as deferred rows. The earlier stretch (P6c → P7c) fixed, in order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23
 > (D-63), X-25 (D-64), X-26 (D-65), X-17 (D-66), the peek tool's port + click (D-67), the config
 > loader's whitelist (D-68), X-15 (D-69), X-13 and H-07 (D-70), X-29/X-30 (D-71), X-28 (D-72), and
 > H-08 (D-73). Upstream, `file_utils`' `uvx` crash is capped and **merged by Joshua** as PR #1.
@@ -1652,8 +1662,6 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
-**a visible, configurable command watchdog + a per-call `timeout` (X-33)** ·
-**`run_command` `cwd` + an `apply_edits` refusal that names the sibling file (X-35)** ·
 agent-facing background commands — start/poll/tail/kill (X-36) ·
 symbol navigation over MCP, route sized, home undecided (X-34) ·
 Notifications (external push, P-02) ·
@@ -1671,7 +1679,9 @@ file viewer & upload/download chrome.
 ~~TTS auto-read when the agent hands the turn back (X-13)~~ ✅ D-70 ·
 ~~auto-read the workspace's `AGENTS.md` into the system prompt (X-15)~~ ✅ D-69 ·
 ~~auto-re-title a thread as it drifts (X-17)~~ ✅ D-66 ·
-~~the agent's shared todo list (X-31)~~ ✅ D-74.
+~~the agent's shared todo list (X-31)~~ ✅ D-74 ·
+~~a visible, configurable command watchdog + a per-call `timeout` (X-33)~~ ✅ D-76 ·
+~~`run_command` `cwd` + an `apply_edits` refusal that names the sibling file (X-35)~~ ✅ D-76.
 
 **Closed without a fix:**
 ~~the model seeing its own output budget (X-32)~~ — no fix (D-75): the ceiling could be stamped, but
