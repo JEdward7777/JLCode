@@ -687,7 +687,7 @@ whitelisting fields it never validated (D-68).
 **X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
 (D-64)**, **X-26 is fixed (D-65)**, **X-17 is fixed (D-66)** and **X-13 + H-07 are fixed (D-70)**;
 **X-12b is DONE**, and `peek` grew a mouse and a movable port (D-67).
-**Next: H-08** — the fence bypass P7c turned up (a decision is waiting on Joshua). **P7c is done.** Rendered surfaces get a
+**Next: H-08** — the fence bypass P7c turned up: an escaping `project_root` must never be allow-once. **P7c is done.** Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 **X-28 FIXED 2026-08-07 (D-72) — a question the agent asks now has a way out.** A call with N
@@ -1347,8 +1347,17 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 
 - **H-08 — a poisoned `project_root` on a shared MCP server bypasses the workspace fence entirely.**
   Found 2026-08-11 by P7c, driving the real `file_utils` server. **Open — needs a decision (below).**
-  - **Symptom, reproduced end to end.** A session that never asked for it read `/etc/hostname`
-    with **no pause at all**, `status: idle`, under any approval policy.
+  - **Symptom, reproduced end to end.** A session read `/etc/hostname` with **no pause at all**,
+    `status: idle`, under any approval policy — and **it takes only one session**: setting an
+    escaping `project_root` (which *does* pause) and then asking for a bare `hostname` in the very
+    next call of the same session is the whole exploit. That fact is what re-ranks the fixes below.
+  - **Scope, corrected by Joshua 2026-08-11 — a JLCode instance is project-local.**
+    `session-factory.ts:66` builds every session's sandbox from `[deps.cwd, ...folderRoots[cwd]]`,
+    the instance's launch directory, so **all sessions in one instance already share one root**
+    (`/chat`'s `dir` only filters history). So the cross-session half of this is a *wrong file in
+    the same project*, not a cross-project leak, and the first draft of this row over-weighted it.
+    The escalation is the serious half, it escapes the project outright, and it does not need a
+    second session.
   - **Two correct-alone mechanisms compounding**, which is why neither side caught it:
     1. **D-47e, flagged at the time and now demonstrated:** one MCP child per **instance**, shared
        by every session. `file_utils` remembers `project_root` in per-process memory (its SPEC
@@ -1365,19 +1374,22 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   - **Milder version, no approval needed at all:** with A's legitimate `project_root` set to a
     subdirectory, B's relative `inner.txt` silently resolved to *A's* copy rather than B's —
     confirmed. So this is a correctness bug before it is a security bug.
-  - **Fix options, for Joshua to choose** — the first two are the real candidates:
-    (a) **One MCP child per session** rather than per instance. Correct by construction and matches
-        what `file_utils`' own SPEC already assumes; costs a process per session per server, and
-        D-47e chose per-instance deliberately, so this reverses a decision rather than patching one.
-    (b) **Treat server-side root state as fence state**: never let a root that escapes the fence be
-        remembered — an out-of-fence `project_root` gets deny / remember-root, never allow-once —
-        and re-evaluate *relative* args against the last root the session actually consented to.
-        Cheaper, and it keeps per-instance children; but it means JLCode models a specific server's
-        state, which is the kind of special-casing D-47 set out to avoid.
-    (c) Classify **every** argument of an MCP write/command tool as fence-relevant unless learned
-        otherwise (fail-closed on non-slashy strings too). Safest, noisiest — it would ask about
-        `encoding: "utf-8"` until taught, which is exactly the friction D-48's learn-on-pause exists
-        to absorb, so it may be less bad than it sounds.
+  - **Fix options, re-ranked once the single-session repro landed:**
+    (b) **Treat server-side root state as fence state — this is the fix.** An escaping root is
+        **never allow-once**: deny or remember-root only, so a widened fence is a thing the user
+        chose and can see, rather than a silent standing grant. Optionally, once a session has set a
+        root on a server, stop trusting the slashy heuristic for that server and treat unclassified
+        strings as paths (fail-closed), with D-48's learn-on-pause absorbing the noise — that is
+        option (c) scoped to servers where a root is actually in play, instead of everywhere.
+    (a) **One MCP child per session** — *does not fix the above*, since the exploit fits in one
+        session. It fixes the milder correctness bug (B's relative path resolving against A's root)
+        and it is what `file_utils`' own SPEC assumes. Worth doing on its own merits, and it becomes
+        **required** the moment sessions stop sharing a root — i.e. D-36 (worktree isolation) and
+        X-14 (sessions on different forks), which is precisely the crack D-47e named. Spawn lazily
+        on a session's first call so a session that never touches MCP pays nothing, keeping what
+        D-47e actually cared about.
+    (c) Fail-closed on *every* unclassified argument everywhere: safest, noisiest, and (b)'s scoped
+        version gets most of it for far less friction.
   - **Not a `file_utils` defect.** Its SPEC is explicit that containment is the host's job and that
     each process belongs to one agent. JLCode is the party that broke that assumption.
 
