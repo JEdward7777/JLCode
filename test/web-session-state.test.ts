@@ -291,3 +291,28 @@ describe("retry state (D-57)", () => {
     expect(applyState(newSlice("s1"), { status: "idle" }).retryable).toBe(false);
   });
 });
+
+describe("the shared todo list in the slice (X-31)", () => {
+  it("takes the list from a settled frame and from either writer's event", () => {
+    const empty = newSlice("s1");
+    expect(empty.todos).toEqual([]);
+    const s = applyState(empty, { todos: [{ id: "td_1", text: "fold the ops", done: false }] });
+    expect(s.todos).toEqual([{ id: "td_1", text: "fold the ops", done: false }]);
+    const after = reduceEvent(s, {
+      type: "todos",
+      items: [
+        { id: "td_1", text: "fold the ops", done: true },
+        { id: "td_2", text: "draw the panel", done: false },
+      ],
+    } as WireEvent);
+    expect(after.todos.map((t) => t.done)).toEqual([true, false]);
+    // Not a settle: the list changing is not the session handing the turn back.
+    expect(after.settleSeq).toBe(s.settleSeq);
+  });
+
+  it("keeps the list when a frame omits it, and empties it when one says so", () => {
+    const s = applyState(newSlice("s1"), { todos: [{ id: "td_1", text: "one", done: false }] });
+    expect(applyState(s, { status: "idle" }).todos).toHaveLength(1);
+    expect(reduceEvent(s, { type: "todos", items: [] } as WireEvent).todos).toEqual([]);
+  });
+});

@@ -44,6 +44,8 @@ body {
 .pane .topbar,
 .pane .thread,
 .pane .queue,
+.pane .todo-panel,
+.pane .todo-bar.empty,
 .pane .composer {
   width: 100%;
   max-width: 900px;
@@ -1972,4 +1974,128 @@ figure.mermaid svg {
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--muted);
+}
+
+/* The shared todo list (X-31). Pinned between the thread and the composer, so
+   it stays put while you scroll back — it is state, not a message. Collapsed it
+   is one line: what the list is, and how much of it is left. */
+.todo-panel,
+.todo-bar.empty {
+  padding: 6px 16px 0;
+}
+.todo-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.todo-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.todo-toggle:hover {
+  color: var(--text);
+}
+.todo-toggle .caret {
+  font-size: 10px;
+}
+.todo-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+.todo-census {
+  font-size: 12px;
+}
+.todo-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.todo-actions .primary {
+  padding: 3px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #08111f;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.todo-actions button:not(.primary) {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.todo-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 30vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px;
+  font-size: 13px;
+}
+.todo-item .todo-box {
+  color: var(--muted);
+}
+.todo-item.done .todo-text {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.todo-item.editing .todo-text {
+  flex: 1;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.todo-item.editing .todo-text:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.todo-add {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+/* An agent write landing under an open draft: say so rather than let Save
+   silently overwrite it (the read barrier's rule, pointed the other way). */
+.todo-note {
+  padding: 4px 2px 6px;
+  color: var(--danger);
+  font-size: 12px;
+}
+/* Where the person edited the list, marked in the flow. An agent write needs no
+   marker — its tool block is already there. */
+.todo-mark {
+  align-self: center;
+  margin: 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
 }

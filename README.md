@@ -122,8 +122,8 @@ What the browser gives you: streaming markdown chat with a reasoning
 disclosure, a left rail of concurrent sessions, live Ask/Plan/Code + approval
 controls, edit-before-approve on tool calls, out-of-fence prompts, whole-tree
 spend with a settable cap, branch/rewind arrows with pencil edit-fork, a
-per-turn debug-journal drawer, lazy-loaded Mermaid diagrams, and an MCP status
-drawer. Every tool call leaves its result in the transcript — collapsed to the
+per-turn debug-journal drawer, lazy-loaded Mermaid diagrams, an MCP status
+drawer, and a **todo list you share with the agent**. Every tool call leaves its result in the transcript — collapsed to the
 tool, its arguments and a size hint, expandable to the full output — so you can
 check the model's work instead of taking its summary on faith. An approval card
 is also a chance to talk: anything you type in the composer while one is up rides
@@ -133,7 +133,12 @@ run without waiting for the queue to drain at the next turn boundary. When the a
 suggestions: every question also has a text box for saying something it didn't think
 of, and a **Skip** for saying nothing at all. A skipped question goes back as *"the
 user declined — none of these"*, not as the closest option, so the agent can't quietly
-proceed on an answer you never gave. Each thread names
+proceed on an answer you never gave. The **todo list** sits between the transcript and the
+composer: the agent keeps it as it works, and you can edit it — add, reword, re-order,
+tick, delete — with **edit** and **Save**. Saving is the whole commit, and it tells the
+agent the list changed so it re-reads before writing again; it never starts a turn on
+your behalf. The list is per branch and outlives compaction, so it is the one thing a
+long thread cannot forget. Each thread names
 itself after the first exchange and **re-names itself as it wanders** — a thread that
 has roughly doubled in length, or that has just been compacted, gets asked again, so a
 long thread isn't stuck with what it was about in its first two minutes. **Rename it

@@ -20,19 +20,30 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-08-11.** Phases 0–7 are done: **P7c closed 2026-08-11**, driving the real
-> `file_utils` MCP server end to end (anchor read, anchor edit, the fence, the gate, deny), which is
-> the last of the phase plan. **732 Tier-0/1 green, 63 files.** The stretch since P6c fixed, in
-> order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23 (D-63), X-25 (D-64), X-26 (D-65), X-17 (D-66),
-> the peek tool's port + click (D-67), the config loader's whitelist (D-68), X-15 (D-69), X-13 and
-> H-07 (D-70), X-29/X-30 (D-71), X-28 (D-72), and H-08 (D-73). Joshua's observed-items list is now
-> **fully filed and four-fifths fixed**; the fifth is **X-31, the agent's todo list — designed in his
-> 2026-08-09 question round and not yet built, which makes it the obvious next slice.** Also open and
-> unblocked: X-14, X-16, X-18. Upstream, `file_utils` needed a fix before P7c could run at all (its
-> `uvx` launch resolved mcp 2.0 and died on import); that is capped and **merged by Joshua** as PR #1.
-> Standing calls to carry forward: free tiers only unless he says otherwise (**ask every time**), push
-> after a green commit on `main`, prefer **rebase over merge**, and the "Later" list keeps every row
-> and strikes the shipped ones.
+> **Resume block — 2026-08-11 (second pass).** Phases 0–7 are done, and **X-31 — the agent's
+> shared todo list — is built and pushed (D-74)**, which empties Joshua's observed-items list
+> entirely: all five are now filed *and* fixed. **752 Tier-0/1 green, 64 files.** X-31 is state
+> folded from `todo` ops on the conversation's branch (D-37's model), so it survives resume, fork,
+> rewind **and compaction**; the agent addresses items by exact text or by a stable id, a miss fails
+> loudly with the list attached, and writes are barred until it has read — a barrier that re-arms
+> whenever the person edits, and that one look clears. The browser half is a panel between the thread
+> and the composer: leaving edit mode is the commit, and it queues a nudge stating the count without
+> spending a model call. Peeked in a real browser (VISUAL-LOG "X-31").
+>
+> **Freshly filed and not yet triaged: X-32 … X-35**, from Joshua relaying a field report by Opus 5
+> driving JLCode (2026-08-11) — the model cannot see its own output budget (X-32); `run_command` is
+> killable by a *human* but the agent can neither background, tail nor time-limit it (X-33); no
+> symbol-level navigation, so every lookup costs grep-then-read (X-34); and two small ergonomics
+> fixes, `run_command` without `cwd` and an `apply_edits` refusal that knows which other file the
+> stray anchor matched and doesn't say (X-35). **Joshua asked for these to be filed for discussion,
+> not built** — a triage round is the next thing to ask him for. Also open and unblocked: X-14, X-16,
+> X-18. The earlier stretch (P6c → P7c) fixed, in order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23
+> (D-63), X-25 (D-64), X-26 (D-65), X-17 (D-66), the peek tool's port + click (D-67), the config
+> loader's whitelist (D-68), X-15 (D-69), X-13 and H-07 (D-70), X-29/X-30 (D-71), X-28 (D-72), and
+> H-08 (D-73). Upstream, `file_utils`' `uvx` crash is capped and **merged by Joshua** as PR #1.
+> Standing calls to carry forward: free tiers only unless he says otherwise (**ask every time**),
+> push after a green commit on `main`, prefer **rebase over merge**, and the "Later" list keeps every
+> row and strikes the shipped ones.
 
 Built, tested (**732 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
@@ -940,13 +951,30 @@ nothing and only created the obligation to remember. Joshua's call on seeing the
 A field nobody has invented yet (`futureSetting`) is asserted to survive load and a save→load round
 trip, standing in for the next one.
 
+**The agent's todo list is built — X-31, D-74, 2026-08-11.** Two tools (`todo_read` / `todo_write`)
+and a browser panel over one piece of state: a list **folded from `todo` operations on the
+conversation's own branch**, which is D-37's model and is what makes resume, fork and rewind correct
+without any bookkeeping — and what makes the list **survive compaction**, since the ops sit above the
+replay cut but are still on the branch. That last property is the feature's whole point: the list is
+the memory a summary is most likely to blur. The agent addresses items by exact text or by the id
+echoed on every read (content survives re-ordering, ids survive re-wording); a miss is refused with
+the current list attached rather than striking a neighbour; and a write is refused until the agent
+has read — a barrier that **re-arms whenever the person edits**, cannot hang anything, and is cleared
+by the refusal itself. The person's half is a panel pinned between the thread and the composer:
+leaving edit mode is the commit, an unchanged commit is a no-op, and a real one queues a message
+stating **the count, not the payload** — without opening a turn, because editing your own list must
+not spend a model call. Peeked in a real browser (VISUAL-LOG "X-31"), which cost *start a list* its
+pointless extra click. **20 new Tier-0 tests.**
+
 **`observed_items_needing_filed_in_harness.txt` is fully filed as of 2026-08-11 — nothing left on it.**
 All five of Joshua's observed defects are now harness rows, and four are fixed: `ask_user`'s missing
 escape as **X-28 (D-72)**, the chip and the scroll theft as **X-29 / X-30 (D-71)**, the intermittent
-TTS jam as **H-07 (D-70)**. The fifth, **the agent's todo list, is filed as X-31** with its design
-settled — Joshua's question round on 2026-08-09 answered every open call (shared list, a read-barrier
-instead of a lock, content-addressed operations, pull-with-a-count delivery). It is designed and
-**not yet built**, which makes it the obvious next slice.
+TTS jam as **H-07 (D-70)**. The fifth, **the agent's todo list, X-31**, is now built too
+— Joshua's question round on 2026-08-09 answered every open call (shared list, a read-barrier
+instead of a lock, content-addressed operations, pull-with-a-count delivery) and **D-74 shipped it
+2026-08-11 as designed**, with the barrier made slightly stricter than the row's wording: it re-arms
+on any change the agent did not make, not only on never-having-read. **The list is empty; nothing is
+left on it.**
 
 
 ---
@@ -1631,7 +1659,8 @@ file viewer & upload/download chrome.
 ~~a settable compaction threshold, e.g. 171.5k (X-27)~~ ✅ D-62 ·
 ~~TTS auto-read when the agent hands the turn back (X-13)~~ ✅ D-70 ·
 ~~auto-read the workspace's `AGENTS.md` into the system prompt (X-15)~~ ✅ D-69 ·
-~~auto-re-title a thread as it drifts (X-17)~~ ✅ D-66.
+~~auto-re-title a thread as it drifts (X-17)~~ ✅ D-66 ·
+~~the agent's shared todo list (X-31)~~ ✅ D-74.
 
 ---
 

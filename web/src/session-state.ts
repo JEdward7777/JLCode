@@ -18,6 +18,7 @@ import type {
   SessionDescriptor,
   SessionState,
   TaskView,
+  TodoItem,
   TriggerMode,
   WireEvent,
 } from "./api";
@@ -46,6 +47,9 @@ export interface SessionSlice {
   capReached: boolean;
   tasks: TaskView[];
   queue: QueuedMessage[];
+  /** The shared todo list (X-31), folded server-side from this branch's ops.
+   *  The panel draws it; the user's edits are committed back as a whole list. */
+  todos: TodoItem[];
   // Conversation tree (loaded lazily on first focus; grows via live events).
   entries: EntryView[];
   activeLeaf: string | null;
@@ -125,6 +129,7 @@ export function newSlice(id: string, model = ""): SessionSlice {
     capReached: false,
     tasks: [],
     queue: [],
+    todos: [],
     entries: [],
     activeLeaf: null,
     conversationId: null,
@@ -175,6 +180,7 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (typeof state.capReached === "boolean") next.capReached = state.capReached;
   if (state.tasks) next.tasks = state.tasks;
   if (state.queue) next.queue = state.queue;
+  if (state.todos) next.todos = state.todos;
   if (state.triggerMode) next.triggerMode = state.triggerMode;
   if (typeof state.needsCompaction === "boolean") next.needsCompaction = state.needsCompaction;
   next.pendingCompaction = state.compactionRequest ?? null;
@@ -251,6 +257,10 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       };
     case "queue":
       return { ...s, queue: (e.queue as QueuedMessage[]) ?? [] };
+    case "todos":
+      // Either writer changed the list (X-31) — the event carries the folded
+      // result, so the panel never has to replay ops of its own.
+      return { ...s, todos: (e.items as TodoItem[]) ?? [] };
     case "task-start":
     case "task-update": {
       const t = e.task as TaskView;

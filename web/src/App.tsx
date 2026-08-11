@@ -22,6 +22,7 @@ import {
   fetchSessionState as apiSessionState,
   killTask as apiKillTask,
   queueMessage as apiQueue,
+  setTodos as apiSetTodos,
   setQueue as apiSetQueue,
   rewind as apiRewind,
   editFork as apiEditFork,
@@ -59,6 +60,7 @@ import {
   type SessionDescriptor,
   type SessionState,
   type TaskView,
+  type TodoItem,
   type TriggerMode,
 } from "./api";
 import { askActions, buildAnswers, emptyQState, toggleOption, type QState } from "./ask-form";
@@ -529,6 +531,20 @@ export function App() {
     [slices, notify, focus],
   );
 
+  /** Commit the todo list the user just finished editing (X-31). The server
+   *  decides whether anything actually changed — and therefore whether the agent
+   *  is told — so a no-op close of the editor stays a no-op. */
+  const saveTodos = useCallback(
+    async (id: string, items: { id?: string; text: string; done: boolean }[]) => {
+      try {
+        await apiSetTodos(id, items);
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
+
   const queueMsg = useCallback(
     async (id: string) => {
       const text = (slices[id]?.input ?? "").trim();
@@ -868,6 +884,7 @@ export function App() {
           onInput={setInput}
           onSubmit={submit}
           onQueue={queueMsg}
+          onSaveTodos={saveTodos}
           onChangeMode={changeMode}
           onChangeTriggerMode={changeTriggerMode}
           onCompact={doCompact}
@@ -1377,6 +1394,7 @@ function ChatPane({
   onInput,
   onSubmit,
   onQueue,
+  onSaveTodos,
   onChangeMode,
   onChangeTriggerMode,
   onCompact,
@@ -1403,6 +1421,7 @@ function ChatPane({
   onInput: (id: string, text: string) => void;
   onSubmit: (id: string) => void;
   onQueue: (id: string) => void;
+  onSaveTodos: (id: string, items: { id?: string; text: string; done: boolean }[]) => void;
   onChangeMode: (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
   onChangeTriggerMode: (id: string, mode: TriggerMode) => void;
   onCompact: (id: string, opts?: { skip?: boolean }) => void;
@@ -1456,7 +1475,11 @@ function ChatPane({
   // where you check the model's work. Silent assistant turns (a bare tool call)
   // still don't draw a bubble; their tool block carries the story.
   const rendered = path.filter(
-    (e) => e.type === "user" || e.type === "tool" || (e.type === "assistant" && (e.text || e.reasoningText)),
+    (e) =>
+      e.type === "user" ||
+      e.type === "tool" ||
+      (e.type === "assistant" && (e.text || e.reasoningText)) ||
+      (e.type === "todo" && e.by === "user"),
   );
   // Arguments live on the calling assistant entry, results on the tool entry;
   // `toolCallId` is the join.
@@ -1626,6 +1649,16 @@ function ChatPane({
           <div className="empty">Say something to get started.</div>
         )}
         {rendered.map((entry) => {
+          if (entry.type === "todo") {
+            // Only the user's edits reach here (see the filter): an agent write
+            // is already visible as its `todo_write` tool block, and marking it
+            // twice would make striking six items look like twelve events.
+            return (
+              <div className="todo-mark" key={entry.id}>
+                you edited the todo list
+              </div>
+            );
+          }
           if (entry.type === "tool") {
             return <ToolBlock key={entry.id} entry={entry} args={entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined} />;
           }
@@ -1727,6 +1760,10 @@ function ChatPane({
           </button>
         )}
       </div>
+
+      {/* The shared todo list (X-31), pinned between the thread and the composer
+          so it stays put while you scroll back through the transcript. */}
+      <TodoPanel items={slice.todos} onSave={(items) => onSaveTodos(id, items)} />
 
       {slice.queue.length > 0 && (
         <div className="queue">
@@ -2078,6 +2115,124 @@ function StopControl({ active, onStop }: { active: boolean; onStop: (scope: "har
 }
 
 /** Running background commands (D-34): elapsed time + a per-task Kill. */
+/**
+ * The shared todo list (X-31) — the person's half of it.
+ *
+ * Two states, deliberately: **viewing** shows what the list says, **editing**
+ * hands the whole list over as fields. Leaving edit mode is the commit, and the
+ * only commit — which is what makes "the user changed it" a single event the
+ * agent can be told about once, at a turn boundary, rather than a keystroke
+ * stream nobody can act on.
+ *
+ * A draft is local until saved, so the agent striking an item mid-edit cannot
+ * yank a row out from under a cursor. The flip side is that saving replaces
+ * what the agent wrote in the meantime, so when that happens the panel says so
+ * out loud rather than letting the clobber be silent — the same principle as
+ * the agent's own read barrier, pointed the other way.
+ */
+function TodoPanel({ items, onSave }: { items: TodoItem[]; onSave: (items: { id?: string; text: string; done: boolean }[]) => void }) {
+  const [open, setOpen] = useState(() => readBoolPref("todo.open", false));
+  const [draft, setDraft] = useState<{ id?: string; text: string; done: boolean }[] | null>(null);
+  // What the list said when editing began — the comparison that spots an agent
+  // write landing underneath the draft.
+  const [base, setBase] = useState<TodoItem[]>([]);
+  const editing = draft !== null;
+  const undone = items.filter((i) => !i.done).length;
+  const changedUnderneath =
+    editing && (items.length !== base.length || items.some((i, n) => base[n]?.id !== i.id || base[n]?.text !== i.text || base[n]?.done !== i.done));
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    writePref("todo.open", String(next));
+    if (!next) setDraft(null); // collapsing abandons an untouched draft
+  };
+  const startEdit = () => {
+    setBase(items);
+    setDraft(items.map((i) => ({ id: i.id, text: i.text, done: i.done })));
+  };
+  const patch = (n: number, row: Partial<{ text: string; done: boolean }>) =>
+    setDraft((d) => (d ? d.map((r, i) => (i === n ? { ...r, ...row } : r)) : d));
+
+  if (items.length === 0 && !editing) {
+    return (
+      <div className="todo-bar empty">
+        <span className="todo-label">todo</span>
+        <span className="todo-census">no items</span>
+        {/* Straight into a row with the cursor in it: "start a list" that hands
+            you an empty editor and one more button to press is a step nobody
+            wanted. */}
+        <button className="ghost" onClick={() => setDraft([{ text: "", done: false }])}>
+          start a list
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`todo-panel ${open || editing ? "open" : ""}`}>
+      <div className="todo-bar">
+        <button className="todo-toggle" onClick={toggle} aria-expanded={open || editing} title="the list you share with the agent">
+          <span className="caret">{open || editing ? "▾" : "▸"}</span>
+          <span className="todo-label">todo</span>
+          <span className="todo-census">
+            {undone} of {items.length} undone
+          </span>
+        </button>
+        {(open || editing) &&
+          (editing ? (
+            <span className="todo-actions">
+              <button className="primary" onClick={() => { onSave(draft!.filter((r) => r.text.trim() !== "")); setDraft(null); }}>
+                Save
+              </button>
+              <button onClick={() => setDraft(null)}>Cancel</button>
+            </span>
+          ) : (
+            <span className="todo-actions">
+              <button className="ghost" onClick={startEdit}>
+                edit
+              </button>
+            </span>
+          ))}
+      </div>
+      {(open || editing) && (
+        <div className="todo-items">
+          {changedUnderneath && (
+            <div className="todo-note">⚠ the agent changed the list while you were editing — Save replaces it, Cancel shows theirs.</div>
+          )}
+          {editing
+            ? draft!.map((row, n) => (
+                <div className="todo-item editing" key={row.id ?? `new-${n}`}>
+                  <input type="checkbox" checked={row.done} onChange={(e) => patch(n, { done: e.target.checked })} />
+                  <input
+                    className="todo-text"
+                    value={row.text}
+                    spellCheck={false}
+                    autoFocus={n === draft!.length - 1 && row.text === ""}
+                    onChange={(e) => patch(n, { text: e.target.value })}
+                  />
+                  <button className="icon" title="remove" onClick={() => setDraft((d) => (d ? d.filter((_, i) => i !== n) : d))}>
+                    ✕
+                  </button>
+                </div>
+              ))
+            : items.map((item) => (
+                <div className={`todo-item ${item.done ? "done" : ""}`} key={item.id}>
+                  <span className="todo-box">{item.done ? "☑" : "☐"}</span>
+                  <span className="todo-text">{item.text}</span>
+                </div>
+              ))}
+          {editing && (
+            <button className="ghost todo-add" onClick={() => setDraft((d) => [...(d ?? []), { text: "", done: false }])}>
+              + item
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TasksPanel({ tasks, onKill }: { tasks: TaskView[]; onKill: (id: string) => void }) {
   const [, setNow] = useState(Date.now());
   useEffect(() => {

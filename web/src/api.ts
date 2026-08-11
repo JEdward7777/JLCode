@@ -10,7 +10,7 @@
 export interface EntryView {
   id: string;
   parent: string | null;
-  type: "user" | "assistant" | "tool" | "compaction";
+  type: "user" | "assistant" | "tool" | "compaction" | "todo";
   text?: string;
   reasoningText?: string;
   toolCalls?: { id?: string; name: string; arguments: string }[];
@@ -21,6 +21,7 @@ export interface EntryView {
   content?: string; // tool
   isError?: boolean; // tool
   summary?: string; // compaction
+  by?: "agent" | "user"; // todo — who changed the list at this point (X-31)
 }
 
 /** The tree snapshot from GET /session/:id — entries + the viewed leaf. */
@@ -221,6 +222,14 @@ export interface QueuedMessage {
   text: string;
 }
 
+/** One row of the shared todo list (X-31). The `id` is stable across rewording,
+ *  which is what lets the agent strike an item the user has since edited. */
+export interface TodoItem {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
 /** The settled-state snapshot carried on the SSE `ready` frame and returned by
  *  the action POSTs (see server stateOf). */
 export interface SessionState {
@@ -239,6 +248,7 @@ export interface SessionState {
   capReached?: boolean; // breach → the loop declined the next LLM call (D-33)
   tasks?: TaskView[]; // running background commands (D-34)
   queue?: QueuedMessage[]; // pending queued messages (D-34)
+  todos?: TodoItem[]; // the shared todo list, folded from this branch's ops (X-31)
   triggerMode?: TriggerMode; // live compaction trigger mode (D-27, P6c)
   needsCompaction?: boolean; // budget crossed — drives the suggest banner (D-44)
   compactionRequest?: CompactionRequest; // pending pre-send compaction pause (D-27)
@@ -546,6 +556,21 @@ export async function killTask(id: string, taskId: string): Promise<void> {
 /** Queue a message for the next turn boundary (D-34). */
 export async function queueMessage(id: string, text: string): Promise<void> {
   await postJson(`/session/${id}/queue`, { text });
+}
+
+/** Commit the todo list as the user left it (X-31). Sent when they leave edit
+ *  mode, not per keystroke: the whole list is the unit, and the server turns an
+ *  actual change into the queued nudge that tells the agent to re-read. */
+export async function setTodos(id: string, items: { id?: string; text: string; done: boolean }[]): Promise<void> {
+  const res = await fetch(`/session/${id}/todos`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `request failed (${res.status})`);
+  }
 }
 
 /** Replace the whole pending queue — the edit/cancel affordance (D-34). */

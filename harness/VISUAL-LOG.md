@@ -1414,3 +1414,50 @@ covered end-to-end by the live re-run recorded in H-08.
 *Cosmetic, noticed and not fixed:* the `<code>/etc</code>` inside the **Remember**
 button sits low against the button's fill — it inherits the transcript's code
 styling, which was never meant to sit inside a primary button.
+
+---
+
+## X-31 — the shared todo list · 2026-08-11 · ✅ looked good
+
+**Screenshots:** [`visual/x31-empty.png`](visual/x31-empty.png) ·
+[`visual/x31-open.png`](visual/x31-open.png) ·
+[`visual/x31-editing.png`](visual/x31-editing.png) ·
+[`visual/x31-start.png`](visual/x31-start.png)
+
+Posed with `peek up` + `peek chat`, then the **person's own path** —
+`curl -X PUT /session/<id>/todos` with three items, which is byte-for-byte what
+the Save button sends. The fake driver cannot call a tool, so the agent's half
+was exercised at Tier-0 instead; everything below is the person's half plus the
+live event that carries the agent's.
+
+Confirmed with my own eyes:
+
+- **The empty state is one quiet line** — `TODO  no items  [start a list]` above
+  the composer. It is always present rather than appearing once a list exists,
+  which is what makes seeding one by hand discoverable at all.
+- **The panel updated live from the PUT with no reload** — the page had been
+  loaded before the list existed, so the `todos` event and its slice reducer are
+  what put those three rows on screen. That is the same path an agent write takes.
+- **Done reads as done**: `☑` plus a strikethrough in muted text, `2 of 3 undone`
+  on the collapsed bar.
+- **Edit mode hands over the whole list** — checkbox, text field, `✕` per row,
+  `+ item`, and Save/Cancel. Leaving it is the commit; there is no per-keystroke
+  traffic.
+- **The queued nudge is visible as a queued chip**, reading *"[todo] The user
+  edited the todo list — 2 of 3 items still undone…"* — the count, not the
+  payload — and the session stayed `idle`: editing a list did **not** spend a
+  model call on the user's behalf.
+- **The user's edit is marked in the transcript** (*you edited the todo list*)
+  where it happened. An agent write gets no such marker, because its `todo_write`
+  tool block is already there and marking it twice would make striking six items
+  look like twelve events.
+
+**What the browser changed.** `start a list` originally opened an empty editor
+with a `+ item` button — a button whose only job was to undo the emptiness. It
+now opens with one row, focused, cursor in it (`x31-start.png` is after that fix).
+
+Not exercised visually: an agent write landing **while the editor is open**,
+which draws the ⚠ *"the agent changed the list while you were editing"* note —
+it needs a live model to produce, and the condition behind it is a pure
+comparison covered at Tier-0. Also unseen: a list long enough to hit the panel's
+`30vh` scroll cap.
