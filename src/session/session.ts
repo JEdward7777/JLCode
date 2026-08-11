@@ -24,6 +24,20 @@ import type { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolGate, ToolPreview } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
 import { ASK_USER } from "../tools/ask-user.js";
+import { TODO_GUIDANCE, TODO_READ } from "../tools/todo-tools.js";
+import {
+  planTodoSnapshot,
+  planTodoWrite,
+  renderTodoList,
+  todoCensus,
+  todosOn,
+  todoTip,
+  type TodoAccess,
+  type TodoItem,
+  type TodoOp,
+  type TodoWriteInput,
+  type TodoWriteResult,
+} from "../conversation/todos.js";
 import { TaskRegistry } from "../tools/task-registry.js";
 import type { TaskView } from "../tools/task-registry.js";
 import { computeCost } from "./spend.js";
@@ -125,6 +139,11 @@ export interface SessionOptions {
 const WATCHDOG_MS = 30 * 60 * 1000;
 
 const BASE_SYSTEM = "You are JLCode, a helpful coding agent.";
+
+/** Sentence-case a fragment (the todo census, when it opens a summary line). */
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 /** The structured yes/no the watchdog asks the model out-of-band (D-34). */
 const DECIDE_KILL_TOOL: ToolDef = {
@@ -355,6 +374,11 @@ export class Session {
    *  the turn keeps building where it began, instead of re-parenting its reply
    *  onto whatever branch the user wandered to. */
   private turnLeaf: string | null | undefined;
+  /** The todo entry the agent has seen (X-31) — the read barrier's whole state.
+   *  `undefined` is "never read", which is distinct from `null` ("read it, and
+   *  it was empty"), so the very first write on a fresh branch is refused until
+   *  the agent has looked. */
+  private todoSeen: string | null | undefined;
 
   constructor(options: SessionOptions) {
     if (options.tools && !options.sandbox) throw new Error("A tool registry requires a sandbox");
@@ -384,7 +408,12 @@ export class Session {
     const project = options.projectInstructions?.trim();
     const addendum = options.config.systemPromptAddendum?.trim();
     const base = options.systemPrompt ?? BASE_SYSTEM;
-    this.systemPrompt = [base, project, addendum].filter((s): s is string => Boolean(s)).join("\n\n");
+    // The todo list's usage instructions ride here, and **only when the tools
+    // are actually registered** (X-31): the base prompt is shared with sessions
+    // that have no tool registry at all, and telling a model to call a tool it
+    // has not been given is how a turn gets spent on an apology.
+    const todos = options.tools?.get(TODO_READ) ? TODO_GUIDANCE : undefined;
+    this.systemPrompt = [base, todos, project, addendum].filter((s): s is string => Boolean(s)).join("\n\n");
     this.stamps = turnTimestampsEnabled(options.config);
     this.conversation = options.conversation ?? newConversation();
     this.pricing = options.config.pricing;
@@ -585,13 +614,24 @@ export class Session {
         textPreview: `[compaction${opts.forced ? " forced" : ""}] ${summary.slice(0, 160)}`,
       },
     });
-    const entry = this.pushEntry({ type: "compaction", summary, replayCut: true });
+    // The todo count, stated by us rather than asked of the model (X-31). The
+    // list itself is *not* folded into the summary: it survives compaction on
+    // its own (the ops are on the branch, above the cut but still folded on
+    // read), so restating it would only create a second copy to drift. A count
+    // is cheap, and it prompts a read at the one moment the agent has genuinely
+    // lost the thread.
+    const todos = this.todos;
+    const withTodos =
+      todos.length === 0
+        ? summary
+        : `${summary}\n\n## Todo list\n${capitalize(todoCensus(todos))} — call ${TODO_READ} for the current list.`;
+    const entry = this.pushEntry({ type: "compaction", summary: withTodos, replayCut: true });
     this.needsCompaction = false;
     // The prefix above the cut is no longer sent, so the last reading now
     // describes a request that will never be made again (X-24). Back to
     // unmeasured until the next turn reports real usage.
     this.emit({ type: "context", tokens: 0 });
-    this.emit({ type: "compacted", entryId: entry.id, forced: opts.forced ?? false, summaryChars: summary.length });
+    this.emit({ type: "compacted", entryId: entry.id, forced: opts.forced ?? false, summaryChars: withTodos.length });
     return true;
   }
 
@@ -1335,11 +1375,17 @@ export class Session {
   // boundary being **each pass of the tool loop** (D-52), not the settle to idle.
 
   /** Queue a message to apply at the next turn boundary. If the session is idle,
-   *  it is sent right away (the boundary is now). Returns the queued id. */
-  async enqueue(text: string): Promise<void> {
+   *  it is sent right away (the boundary is now) — unless `openTurn` is false,
+   *  which parks it for whenever a turn next happens.
+   *
+   *  Parking exists for machine-written notices (the todo nudge, X-31): the
+   *  person edited a list in their own browser, and turning that into a paid
+   *  model call they never asked for is not a notification, it's a bill. Parked
+   *  or not, `flushPendingUser` lands it before the next LLM call either way. */
+  async enqueue(text: string, opts: { openTurn?: boolean } = {}): Promise<void> {
     this.queue.push({ id: newId("q"), text });
     this.emit({ type: "queue", queue: [...this.queue] });
-    if (this.status === "idle") await this.drainQueue();
+    if (this.status === "idle" && opts.openTurn !== false) await this.drainQueue();
   }
 
   /** Replace the pending queue wholesale — the UI's edit/cancel affordance. */
@@ -1360,6 +1406,85 @@ export class Session {
     if (!next) return;
     this.emit({ type: "queue", queue: [...this.queue] });
     await this.send(next.text);
+  }
+
+  // ---- The shared todo list (X-31): state folded from ops on this branch.
+
+  /** The list as it stands on the branch in play — the turn's, while one is in
+   *  flight; the reader's otherwise (H-05). */
+  get todos(): TodoItem[] {
+    return todosOn(this.conversation, this.workingLeaf);
+  }
+
+  /** The handle every tool call is given. Reads clear the barrier; writes are
+   *  refused while it is armed. */
+  private get todoAccess(): TodoAccess {
+    return {
+      read: () => {
+        this.todoSeen = todoTip(this.conversation, this.workingLeaf);
+        return this.todos;
+      },
+      write: (input) => this.writeTodos(input),
+    };
+  }
+
+  /**
+   * An agent write, guarded by the read barrier.
+   *
+   * The barrier is armed whenever the branch's newest todo op is not the one the
+   * agent last saw — it has never looked, or the person has edited since, or the
+   * reader has moved to a branch whose list says something else. It is **causal,
+   * not temporal**: nothing can hang on it, because the agent holds the key.
+   * The refusal carries the current list, which *is* the look it was missing —
+   * so the barrier costs exactly one refused call, and the retry is made against
+   * the truth instead of against memory. That is the property that made this
+   * beat the edit-mode freeze first proposed.
+   */
+  private writeTodos(input: TodoWriteInput): TodoWriteResult {
+    const items = this.todos;
+    const tip = todoTip(this.conversation, this.workingLeaf);
+    if (this.todoSeen !== tip) {
+      this.todoSeen = tip; // one look clears it — and this refusal is that look
+      return {
+        ok: false,
+        error:
+          (this.todoSeen === null && items.length === 0
+            ? "Refused: read the todo list before writing to it."
+            : "Refused: the todo list has changed since you last read it.") +
+          ` Here it is — re-issue your write against this.\n\n${renderTodoList(items)}`,
+      };
+    }
+    const plan = planTodoWrite(items, input);
+    if (!plan.ok) return plan;
+    this.appendTodoOps(plan.ops, "agent");
+    return { ok: true, items: plan.items };
+  }
+
+  /** Record todo ops on the branch and announce the new list. An agent write
+   *  also counts as seen: it knows what it just did. */
+  private appendTodoOps(ops: TodoOp[], by: "agent" | "user"): void {
+    const entry = this.pushEntry({ type: "todo", ops, by });
+    if (by === "agent") this.todoSeen = entry.id;
+    this.emit({ type: "todos", items: this.todos });
+  }
+
+  /**
+   * The person's commit from the browser — the whole list as they left it.
+   *
+   * Their edit is a snapshot rather than a stream of keystrokes, because that is
+   * what leaving edit mode means: this is the list now. It enqueues a message
+   * telling the agent **that** the list changed and how much is outstanding, not
+   * what it says — pull delivery (Joshua's call). Returns false when nothing
+   * changed, in which case nobody is told anything.
+   */
+  async setTodos(rows: { id?: string; text: string; done?: boolean }[]): Promise<boolean> {
+    const op = planTodoSnapshot(this.todos, rows);
+    if (!op) return false;
+    this.appendTodoOps([op], "user");
+    await this.enqueue(`[todo] The user edited the todo list — ${todoCensus(this.todos)}. Call ${TODO_READ} to see it.`, {
+      openTurn: false,
+    });
+    return true;
   }
 
   /** Run one assistant turn, recovering from the over-window hard wall (D-44b):
@@ -1767,7 +1892,7 @@ export class Session {
   ): Promise<void> {
     this.emit({ type: "tool-start", name: tool.name });
     const startedAt = Date.now();
-    const res = await tool.execute(args, { sandbox: this.sandbox!, tasks: this.tasks });
+    const res = await tool.execute(args, { sandbox: this.sandbox!, tasks: this.tasks, todos: this.todoAccess });
     const note = edited ? "[note: the user edited the arguments before running]\n" : "";
     this.appendToolResult(call, note + res.content, res.isError ?? false);
     this.emit({

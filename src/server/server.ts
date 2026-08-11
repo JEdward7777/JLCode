@@ -113,6 +113,10 @@ function entryView(entry: Entry): Record<string, unknown> {
       };
     case "compaction":
       return { ...base, type: "compaction", summary: entry.summary };
+    case "todo":
+      // The transcript marks *that* the list changed and who changed it (X-31);
+      // the list itself is a panel, not a message, and ships on the state frame.
+      return { ...base, type: "todo", by: entry.by };
   }
 }
 
@@ -165,6 +169,7 @@ function stateOf(session: Session): Record<string, unknown> {
     capReached: session.capReached,
     tasks: session.taskList,
     queue: session.queuedMessages,
+    todos: session.todos, // the shared list, folded from this branch's ops (X-31)
     triggerMode: session.triggerMode, // live compaction trigger mode (D-27, P6c)
     needsCompaction: session.needsCompaction, // budget crossed (drives the suggest banner)
     // The window compaction is measured against, and where it came from (D-44c).
@@ -605,6 +610,28 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     }
     await flushDurable();
     return c.json(stateOf(session));
+  });
+
+  // The person's todo-list commit (X-31) — the whole list as they left edit
+  // mode, not a keystroke stream: that is what "leaving edit mode" means, and it
+  // is the one moment they are the authority on what the list says. An unchanged
+  // list is a no-op down to the queued nudge, so opening the editor and closing
+  // it again costs the agent nothing.
+  app.put("/session/:id/todos", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { items?: unknown };
+    if (!Array.isArray(body.items)) return c.json({ error: "body must include an 'items' array" }, 400);
+    const rows = body.items
+      .filter((i): i is Record<string, unknown> => Boolean(i) && typeof i === "object")
+      .map((i) => ({
+        id: typeof i.id === "string" ? i.id : undefined,
+        text: typeof i.text === "string" ? i.text : "",
+        done: i.done === true,
+      }));
+    const changed = await session.setTodos(rows);
+    await flushDurable();
+    return c.json({ ...stateOf(session), changed });
   });
 
   // Rewind / switch branch: point the active leaf at an existing entry (D-10).

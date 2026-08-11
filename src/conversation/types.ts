@@ -5,6 +5,7 @@
  * On disk this is a JSONL log folded into this shape (D-37) — later phase.
  */
 import type { ToolCall, Usage } from "../llm/types.js";
+import type { TodoOp } from "./todos.js";
 
 export interface BaseEntry {
   id: string;
@@ -51,7 +52,21 @@ export interface CompactionEntry extends BaseEntry {
   replayCut: true;
 }
 
-export type Entry = UserEntry | AssistantEntry | ToolEntry | CompactionEntry;
+/**
+ * A change to the shared todo list (X-31). It rides in the tree rather than
+ * beside it so the list folds per *branch* — rewind, fork and resume then need
+ * no bookkeeping of their own. It carries no wire message: the model learns what
+ * changed from the tool result it just got, or by reading, so `buildWireMessages`
+ * has no case for it and replays nothing.
+ */
+export interface TodoEntry extends BaseEntry {
+  type: "todo";
+  ops: TodoOp[];
+  /** Who wrote it. The person's edits are the ones the agent has to be told about. */
+  by: "agent" | "user";
+}
+
+export type Entry = UserEntry | AssistantEntry | ToolEntry | CompactionEntry | TodoEntry;
 
 export interface Conversation {
   id: string;

@@ -3,6 +3,7 @@ import type { ToolDef } from "../llm/types.js";
 import type { Tool } from "./types.js";
 import { fileTools } from "./file-tools.js";
 import { runCommandTool } from "./shell-tool.js";
+import { todoTools } from "./todo-tools.js";
 
 export class ToolRegistry {
   private readonly map = new Map<string, Tool>();
@@ -24,7 +25,7 @@ export class ToolRegistry {
   }
 }
 
-/** The default native tool set: file tools + shell. */
+/** The default native tool set: file tools + shell + the shared todo list. */
 export function defaultTools(): Tool[] {
-  return [...fileTools(), runCommandTool()];
+  return [...fileTools(), runCommandTool(), ...todoTools()];
 }

@@ -376,7 +376,11 @@ describe("serve's session factory — the level H-06 lived at (X-15)", () => {
 
   it("reads nothing when the workspace ships nothing", () => {
     const session = factory(recordingDriver().driver)(modelConfig());
-    expect(systemOf(session.buildRequest())).toBe("You are JLCode, a helpful coding agent.");
+    const system = systemOf(session.buildRequest());
+    expect(system).toContain("You are JLCode, a helpful coding agent.");
+    // No workspace block at all — the todo guidance (X-31) rides with the base
+    // prompt for every tool-carrying session and is not what this asserts.
+    expect(system).not.toContain("# Project instructions");
   });
 
   it("honors the opt-out (environment.projectInstructions=false)", () => {

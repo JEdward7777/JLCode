@@ -6,6 +6,7 @@
 import type { ToolDef } from "../llm/types.js";
 import type { Sandbox } from "./sandbox.js";
 import type { TaskRegistry } from "./task-registry.js";
+import type { TodoAccess } from "../conversation/todos.js";
 
 /** Capability class, used by the Ask/Plan/Code mode gate. */
 export type ToolKind = "read" | "write" | "command" | "meta";
@@ -20,6 +21,9 @@ export interface ToolContext {
   /** Background-task registry (D-34) — long-running commands register here so
    *  they can be listed, killed, and watchdog-watched. */
   tasks?: TaskRegistry;
+  /** The shared todo list (X-31). Supplied by the Session, which owns the branch
+   *  the operations are appended to and the read barrier over writes. */
+  todos?: TodoAccess;
 }
 
 /** A flattened argument field and its value (jq-style name — D-47d). */

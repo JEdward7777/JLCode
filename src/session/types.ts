@@ -2,6 +2,7 @@
 import type { ToolKind, ToolPreview } from "../tools/types.js";
 import type { TaskView } from "../tools/task-registry.js";
 import type { Entry } from "../conversation/types.js";
+import type { TodoItem } from "../conversation/todos.js";
 import type { Usage } from "../llm/types.js";
 import type { ApprovalPolicy, CompactionTrigger, Mode } from "../config/types.js";
 
@@ -259,6 +260,10 @@ export type SessionEvent =
   | { type: "persistence-recovered"; discarded: number }
   | { type: "stopped"; scope: "hard" | "soft" } // global stop: hard abort vs loop-only (D-34)
   | { type: "queue"; queue: QueuedMessage[] } // the queued-message list changed (D-34)
+  // The shared todo list changed (X-31) — by either writer. Carries the folded
+  // list, since that is what the panel draws; the ops themselves ride in the
+  // `entry` event that persists them.
+  | { type: "todos"; items: TodoItem[] }
   | { type: "task-start"; task: TaskView } // a background command started (D-34)
   | { type: "task-update"; task: TaskView } // a task changed (e.g. kill requested)
   | { type: "task-end"; task: TaskView } // a task finished / was killed
