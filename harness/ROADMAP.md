@@ -687,7 +687,7 @@ whitelisting fields it never validated (D-68).
 **X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
 (D-64)**, **X-26 is fixed (D-65)**, **X-17 is fixed (D-66)** and **X-13 + H-07 are fixed (D-70)**;
 **X-12b is DONE**, and `peek` grew a mouse and a movable port (D-67).
-**Next: P7c** — live validation against the real `file_utils` server. Rendered surfaces get a
+**Next: H-08** — the fence bypass P7c turned up (a decision is waiting on Joshua). **P7c is done.** Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 **X-28 FIXED 2026-08-07 (D-72) — a question the agent asks now has a way out.** A call with N
@@ -1320,10 +1320,73 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   server; see [`VISUAL-LOG.md`](VISUAL-LOG.md). The fake driver gained an `mcp: <tool> <json>`
   prefix so bridged calls can be driven offline.
 
-### P7c — Live validation against `file_utils`
-- Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate.
+### P7c — Live validation against `file_utils` ✅ done (2026-08-11)
+- Drive the real `uvx` server end-to-end: anchor-based read/edit through the fence and the gate. ✅
+- **Ran against the real server**, `uvx`-installed console script, fake LLM driver (no model spend —
+  the *server* is what was under test, not the model). Confirmed, in this order:
+  **discovery** (`mcp list --probe` → `connected file_utils (global) 6 tools`, namespaced
+  `file_utils__*`); an **anchor-based read** of a 400-line file returning exactly the 21-line span
+  between `ANCHOR-START`/`ANCHOR-END`; an **anchor-based edit** through the approval pause
+  (`replaced_lines: 21 → new_lines: 1`, verified on disk); an **out-of-fence path** producing a
+  D-19 soft-fence pause that names the offending *field* and suggests a root
+  (`outOfFence: {paths:["/etc/hostname"], fields:["path"], suggestedRoot:"/etc"}`); the same
+  **under `full-auto`, where it still pauses** — an in-fence read under the same policy runs
+  without one, so the fence is not something an approval policy can switch off; and **deny**,
+  which returns `denied by user: <reason>` to the model and reads nothing.
+- **Two defects fell out of it — H-08 below (a real fence bypass) and the `readOnlyHint` gap.**
+- **Also fixed, upstream:** `file_utils` itself crashed on every launch of its documented
+  `uvx --from git+…` path — `mcp>=1.0.0` with no upper bound resolved mcp 2.0.0, which removed the
+  low-level decorator API the server is written against, so it died on *import* with
+  `AttributeError: 'Server' object has no attribute 'list_tools'` before any protocol traffic, and
+  the host restarted it forever. Its `uv.lock` pins 1.27.2, so `uv run` and its 98 tests passed
+  throughout — the lock is not read by a *tool* install. Capped at `<2` and pushed as
+  `fix/cap-mcp-below-2` to `JEL-LL/file_utils` for Joshua to merge. **P7c could not have run at all
+  until this was found**, which is the argument for live validation in one sentence.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-08 — a poisoned `project_root` on a shared MCP server bypasses the workspace fence entirely.**
+  Found 2026-08-11 by P7c, driving the real `file_utils` server. **Open — needs a decision (below).**
+  - **Symptom, reproduced end to end.** A session that never asked for it read `/etc/hostname`
+    with **no pause at all**, `status: idle`, under any approval policy.
+  - **Two correct-alone mechanisms compounding**, which is why neither side caught it:
+    1. **D-47e, flagged at the time and now demonstrated:** one MCP child per **instance**, shared
+       by every session. `file_utils` remembers `project_root` in per-process memory (its SPEC
+       §"session-level state" says each process is "unique to one agent/session" — an assumption
+       JLCode quietly breaks). So session A setting a root silently re-points session B.
+    2. **The bridge classifies a *slashy* argument as a path** (D-47b, "unknown slashy field ⇒
+       treated as a path"). A bare `hostname` has no slash, so it is not a path, so the fence never
+       evaluates it. The fence sees the **argument**; the server resolves the **root**.
+  - **The chain:** A calls with `project_root: "/etc"` → the fence *does* pause on A (`/etc` is
+    slashy and escapes) → allow-once → `/etc` is now the remembered root for the whole instance →
+    B asks for `"hostname"` → not slashy, not a path, no pause → the server resolves it against
+    `/etc` and returns the file. **Allow-once granted for one call in one session became a
+    standing grant for every session, on a path nobody ever saw.**
+  - **Milder version, no approval needed at all:** with A's legitimate `project_root` set to a
+    subdirectory, B's relative `inner.txt` silently resolved to *A's* copy rather than B's —
+    confirmed. So this is a correctness bug before it is a security bug.
+  - **Fix options, for Joshua to choose** — the first two are the real candidates:
+    (a) **One MCP child per session** rather than per instance. Correct by construction and matches
+        what `file_utils`' own SPEC already assumes; costs a process per session per server, and
+        D-47e chose per-instance deliberately, so this reverses a decision rather than patching one.
+    (b) **Treat server-side root state as fence state**: never let a root that escapes the fence be
+        remembered — an out-of-fence `project_root` gets deny / remember-root, never allow-once —
+        and re-evaluate *relative* args against the last root the session actually consented to.
+        Cheaper, and it keeps per-instance children; but it means JLCode models a specific server's
+        state, which is the kind of special-casing D-47 set out to avoid.
+    (c) Classify **every** argument of an MCP write/command tool as fence-relevant unless learned
+        otherwise (fail-closed on non-slashy strings too). Safest, noisiest — it would ask about
+        `encoding: "utf-8"` until taught, which is exactly the friction D-48's learn-on-pause exists
+        to absorb, so it may be less bad than it sounds.
+  - **Not a `file_utils` defect.** Its SPEC is explicit that containment is the host's job and that
+    each process belongs to one agent. JLCode is the party that broke that assumption.
+
+- **`readOnlyHint` gap (minor, found by P7c 2026-08-11).** All six `file_utils` tools bridge as
+  `[command, presumed]`, including `read_file_range`, which is genuinely read-only — the server
+  advertises no `readOnlyHint`, and D-47b classifies conservatively when it is absent. Correct
+  behaviour, mildly annoying result: every anchor *read* needs an approval in manual mode. Two
+  independent fixes and they compose: teach it once through D-48's learn-on-pause, and/or add
+  `readOnlyHint: true` to that tool upstream (a second small PR to `JEL-LL/file_utils`).
 
 - **H-07 — the browser's TTS jams: an utterance that fails leaves the UI stuck "speaking" forever.**
   On Joshua's unfiled observed-items list as one line ("TTS jamming intermittently") from
