@@ -61,6 +61,14 @@ hit returns the cached result without throwing); on a miss it calls through and 
 | **2 — Cheap live smoke** | End-to-end loop against a live endpoint. Driver = **minimax 2.5** (configurable). Weak assertions. | cheap | gated |
 | **3 — Expensive model-targeted live** | Sharp edges aimed straight at **Opus 4.8 / Fable**: the Fable×compaction boundary (O-02), redacted-reasoning replay end-to-end. | expensive | gated, rare, **per-model** |
 
+> **The Fable Tier-3 fixtures replay with `turnTimestamps: false` — deliberate (Joshua, 2026-08-09).**
+> X-25 stamps each user turn with a wall clock, which changes the D-24 request-cache key on every
+> run, so a *recorded* replay can never match one. Rather than pay a live Fable call on every
+> re-record, the fixtures replay unstamped and the stamped shape is covered by Tier-0 rendering
+> tests only. Joshua's reasoning, worth keeping because it is the general rule here: a wrong date
+> shows up immediately in ordinary use, so this gap cannot hide for long — and a test that must
+> re-spend to stay true is worse than a narrower test that stays free.
+
 **Two different jobs:** the cache (Tiers 0–1) catches regressions in **our** code; the
 periodic Tier-3 live runs catch **provider-side drift** — the exact rot that breaks KiloCode.
 So Tier 3 gets run occasionally even when the cached tiers are green.

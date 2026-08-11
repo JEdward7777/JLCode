@@ -20,7 +20,21 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-Built, tested (**729 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
+> **Resume block — 2026-08-11.** Phases 0–7 are done: **P7c closed 2026-08-11**, driving the real
+> `file_utils` MCP server end to end (anchor read, anchor edit, the fence, the gate, deny), which is
+> the last of the phase plan. **732 Tier-0/1 green, 63 files.** The stretch since P6c fixed, in
+> order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23 (D-63), X-25 (D-64), X-26 (D-65), X-17 (D-66),
+> the peek tool's port + click (D-67), the config loader's whitelist (D-68), X-15 (D-69), X-13 and
+> H-07 (D-70), X-29/X-30 (D-71), X-28 (D-72), and H-08 (D-73). Joshua's observed-items list is now
+> **fully filed and four-fifths fixed**; the fifth is **X-31, the agent's todo list — designed in his
+> 2026-08-09 question round and not yet built, which makes it the obvious next slice.** Also open and
+> unblocked: X-14, X-16, X-18. Upstream, `file_utils` needed a fix before P7c could run at all (its
+> `uvx` launch resolved mcp 2.0 and died on import); that is capped and **merged by Joshua** as PR #1.
+> Standing calls to carry forward: free tiers only unless he says otherwise (**ask every time**), push
+> after a green commit on `main`, prefer **rebase over merge**, and the "Later" list keeps every row
+> and strikes the shipped ones.
+
+Built, tested (**732 Tier-0/1 tests green**, + 2 live Fable tests that replay free from the committed
 cache), and committed through **P6c — Phases 0–6 done, Milestone M4 reached**:
 
 > **Cost (2026-08-04, D-58/D-59).** Two compounding defects found by reading the debug journal of a
@@ -679,7 +693,7 @@ operating guide. **30 new Tier-0/1 tests**, including four at the **`serve` sess
 the level H-06 and D-60 both hid at, and the only level that can see a prompt production forgets to
 compose. No peek: nothing rendered in the browser changed.
 
-**729 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-08, 63 files). **H-06 is fixed (D-60)**,
+**732 Tier-0/1 green** (+2 replayed Fable; re-run 2026-08-11, 63 files). **H-06 is fixed (D-60)**,
 **X-24 (D-61)**, **X-27 (D-62)**, **X-23 (D-63)**, **X-25 (D-64)**, **X-26 (D-65)**, **X-17 (D-66)**,
 **X-15 (D-69)**, **X-13 + H-07 (D-70)**, **X-29 + X-30 (D-71)** and **X-28 (D-72)** are all fixed;
 **X-12b is DONE**, `peek` grew a mouse and a movable port (D-67), and the config loader stopped
@@ -926,32 +940,13 @@ nothing and only created the obligation to remember. Joshua's call on seeing the
 A field nobody has invented yet (`futureSetting`) is asserted to survive load and a save→load round
 trip, standing in for the next one.
 
-**Still unfiled from `observed_items_needing_filed_in_harness.txt`** (as of 2026-08-08): **one item
-left** — no todo tool for the agent, which Joshua flagged as needing a question-answering round
-before implementing; the questions are drafted for him in `QUESTIONS-FOR-JOSHUA.md`. The other four
-have all been filed *and* fixed in the same stretch: `ask_user`'s missing escape as **X-28 (D-72)**,
-the chip and the scroll theft as **X-29 and X-30 (D-71)**, and the intermittent TTS jam as
-**H-07 (D-70)**.
-**X-29 and X-30 FIXED 2026-08-08 (D-71) — two surfaces that were right about the data and wrong
-about what the human was looking at.** Both came off Joshua's observed list as one line of prose
-each, and both had survived every test suite, because a test only fails on what it was pointed at.
-**X-29, the model chip:** it truncated from the *end*, so `openai/gpt-4o-mi…` kept the vendor — the
-part you can infer — and hid the model. It now peels namespace segments from the front and renders
-`…/claude-opus-5:online`, elides the **middle** only when the bare model name still will not fit, and
-carries the full id in a `title`. Truncating from the end is the one thing it will not do: Joshua
-runs `anthropic/claude-opus-5:online`, and the variant suffix that changes what the model *is* lives
-at the end. **X-30, the transcript:** it scrolled to `scrollHeight` on every render, so reading
-something further up during a streaming reply was undone by the next token. It now follows the tail
-**only while the reader is on it** — `atBottom` is a 24px threshold rather than an equality, since a
-fractional-DPI display makes the exact test false while the reader is visibly pinned — and otherwise
-**counts** new entries behind a sticky *jump to latest*. A user turn, a jump and a view replacement
-all re-pin; an assistant turn never does, which is the whole defect. *The part worth remembering:*
-the first cut re-introduced the defect it was fixing — `activeLeaf` advances on **every** appended
-entry, so "the leaf changed" re-pinned on every message — and the fold tests stayed green through it,
-because that comparison lived inline in `App.tsx` where nothing could reach it. The browser caught
-what 596 tests could not. It is now `isViewSwitch` in `scroll.ts`, pure and pinned by its own tests,
-in the shape D-65's `attention.ts` and D-72's `ask-form.ts` established. Peeked in Chrome before and
-after, both defects (VISUAL-LOG "X-29 / X-30"). **34 new Tier-0 tests.**
+**`observed_items_needing_filed_in_harness.txt` is fully filed as of 2026-08-11 — nothing left on it.**
+All five of Joshua's observed defects are now harness rows, and four are fixed: `ask_user`'s missing
+escape as **X-28 (D-72)**, the chip and the scroll theft as **X-29 / X-30 (D-71)**, the intermittent
+TTS jam as **H-07 (D-70)**. The fifth, **the agent's todo list, is filed as X-31** with its design
+settled — Joshua's question round on 2026-08-09 answered every open call (shared list, a read-barrier
+instead of a lock, content-addressed operations, pull-with-a-count delivery). It is designed and
+**not yet built**, which makes it the obvious next slice.
 
 
 ---
@@ -1339,8 +1334,7 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   low-level decorator API the server is written against, so it died on *import* with
   `AttributeError: 'Server' object has no attribute 'list_tools'` before any protocol traffic, and
   the host restarted it forever. Its `uv.lock` pins 1.27.2, so `uv run` and its 98 tests passed
-  throughout — the lock is not read by a *tool* install. Capped at `<2` and pushed as
-  `fix/cap-mcp-below-2` to `JEL-LL/file_utils` for Joshua to merge. **P7c could not have run at all
+  throughout — the lock is not read by a *tool* install. Capped at `<2`, PR'd to `JEL-LL/file_utils` and **merged by Joshua 2026-08-11** (PR #1, `0deb84f`). **P7c could not have run at all
   until this was found**, which is the argument for live validation in one sentence.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
