@@ -2965,10 +2965,22 @@ function ApprovalCard({
               </li>
             ))}
           </ul>
+          {/* H-08: an MCP server can remember the path it is handed, so "once" is
+              a promise the fence cannot keep. The button is not disabled — it is
+              absent, with the reason stated, because a greyed control invites the
+              question "why not?" at the moment the answer matters. */}
+          {fence.requiresRoot ? (
+            <div className="fence-note fence-once-unavailable">
+              This goes to an MCP server, which can remember the location — so it cannot be allowed
+              just once. Widen the workspace, or deny.
+            </div>
+          ) : null}
           <div className="actions">
-            <button className="primary" disabled={!!jsonErr} onClick={() => onResolve({ approve: true, editedArgs, learned })}>
-              Allow once
-            </button>
+            {fence.requiresRoot ? null : (
+              <button className="primary" disabled={!!jsonErr} onClick={() => onResolve({ approve: true, editedArgs, learned })}>
+                Allow once
+              </button>
+            )}
             <button
               className="primary"
               disabled={!!jsonErr}

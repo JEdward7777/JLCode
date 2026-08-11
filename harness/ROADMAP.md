@@ -687,7 +687,7 @@ whitelisting fields it never validated (D-68).
 **X-24 is fixed (D-61)**, **X-27 is fixed (D-62)**, **X-23 is fixed (D-63)**, **X-25 is fixed
 (D-64)**, **X-26 is fixed (D-65)**, **X-17 is fixed (D-66)** and **X-13 + H-07 are fixed (D-70)**;
 **X-12b is DONE**, and `peek` grew a mouse and a movable port (D-67).
-**Next: H-08** — the fence bypass P7c turned up: an escaping `project_root` must never be allow-once. **P7c is done.** Rendered surfaces get a
+**Next:** open — the backlog's still-open rows (X-14, X-16, X-18) and the todo tool, whose shape Joshua settled 2026-08-09. **P7c is done.** Rendered surfaces get a
 real-browser peek per slice, logged in `VISUAL-LOG.md`.
 
 **X-28 FIXED 2026-08-07 (D-72) — a question the agent asks now has a way out.** A call with N
@@ -1346,7 +1346,14 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
 - **H-08 — a poisoned `project_root` on a shared MCP server bypasses the workspace fence entirely.**
-  Found 2026-08-11 by P7c, driving the real `file_utils` server. **Open — needs a decision (below).**
+  Found 2026-08-11 by P7c, driving the real `file_utils` server; **FIXED 2026-08-11 (D-73)** —
+  an escaping path on a bridged tool is now *remember-this-root or deny*, never allow-once, and a
+  plain approve is refused with the reason rather than silently treated as remember. Re-run live:
+  the old answer is refused, and the follow-up call fails at the server with
+  `Relative path 'hostname' requires a project_root`, because the root never lands. +3 Tier-0 tests
+  built from the single-session repro. Peeked in Chrome (VISUAL-LOG "H-08"), which needed a new
+  `peek --mcp <file>` — the MCP surfaces had never been peekable, since children spawn before the
+  listen. **The two options below were not taken, and why is worth keeping:**
   - **Symptom, reproduced end to end.** A session read `/etc/hostname` with **no pause at all**,
     `status: idle`, under any approval policy — and **it takes only one session**: setting an
     escaping `project_root` (which *does* pause) and then asking for a bare `hostname` in the very

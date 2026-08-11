@@ -114,7 +114,7 @@ export interface ApprovalRequest {
   kind: "read" | "write" | "command" | "meta";
   args: Record<string, unknown>;
   reason: string;
-  outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string };
+  outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string; requiresRoot?: boolean };
   learn?: LearnRequest;
   /** Richer rendering of the pending call — a unified diff for `apply_edits`
    *  and for overwriting a file, the file itself for a create/delete (D-53,

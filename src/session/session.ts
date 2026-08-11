@@ -1038,6 +1038,22 @@ export class Session {
       const edited = decision.editedArgs !== undefined;
       // Widen the fence for any out-of-fence paths the user consented to (D-19).
       const escapes = this.fenceEscapes(pending.tool, runArgs);
+      // H-08: allow-once is meaningless for a server that can remember the path.
+      // Approving without choosing a root is refused rather than quietly treated
+      // as "remember", because widening the fence must stay something the user
+      // did on purpose and can see afterwards.
+      if (escapes.length > 0 && pending.tool.classifyPaths && !decision.addRoot) {
+        this.appendToolResult(
+          pending.call,
+          "denied: this path is outside the workspace, and it was sent to an MCP server, " +
+            "which can remember it — so it cannot be allowed just once. Approve it with " +
+            "\"remember this root\" to widen the workspace deliberately, or deny it.",
+          true,
+        );
+        this.pendingToolCalls.shift();
+        await this.advance();
+        return;
+      }
       if (escapes.length > 0 && this.sandbox) {
         for (const e of escapes) {
           if (decision.addRoot) {
@@ -1680,6 +1696,10 @@ export class Session {
               // can drop one the user just reclassified as prose (D-48).
               fields: escapes.map((e) => e.arg),
               suggestedRoot: path.dirname(escapes[0]!.escapedPath),
+              // A bridged tool (the one that classifies its own args, D-47d) can
+              // remember what it is given, so a one-shot grant is unenforceable
+              // past this call — H-08.
+              ...(tool.classifyPaths ? { requiresRoot: true } : {}),
             },
           }
         : {}),

@@ -1964,3 +1964,12 @@ figure.mermaid svg {
 .msg-tools:has(.icon.on) {
   opacity: 1;
 }
+
+/* H-08 — why "Allow once" is missing on an MCP fence prompt. Stated where the
+   button would have been, since the absence is the thing needing explanation. */
+.fence-once-unavailable {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}

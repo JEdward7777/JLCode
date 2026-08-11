@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Session } from "../src/session/session";
 import { Sandbox } from "../src/tools/sandbox";
-import { ToolRegistry } from "../src/tools/registry";
+import { ToolRegistry, defaultTools } from "../src/tools/registry";
 import { ModeApprovalGate } from "../src/tools/mode-gate";
 import { McpManager } from "../src/mcp/client";
 import type { LoadedSettings } from "../src/mcp/config";
@@ -84,7 +84,7 @@ function session(driver: LlmDriver, approval: "manual" | "full-auto" = "manual")
   return new Session({
     config,
     driver,
-    tools: new ToolRegistry([...mcp.tools()]),
+    tools: new ToolRegistry([...defaultTools(), ...mcp.tools()]),
     sandbox: new Sandbox([root]),
     gate: new ModeApprovalGate("code", approval),
   });
@@ -116,6 +116,50 @@ describe("MCP tools in a session", () => {
 
     await s.approve({ approve: false });
     expect(fs.existsSync(target)).toBe(false);
+  });
+
+  /**
+   * H-08, found by P7c against the real `file_utils` server. The exploit fits in
+   * one session: hand a server a root outside the fence (which *does* pause),
+   * allow it once, and every later call reaches that root through a bare
+   * relative name — no slash, so the bridge never classifies it as a path, so the
+   * fence never evaluates it. Allow-once therefore promised something the fence
+   * could not keep, and the fix is to stop offering it for a tool that can
+   * remember what it is handed.
+   */
+  describe("an escaping path on an MCP server is never a one-shot grant (H-08)", () => {
+    it("refuses a plain approve, and says why, without running the tool", async () => {
+      const target = path.join(outside, "escaped.txt");
+      const s = session(callThenAnswer("testsrv__touch_file", { path: target, body: "nope" }), "full-auto");
+      await s.send("write outside");
+      expect(s.status).toBe("awaiting-approval");
+      expect(s.awaitingApproval?.outOfFence?.requiresRoot).toBe(true);
+
+      await s.approve({ approve: true }); // the old allow-once answer
+      expect(fs.existsSync(target)).toBe(false); // ← the file the old path would have written
+      const tool = s.conversation.entries.filter((e) => e.type === "tool").at(-1);
+      expect(tool && tool.type === "tool" && tool.content).toContain("cannot be allowed just once");
+      expect(s.status).toBe("idle");
+    });
+
+    it("runs it when the user widens the fence on purpose", async () => {
+      const target = path.join(outside, "escaped.txt");
+      const s = session(callThenAnswer("testsrv__touch_file", { path: target, body: "yes" }), "full-auto");
+      await s.send("write outside");
+      await s.approve({ approve: true, addRoot: true });
+      expect(fs.readFileSync(target, "utf8")).toBe("yes");
+    });
+
+    it("leaves allow-once alone for a native tool, whose paths JLCode resolves itself", async () => {
+      const target = path.join(outside, "native.txt");
+      const s = session(callThenAnswer("write_file", { path: target, content: "native" }), "full-auto");
+      await s.send("write outside with a native tool");
+      expect(s.status).toBe("awaiting-approval");
+      expect(s.awaitingApproval?.outOfFence?.requiresRoot).toBeUndefined();
+
+      await s.approve({ approve: true }); // still a meaningful one-shot
+      expect(fs.readFileSync(target, "utf8")).toBe("native");
+    });
   });
 
   it("a field the user classified as prose never trips the fence", async () => {

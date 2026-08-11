@@ -120,7 +120,18 @@ export interface ApprovalRequest {
   reason: string;
   /** Present when the call touches paths outside the fence (D-19). `fields` runs
    *  parallel to `paths`: the arg each escape came from (D-48). */
-  outOfFence?: { paths: string[]; fields: string[]; suggestedRoot: string };
+  outOfFence?: {
+    paths: string[];
+    fields: string[];
+    suggestedRoot: string;
+    /** **Allow-once is not offered** (H-08). True for a bridged MCP tool: JLCode
+     *  resolves a native tool's paths itself, so "once" is a promise it can keep,
+     *  but an MCP server may *remember* what it is handed — `file_utils` keeps a
+     *  `project_root` — and every later call can then reach the same place through
+     *  a relative name the fence never sees as a path. So the only honest answers
+     *  are widen-the-fence (visible, chosen) or deny. */
+    requiresRoot?: boolean;
+  };
   /** Present when this pause can also settle a guess (D-48). */
   learn?: LearnRequest;
   /** Richer-than-JSON rendering of the pending call — a unified diff for

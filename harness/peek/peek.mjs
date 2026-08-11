@@ -167,7 +167,7 @@ async function waitFor(url, label, timeoutMs = 15000) {
 /** An isolated config with exactly the compaction knobs a peek wants to pose.
  *  `contextLength`/`bufferTokens` are the two dials that decide what the
  *  compaction surfaces (and X-24's meter) actually show, so they are flags. */
-function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model }) {
+function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model, mcp }) {
   fs.mkdirSync(cfgDir, { recursive: true });
   fs.mkdirSync(workDir, { recursive: true });
   const config = {
@@ -197,6 +197,16 @@ function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model }) {
     autoSafeAllowlist: [],
   };
   fs.writeFileSync(path.join(cfgDir, "config.json"), JSON.stringify(config, null, 2));
+  // `--mcp <file>`: an `mcp_settings.json` copied in *before* the server starts,
+  // because MCP children are spawned ahead of the listen (D-47e) — writing it
+  // afterwards is too late. Without this the MCP surfaces (the status drawer,
+  // learn-on-pause, H-08's fence note) cannot be peeked at all, which is why
+  // they never had been.
+  if (mcp) {
+    const from = path.resolve(mcp);
+    if (!fs.existsSync(from)) throw new Error(`--mcp: no such file: ${from}`);
+    fs.copyFileSync(from, path.join(cfgDir, "mcp_settings.json"));
+  }
 }
 
 /** Is a peek server already answering on our port, and is it *ours*? The same
@@ -235,7 +245,7 @@ async function cmdUp(flags) {
   // comes from this config and no network fetch is attempted (H-06/D-60).
   const model = flags.model ?? "peek/model";
   const trigger = flags.trigger ?? "suggest";
-  writeConfig({ cfgDir, workDir, ctx: flags.ctx, buffer: flags.buffer, trigger, model });
+  writeConfig({ cfgDir, workDir, ctx: flags.ctx, buffer: flags.buffer, trigger, model, mcp: flags.mcp });
 
   const cli = path.join(REPO, "dist", "cli.js");
   if (!fs.existsSync(cli)) throw new Error(`no build at ${cli} — run \`npm run build\` first`);

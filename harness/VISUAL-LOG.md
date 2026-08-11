@@ -1375,3 +1375,42 @@ without a voice. Also not exercised in the browser: an approval pause read aloud
 (covered at Tier-0, and the ask pause exercised the same code path), the
 compaction and cap pauses, and a browser with no `speechSynthesis` at all
 (unit-tested — it stays silent and returns false rather than throwing).
+
+---
+
+## H-08 — the fence prompt that no longer offers "just once" · 2026-08-11 · ✅ looked good
+
+**Screenshot:** [`visual/h08-fence-no-allow-once.png`](visual/h08-fence-no-allow-once.png)
+
+Posed with a **new `peek --mcp <file>`** (D-73) pointing at the real
+`file_utils` server, on `JLCODE_PEEK_PORT=7811 / 9421`, then
+`peek chat 'mcp: file_utils__read_file_range {"path":"/etc/hostname",…}'`.
+Worth recording why the flag had to exist: MCP children are spawned **before the
+server listens** (D-47e), so an `mcp_settings.json` written after `peek up` is
+too late — which is why every MCP surface built in P7a/P7b (the status drawer,
+learn-on-pause, and now this) had gone unpeeked until now.
+
+Confirmed with my own eyes:
+
+- **"Allow once" is absent**, not greyed. What stands in its place is the reason:
+  *"This goes to an MCP server, which can remember the location — so it cannot be
+  allowed just once. Widen the workspace, or deny."* Only **Remember `/etc`** and
+  **Deny** remain.
+- **The escape still reads as an escape** — `⚠ outside the workspace fence:` over
+  the offending path, unchanged from P5b.
+- **D-48's learn-on-pause still rides the same pause**, which is the property that
+  made this fix cheap: *Does `file_utils__read_file_range` write anything?* and
+  *Is `path` a file path?* are answered here too, so nothing about the fix costs
+  the user an extra stop.
+- The `COMMAND` badge and *"access outside the workspace"* reason line are the
+  conservative classification doing its job: this tool is genuinely read-only, but
+  the server advertises no `readOnlyHint` (the separate minor row above).
+
+Not exercised visually: the **native**-tool fence card, which deliberately still
+offers "Allow once" and is unchanged since P5b (covered by a test that asserts
+the difference); and the *Remember* path itself, which widens the fence and is
+covered end-to-end by the live re-run recorded in H-08.
+
+*Cosmetic, noticed and not fixed:* the `<code>/etc</code>` inside the **Remember**
+button sits low against the button's fill — it inherits the transcript's code
+styling, which was never meant to sit inside a primary button.
