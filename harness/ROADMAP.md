@@ -54,7 +54,13 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > sibling file a missing anchor would have matched, when that is exactly one site in exactly one
 > other file of the batch; the refusal is otherwise unchanged and never redirects. No browser peek:
 > the task panel lists only *running* tasks and never rendered a kill reason, so nothing new is
-> drawn. Also open and unblocked: X-14, X-16, X-18, and X-34/X-36 as deferred rows. The earlier stretch (P6c → P7c) fixed, in order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23
+> drawn. Also open and unblocked: X-14, X-16, X-18, and X-34/X-36 as deferred rows.
+> **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
+> decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
+> already drops the `image` blocks servers send it. The cost is not the tool: `ChatMessage.content`
+> is `string | null` through request build, the D-37 append-only branch state on disk, resume/fork/
+> rewind and compaction, so content parts change the transcript format everywhere. Size that before
+> drawing a tool shape (the D-75 lesson). The earlier stretch (P6c → P7c) fixed, in order: H-06 (D-60), X-24 (D-61), X-27 (D-62), X-23
 > (D-63), X-25 (D-64), X-26 (D-65), X-17 (D-66), the peek tool's port + click (D-67), the config
 > loader's whitelist (D-68), X-15 (D-69), X-13 and H-07 (D-70), X-29/X-30 (D-71), X-28 (D-72), and
 > H-08 (D-73). Upstream, `file_utils`' `uvx` crash is capped and **merged by Joshua** as PR #1.
@@ -1663,6 +1669,7 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
 agent-facing background commands — start/poll/tail/kill (X-36) ·
+the model reading images — screenshots, mock-ups, diagrams (X-37) ·
 symbol navigation over MCP, route sized, home undecided (X-34) ·
 Notifications (external push, P-02) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
