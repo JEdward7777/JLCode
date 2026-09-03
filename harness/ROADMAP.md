@@ -70,6 +70,21 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > files.** The todo block is struck from `observed_items_needing_filed_in_harness.txt` per that
 > file's own operation note; the other items in it are untriaged and still Joshua's list.
 >
+> **X-37 sized and phased 2026-09-03 (D-78) — Phase 8 is the build plan; P8a is in progress.**
+> The sizing changed the design, which is why it happened first (the D-75 lesson). The load-bearing
+> find: **the OpenAI/OpenRouter wire rejects image content in a `role:"tool"` message** — so the tool
+> answers with text and the bytes ride in a following `user` message, and `ToolResult.content` /
+> `ToolEntry.content` therefore stay `string`. That is the whole reason X-37(b) — "content parts are
+> a change to the on-disk transcript format everywhere" — stops being true. Confirmed against
+> KiloCode v2, which implements both protocols and splits on exactly this line (its
+> `supportsMediaInToolResult` predicate defaults to `false`); clone kept out of tree. Two other
+> answers moved: **caching is unaffected** (an image block is cacheable; images sit in the
+> `tool_choice` invalidation tier, so tools+system caches survive), and **X-37(c) was simply wrong** —
+> `architecture.input_modalities` is already in the `GET /models` payload `src/llm/models.ts` fetches
+> and caches. Six slices, P8a…P8f, each green on its own; **P8a changes no wire, no types and no
+> persistence** — it only stops `read_file` returning U+FFFD mush through `ok()`. P8f is paid and
+> **must be asked about first**.
+>
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
 > already drops the `image` blocks servers send it. The cost is not the tool: `ChatMessage.content`
@@ -1403,6 +1418,85 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
   throughout — the lock is not read by a *tool* install. Capped at `<2`, PR'd to `JEL-LL/file_utils` and **merged by Joshua 2026-08-11** (PR #1, `0deb84f`). **P7c could not have run at all
   until this was found**, which is the argument for live validation in one sentence.
 
+## Phase 8 — Images: the model looks at what Joshua drops in (X-37), post-v1
+
+**Goal:** a screenshot, a mock-up or a diagram is something JLCode's agent actually *sees*.
+Today `read_file` decodes a `.png` as UTF-8 and returns a run of U+FFFD through `ok()` — the
+agent is told the read succeeded and hands itself mush. Design calls in **D-78**; the shape is
+settled by one fact that cannot be designed around: **the OpenAI/OpenRouter wire rejects image
+content in a `role:"tool"` message**, so the tool answers with text and the bytes ride in a
+following `user` message. That is what keeps the slice affordable — parts appear on user
+messages only, and `ToolResult.content` / `ToolEntry.content` stay `string`.
+
+Bottom-up as ever: **P8a is a strict improvement with no wire change at all** and ships on its own.
+
+### P8a — Stop lying about binaries: the sniff and the honest refusal (Tier-0)
+- **The sniff (D-78b):** read a **4 KB sample** first, classify by **magic bytes**, with the
+  filename's mime as a *fallback only* — never the trigger, so a `.png` full of text still reads
+  as text and a mislabelled screenshot is still caught.
+- **Two new outcomes from `read_file`, both errors, replacing the U+FFFD mush:** a recognised
+  image says so and names the reason it cannot be handed over *yet* (P8b removes this branch);
+  any other binary is refused outright — the guard `looksBinary` was written for and never wired
+  into the read path (it reaches only the `write_file` approval preview, `file-tools.ts:299,360`).
+- **No wire, persistence or type change.** `ToolResult` is untouched.
+- **Done when:** reading a PNG and reading a `.tar.gz` each fail with a sentence that says which,
+  every existing text read is byte-identical, and Tier-0/1 is green.
+
+### P8b — Bytes to the model (Tier-0/1)
+- **`ToolResult` gains `attachments?: {mime, data}[]`** — additive; every existing tool and every
+  consumer of `.content` is unchanged.
+- **`ChatMessage.content` widens to `string | ContentPart[] | null`, used on `user` only (D-78f).**
+  `buildWireMessages` grows KiloCode's `pendingImages`/`flushImages` shape: image attachments
+  accumulate across consecutive tool results and flush as **one** `{role:"user", content:[…]}`
+  before the next non-tool message (so three parallel screenshot reads make three tool messages
+  and one user message, not three interleaved pairs). Text part first.
+- **Caching must not silently die (D-78f, the D-58 lesson).** `markable()`/`mark()` test
+  `typeof content === "string"` and would place **zero** breakpoints on a parts message with no
+  error. Both learn parts; text messages keep the bare-string shape, which is also what keeps the
+  committed Tier-3 replay cache keys valid (`requestSignature` hashes `req.messages`).
+- **Capability, from a fetch we already do (D-78c):** `ModelCatalog` keeps
+  `architecture.input_modalities` beside `context_length`; a model without `image` never has the
+  image branch advertised to it, so the failure is *absence*, not a 400.
+- **Done when:** a fake-driver session reads a PNG and the built request carries a text-only
+  `tool` message plus a `user` message holding `data:image/png;base64,…`; a text-only model gets
+  neither; a cache breakpoint still lands on the turn.
+
+### P8c — The bytes stop bloating the transcript (Tier-0/1)
+- **Content-addressed sidecar (D-78d):** blobs in a sharded sha256 store (the `LlmCache.pathFor`
+  shape), the entry keeping `{sha, mime, bytes}`. **Not inline base64** — `ConversationStore.load()`
+  `readFileSync`s the whole log and parses every line on every resume, fork and rewind, and D-37's
+  append-only rule means an inline blob is there forever.
+- **Every replay path keeps reading the old shape:** an entry with no attachments is exactly
+  today's entry, so no migration and no log rewrite (the same property D-64 relied on).
+- **Done when:** resume, fork and rewind of a conversation containing an image all rebuild the
+  same request, and the `.jsonl` stays small enough to read by eye.
+
+### P8d — Minimize/expand: media leaves the window when it stops earning its place (Tier-0/1)
+- **Drop image parts once their turn is compacted, and on over-window recovery** (D-78e) — the
+  first real instance of **X-08 / SPEC §15 durability-aware minimize-expand**, safe *because* P8c
+  made the bytes durably retrievable. A dropped image leaves a placeholder saying so, so the model
+  does not answer as though it still sees it.
+- **Compaction's summariser** never receives a parts message: it already flattens to text.
+- **Done when:** a conversation that would over-window on media compacts and continues, and the
+  model is told the attachments were removed rather than silently losing them.
+
+### P8e — The other two inputs, and seeing it work (Tier-0/1 + a browser peek)
+- **The MCP bridge stops dropping images on the floor.** `renderMcpContent` (`src/mcp/bridge.ts:67`)
+  renders `[image image/png, ~N bytes — not inlined]` today — one of the three inputs is *already
+  arriving* and being discarded. It becomes an attachment on the same path P8b built.
+- **The browser renders the image in the transcript** rather than a byte count, and the peek tool
+  confirms it — **`harness/peek/peek.mjs shot` is exactly the artifact this whole phase exists for**
+  (Claude looks at those screenshots while building JLCode; JLCode's agent cannot). Recorded in
+  [`VISUAL-LOG.md`](VISUAL-LOG.md).
+- **Deliberately out of scope:** paste/drop upload from the browser stays with the standing
+  "file viewer & upload/download chrome" row.
+- **Done when:** an MCP server's image reaches the model, and a peek shows the rendered transcript.
+
+### P8f — Live validation (paid tier — **ask Joshua first**, TESTING.md)
+- One real vision call against a real screenshot: the model describes what is on it. Recorded into
+  the request-keyed cache so it replays free, the way P6c's Fable tests do.
+- **Done when:** a live model reads `peek.mjs shot` output and says what it sees.
+
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
 - **H-08 — a poisoned `project_root` on a shared MCP server bypasses the workspace fence entirely.**
@@ -1684,7 +1778,7 @@ mode∩approval gate and workspace fence as a native tool. Design calls in **D-4
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·
 agent-facing background commands — start/poll/tail/kill (X-36) ·
-the model reading images — screenshots, mock-ups, diagrams (X-37) ·
+**the model reading images — sized, phased, in build (X-37 → Phase 8, D-78)** ·
 symbol navigation over MCP, route sized, home undecided (X-34) ·
 Notifications (external push, P-02) ·
 agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
