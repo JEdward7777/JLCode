@@ -157,9 +157,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a look to be right: a `display: flex` summary silently loses its ▸ marker, and a
 > `--` inside the SVG's comment made the whole file fail to parse while still
 > serving `200 image/svg+xml`. The fake driver's tool calls now emit a reasoning
-> delta — realistic, and what made X-38 peekable at all. Seven items are left on
-> `observed_items_needing_filed_in_harness.txt`, still untriaged. **Next: P8f
-> (paid — ask Joshua first).**
+> delta — realistic, and what made X-38 peekable at all. **Six items are left on
+> `observed_items_needing_filed_in_harness.txt`**, still untriaged — including one
+> Joshua added mid-session: *"safe-auto mode doesn't seem to actually do anything.
+> I still have to click aprove just like if it were in manual"*, which reads as a
+> defect in the D-08 gate rather than a nicety. **Next: P8f (paid — ask Joshua
+> first).**
 >
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
