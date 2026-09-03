@@ -108,11 +108,15 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > sizing hadn't covered are recorded in **D-78g** (the 5 MB cap, per-image labels, the anchor, the
 > modality-aware `ensureKnown`, the `unknown` collapse, and `entryView` deliberately not shipping
 > blobs). Driven for real against a 240 KB screenshot through the built `dist`, not a fixture.
-> **Next: P8c** — the bytes stop bloating the transcript. Until it lands an attachment is inline
-> base64 in an **append-only** JSONL that `load()` re-parses on every resume, and the 5 MB cap is
-> all that bounds it. P8d then strips media from the replayed window on compaction and on
-> over-window recovery — note `truncateToolOutputsForSummary` cannot shrink an image today, so an
-> over-window *caused by* media fails loudly rather than recovering.
+> **P8c is STRUCK (D-78h, 2026-09-03) — no content-addressed sidecar; the bytes stay inline in the
+> `.jsonl`.** Joshua's call after the case for it was examined: the consumers that want the text
+> without the bytes turned out to be *two existence checks*, and a shared blob store would
+> accumulate forever with no safe GC, since deletion never unlinks. **Next: P8d** — media leaves the
+> replayed window when it stops earning its place. It matters more now than it looked: with no
+> sidecar an attachment rides the prefix of every turn until P8d lands, and
+> `truncateToolOutputsForSummary` cannot shrink an image, so an over-window *caused by* media fails
+> loudly instead of recovering. Then P8e (the MCP bridge's dropped images + the browser rendering +
+> a peek) and P8f (paid — **ask first**).
 >
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
@@ -1531,21 +1535,43 @@ Bottom-up as ever: **P8a is a strict improvement with no wire change at all** an
 - **No browser peek:** the server DTO drops attachments and nothing new is drawn — the transcript
   shows the tool's sentence and no picture until P8e, which is the slice that opens `entryView`.
 
-### P8c — The bytes stop bloating the transcript (Tier-0/1)
-- **Content-addressed sidecar (D-78d):** blobs in a sharded sha256 store (the `LlmCache.pathFor`
+### ~~P8c — The bytes stop bloating the transcript~~ ❌ **STRUCK 2026-09-03 (D-78h) — no sidecar; the bytes stay inline**
+Joshua's call, after the argument for it was examined and did not hold. **The images stay in the
+`.jsonl`.** Kept here rather than deleted so a later session does not re-derive the sidecar from
+D-78d and re-propose it. The original slice, for the record:
+- ~~**Content-addressed sidecar (D-78d):** blobs in a sharded sha256 store (the `LlmCache.pathFor`
   shape), the entry keeping `{sha, mime, bytes}`. **Not inline base64** — `ConversationStore.load()`
   `readFileSync`s the whole log and parses every line on every resume, fork and rewind, and D-37's
-  append-only rule means an inline blob is there forever.
-- **Every replay path keeps reading the old shape:** an entry with no attachments is exactly
-  today's entry, so no migration and no log rewrite (the same property D-64 relied on).
-- **Done when:** resume, fork and rewind of a conversation containing an image all rebuild the
-  same request, and the `.jsonl` stays small enough to read by eye.
+  append-only rule means an inline blob is there forever.~~
+- ~~**Every replay path keeps reading the old shape:** an entry with no attachments is exactly
+  today's entry, so no migration and no log rewrite (the same property D-64 relied on).~~
+- ~~**Done when:** resume, fork and rewind of a conversation containing an image all rebuild the
+  same request, and the `.jsonl` stays small enough to read by eye.~~
+
+**Why it fell (D-78h).** The stated benefit was consumers of the transcript that do not want the
+bytes — and that list is **two existence checks** (`server.ts:774,790`, rename and delete, which
+`load()` a whole log to answer a boolean), each fixable in two lines. The browser wants the images;
+so does the replayed window. Delivery to the browser does not need a storage layer either: the read
+can strip the blobs and register them for a follow-up fetch while the conversation is loaded, and
+inline `data:` URIs may well be enough on their own. Against the sidecar, unaccounted for in D-78d:
+deletion is a **masking flag** that never unlinks (`conversation-store.ts:146`), so a shared blob
+store would accumulate forever with no refcount and no safe GC, where today a fat thread is one
+file you can `rm` — and the conversation stops being one self-contained file. Grepping a log with a
+320 KB line is a one-off script's problem, not an architecture's.
+- **Still open, and cheap:** rename and delete parsing the whole log for an existence check. Fold
+  into a later slice — it is unrelated to images and always was.
 
 ### P8d — Minimize/expand: media leaves the window when it stops earning its place (Tier-0/1)
 - **Drop image parts once their turn is compacted, and on over-window recovery** (D-78e) — the
-  first real instance of **X-08 / SPEC §15 durability-aware minimize-expand**, safe *because* P8c
-  made the bytes durably retrievable. A dropped image leaves a placeholder saying so, so the model
-  does not answer as though it still sees it.
+  first real instance of **X-08 / SPEC §15 durability-aware minimize-expand**, safe because the
+  bytes are durably retrievable. *(That safety was credited to P8c; with P8c struck it rests on the
+  log itself, which holds the bytes just as durably — the property minimize/expand needs is
+  "recoverable", not "stored elsewhere". P8d is unaffected.)* A dropped image leaves a placeholder
+  saying so, so the model does not answer as though it still sees it.
+- **Now the only thing bounding media in the window.** With no sidecar, an attachment sits in the
+  replayed prefix of every turn until this slice lands, and `truncateToolOutputsForSummary` cannot
+  shrink an image — so an over-window *caused by* media currently fails loudly instead of
+  recovering. That moves P8d from "housekeeping" to the slice that makes images affordable.
 - **Compaction's summariser** never receives a parts message: it already flattens to text.
 - **Done when:** a conversation that would over-window on media compacts and continues, and the
   model is told the attachments were removed rather than silently losing them.
