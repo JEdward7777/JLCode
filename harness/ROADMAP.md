@@ -121,8 +121,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > Joshua ruled out, since changing the prefix costs a full-tail cache re-write at 1.25x to save
 > ~1,100 image tokens. Forking above a cut rebuilds the image from the tree, which works only
 > because the bytes stayed inline (D-78h). One narrow piece is left and needs his call: stripping
-> media from the **summary input** on the D-44b over-window retry — cache-losing by design already,
-> and exactly what every KiloCode `stripMedia` call site does. **So the next real slice is P8e** —
+> media from the **summary input** on the D-44b over-window retry — and that is closed too: the
+> default compactor **is** the working model and understands the pictures, while a smaller text-only
+> compactor already receives none, since `buildCrossModelSummaryInput` flattens tool entries to
+> strings and never reads `attachments` (verified — 393 chars, no base64). What is left is a **size**
+> question, not a comprehension one: a prefix that over-windows *because of* images fails the D-44b
+> retry, loudly. Left as a known limit, not a slice. **P8d is fully struck; the next slice is P8e** —
 > the MCP bridge's dropped images, the browser rendering, and a peek — then P8f (paid — **ask
 > first**).
 >
@@ -1585,19 +1589,27 @@ file you can `rm` — and the conversation stops being one self-contained file. 
   wire is rebuilt from the tree — the image comes back, verified on the built `dist`. Had the strip
   been persisted state, that fork would hand the model a placeholder for the picture it is being
   asked about. This works *because* the bytes stayed inline (D-78h).
-- **What survives, and needs Joshua's call:** the **summary input only** — the D-44b forced
-  over-window retry, where `truncateToolOutputsForSummary` truncates tool outputs so the summary
-  request fits. It cannot shrink an image today, so an over-window *caused by* media fails loudly
-  instead of recovering. That request is **already** cache-losing by design ("trading the cache hit
-  for a request that fits"), so no cache objection applies, and it touches no persisted state. It is
-  also exactly and only what **KiloCode** does: every one of its `stripMedia: true` call sites builds
-  a *summariser* input (`compaction.ts:405,417`, `compaction-chunks.ts:134,338`,
-  `compaction-payload-recovery.ts:100`), never the live replayed window.
-  - Worth knowing: KiloCode *does* also clear media from its live window, but by a different
-    mechanism — a persisted `part.state.time.compacted` mark, set by a token-budget prune loop and
-    by 4 MB-payload recovery, after which that tool part replays as `[Old tool result content
-    cleared]` with `attachments: []`. It is a general tool-output pruner that media rides along
-    with, not an image policy, and it is the persisted strip the fork argument above rules out.
+- **The summariser gets the images already, and that is correct (Joshua, 2026-09-03).** The default
+  compactor **is the working model** (D-27/D-38), which understands pictures, and the same-model
+  path sends the exact live prefix — so compaction summarises what the model actually saw, and keeps
+  the cache reuse (D-29) while doing it.
+- **A smaller, text-only compactor is the exception, and it is already handled by construction.**
+  `buildCrossModelSummaryInput` renders a `tool` entry as `[tool <name> result]\n<content>` — a
+  plain string — and never reads `entry.attachments`. Verified on the built `dist`: a cross-model
+  summary input containing an image read is 393 chars with no image part and no base64. It is also
+  less lossy than it looks, because the *working* model's own description of the picture is an
+  assistant turn in the same transcript: the picture does not cross to the cheap model, the
+  understanding does.
+- **Known limit, deliberately not built:** the D-44b **forced** over-window retry sends the live
+  prefix through `truncateToolOutputsForSummary`, which shrinks only text — so a prefix that
+  over-windows *because of* accumulated images fails the retry too. That is a **size** problem, not
+  a comprehension one, so the two answers above do not reach it. Left alone on purpose: it fails
+  **loudly** (`Request exceeded the model context window`), it takes a great many images to reach,
+  and Phase 8 has now twice found that building the mechanism before the problem was the wrong call.
+  If it ever bites, the fix is a placeholder swap in the summary input only — the one variant no
+  cache or fork objection touches, and exactly what every KiloCode `stripMedia` site does
+  (`compaction.ts:405,417`, `compaction-chunks.ts:134,338`, `compaction-payload-recovery.ts:100`,
+  all summariser inputs, never the live window).
 - **Compaction's summariser** never receives a parts message: it already flattens to text.
 
 ### P8e — The other two inputs, and seeing it work (Tier-0/1 + a browser peek)
