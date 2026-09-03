@@ -115,8 +115,16 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > replayed window when it stops earning its place. It matters more now than it looked: with no
 > sidecar an attachment rides the prefix of every turn until P8d lands, and
 > `truncateToolOutputsForSummary` cannot shrink an image, so an over-window *caused by* media fails
-> loudly instead of recovering. Then P8e (the MCP bridge's dropped images + the browser rendering +
-> a peek) and P8f (paid — **ask first**).
+> loudly instead of recovering. **P8d is now MOSTLY STRUCK too (D-78i)**: its first half was
+> already true (safe-harbor cuts at the tip, so a compacted image is gone from the wire — measured),
+> and its second half — stripping media mid-window while keeping the turns — is a **losing trade**
+> Joshua ruled out, since changing the prefix costs a full-tail cache re-write at 1.25x to save
+> ~1,100 image tokens. Forking above a cut rebuilds the image from the tree, which works only
+> because the bytes stayed inline (D-78h). One narrow piece is left and needs his call: stripping
+> media from the **summary input** on the D-44b over-window retry — cache-losing by design already,
+> and exactly what every KiloCode `stripMedia` call site does. **So the next real slice is P8e** —
+> the MCP bridge's dropped images, the browser rendering, and a peek — then P8f (paid — **ask
+> first**).
 >
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
@@ -1561,20 +1569,36 @@ file you can `rm` — and the conversation stops being one self-contained file. 
 - **Still open, and cheap:** rename and delete parsing the whole log for an existence check. Fold
   into a later slice — it is unrelated to images and always was.
 
-### P8d — Minimize/expand: media leaves the window when it stops earning its place (Tier-0/1)
-- **Drop image parts once their turn is compacted, and on over-window recovery** (D-78e) — the
-  first real instance of **X-08 / SPEC §15 durability-aware minimize-expand**, safe because the
-  bytes are durably retrievable. *(That safety was credited to P8c; with P8c struck it rests on the
-  log itself, which holds the bytes just as durably — the property minimize/expand needs is
-  "recoverable", not "stored elsewhere". P8d is unaffected.)* A dropped image leaves a placeholder
-  saying so, so the model does not answer as though it still sees it.
-- **Now the only thing bounding media in the window.** With no sidecar, an attachment sits in the
-  replayed prefix of every turn until this slice lands, and `truncateToolOutputsForSummary` cannot
-  shrink an image — so an over-window *caused by* media currently fails loudly instead of
-  recovering. That moves P8d from "housekeeping" to the slice that makes images affordable.
+### ~~P8d — Minimize/expand: media leaves the window when it stops earning its place~~ ❌ **MOSTLY STRUCK 2026-09-03 (D-78i)** — the window keeps its images; one narrow piece survives
+
+**Struck because two-thirds of it was already true and the last third was a bad trade (D-78i).**
+
+- ~~**Drop image parts once their turn is compacted**~~ — **already true by construction.**
+  Safe-harbor compaction cuts at the tip (D-44d), so the replayed window resets to
+  `[system, summary]` and the image goes with everything else above the cut. Measured on the built
+  `dist`: after a compaction the base64 is simply not in the wire. Nothing to build.
+- ~~**Drop image parts from mid-window while keeping the turns**~~ (the X-08 minimize/expand
+  reading) — **rejected, Joshua's call.** Removing an image from message 5 of 40 changes the prefix
+  at that point, so every message after it is a cache miss and the whole tail re-writes at 1.25x
+  (D-26/D-58). Paying that to save ~1,100 image tokens is a losing trade, and a silent one.
+- **The fork case is why the window must keep them.** Rewind above a compaction and fork, and the
+  wire is rebuilt from the tree — the image comes back, verified on the built `dist`. Had the strip
+  been persisted state, that fork would hand the model a placeholder for the picture it is being
+  asked about. This works *because* the bytes stayed inline (D-78h).
+- **What survives, and needs Joshua's call:** the **summary input only** — the D-44b forced
+  over-window retry, where `truncateToolOutputsForSummary` truncates tool outputs so the summary
+  request fits. It cannot shrink an image today, so an over-window *caused by* media fails loudly
+  instead of recovering. That request is **already** cache-losing by design ("trading the cache hit
+  for a request that fits"), so no cache objection applies, and it touches no persisted state. It is
+  also exactly and only what **KiloCode** does: every one of its `stripMedia: true` call sites builds
+  a *summariser* input (`compaction.ts:405,417`, `compaction-chunks.ts:134,338`,
+  `compaction-payload-recovery.ts:100`), never the live replayed window.
+  - Worth knowing: KiloCode *does* also clear media from its live window, but by a different
+    mechanism — a persisted `part.state.time.compacted` mark, set by a token-budget prune loop and
+    by 4 MB-payload recovery, after which that tool part replays as `[Old tool result content
+    cleared]` with `attachments: []`. It is a general tool-output pruner that media rides along
+    with, not an image policy, and it is the persisted strip the fork argument above rules out.
 - **Compaction's summariser** never receives a parts message: it already flattens to text.
-- **Done when:** a conversation that would over-window on media compacts and continues, and the
-  model is told the attachments were removed rather than silently losing them.
 
 ### P8e — The other two inputs, and seeing it work (Tier-0/1 + a browser peek)
 - **The MCP bridge stops dropping images on the floor.** `renderMcpContent` (`src/mcp/bridge.ts:67`)
