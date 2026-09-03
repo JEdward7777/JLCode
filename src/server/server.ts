@@ -18,6 +18,7 @@ const TRIGGER_MODES: readonly CompactionTrigger[] = ["auto", "manual", "suggest"
 import type { AskUserAnswer, LearnAnswers, SessionEvent } from "../session/types.js";
 import type { McpServerStatus } from "../mcp/client.js";
 import type { Conversation, Entry } from "../conversation/types.js";
+import { base64Bytes } from "../tools/media.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
@@ -85,7 +86,21 @@ function resolveStatic(root: string, urlPath: string): string | null {
   return fs.existsSync(index) ? index : null; // SPA fallback (and traversal → index)
 }
 
-function entryView(entry: Entry): Record<string, unknown> {
+/**
+ * Where the browser fetches one attachment's bytes (P8e, D-78j).
+ *
+ * Addressed by **conversation**, not by session, because history is read
+ * straight from disk with no session in sight — one route then serves a live
+ * thread and an old one identically, which is the X-11 property that a live
+ * entry and a loaded one must render the same way.
+ */
+function attachmentUrl(convId: string, entryId: string, index: number): string {
+  return `/conversation/${encodeURIComponent(convId)}/attachment/${encodeURIComponent(entryId)}/${index}`;
+}
+
+/** The browser's view of an entry. `convId` is only needed to address
+ *  attachments; an entry with none renders exactly as it always did. */
+function entryView(entry: Entry, convId?: string): Record<string, unknown> {
   const base = { id: entry.id, parent: entry.parent }; // ids for fork/rewind navigation
   switch (entry.type) {
     case "user":
@@ -110,6 +125,21 @@ function entryView(entry: Entry): Record<string, unknown> {
         name: entry.name,
         content: entry.content,
         isError: entry.isError ?? false,
+        // **Metadata and a URL, never the bytes** (D-78j). A data URI here would
+        // ride the multiplexed bus (D-43) to every open tab on every entry
+        // frame, re-ship on every reload, and be uncacheable — for a blob the
+        // browser can fetch once, lazily, and keep. The size travels so the
+        // transcript can say what is loading before it has loaded.
+        ...(entry.attachments && entry.attachments.length > 0 && convId
+          ? {
+              attachments: entry.attachments.map((a, i) => ({
+                mime: a.mime,
+                bytes: base64Bytes(a.data),
+                ...(a.name ? { name: a.name } : {}),
+                url: attachmentUrl(convId, entry.id, i),
+              })),
+            }
+          : {}),
       };
     case "compaction":
       return { ...base, type: "compaction", summary: entry.summary };
@@ -125,8 +155,8 @@ function entryView(entry: Entry): Record<string, unknown> {
  *  wire should ship the same trimmed shape as `GET /session/:id`, so a live entry
  *  and a loaded one render identically (X-11), and the opaque signed reasoning
  *  blobs (D-14) stay server-side instead of being pushed to every tab. */
-function wireEvent(e: SessionEvent): unknown {
-  return e.type === "entry" ? { ...e, entry: entryView(e.entry) } : e;
+function wireEvent(e: SessionEvent, convId: string): unknown {
+  return e.type === "entry" ? { ...e, entry: entryView(e.entry, convId) } : e;
 }
 
 /** A session's roster descriptor for the multiplexed bus (D-43): identity + its
@@ -375,7 +405,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         w?.();
       };
       const unsub = session.onEvent((e) => {
-        queue.push(wireEvent(e));
+        queue.push(wireEvent(e, session.conversation.id));
         bump();
       });
       stream.onAbort(() => {
@@ -411,7 +441,14 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         w?.();
       };
       const unsub = manager.subscribe((frame) => {
-        if (frame.kind === "event") queue.push({ type: "session-event", sessionId: frame.sessionId, event: wireEvent(frame.event) });
+        if (frame.kind === "event")
+          queue.push({
+            type: "session-event",
+            sessionId: frame.sessionId,
+            // The conversation id is only needed to address attachments; a
+            // session that has just been removed has no entries left to ship.
+            event: wireEvent(frame.event, manager.get(frame.sessionId)?.conversation.id ?? ""),
+          });
         else if (frame.kind === "added") queue.push({ type: "session-added", session: sessionDescriptor(frame.session) });
         else queue.push({ type: "session-removed", sessionId: frame.sessionId });
         bump();
@@ -445,7 +482,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       mode: session.mode,
       approval: session.approval,
       activeLeaf: session.conversation.activeLeaf,
-      entries: session.conversation.entries.map(entryView),
+      entries: session.conversation.entries.map((e) => entryView(e, session.conversation.id)),
     });
   });
 
@@ -749,7 +786,41 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   app.get("/conversation/:id", (c) => {
     const conv = deps.store.load(c.req.param("id"));
     if (!conv) return c.json({ error: "no such conversation" }, 404);
-    return c.json({ id: conv.id, activeLeaf: conv.activeLeaf, entries: conv.entries.map(entryView) });
+    return c.json({ id: conv.id, activeLeaf: conv.activeLeaf, entries: conv.entries.map((e) => entryView(e, conv.id)) });
+  });
+
+  // One attachment's bytes (P8e, D-78j) — the door images come through, kept
+  // deliberately separate from the transcript JSON they are named in.
+  //
+  // **Live session first, disk second.** Persistence is asynchronous off the
+  // `entry` event, so a browser that has just been told about a tool result over
+  // SSE can ask for its image before the log has been written; the in-memory
+  // tree always has it. History has no session at all, which is the other half.
+  //
+  // Immutable by construction — the tree is append-only (D-37) and an entry is
+  // never rewritten — so the response says so and the browser stops asking.
+  app.get("/conversation/:id/attachment/:entryId/:index", (c) => {
+    const convId = c.req.param("id");
+    const live = manager.list().find((sn) => sn.conversation.id === convId);
+    const entries = live ? live.conversation.entries : deps.store.load(convId)?.entries;
+    if (!entries) return c.json({ error: "no such conversation" }, 404);
+    const entry = entries.find((e) => e.id === c.req.param("entryId"));
+    if (!entry || entry.type !== "tool") return c.json({ error: "no such entry" }, 404);
+    const index = Number(c.req.param("index"));
+    const att = Number.isInteger(index) ? entry.attachments?.[index] : undefined;
+    if (!att) return c.json({ error: "no such attachment" }, 404);
+    const bytes = Buffer.from(att.data, "base64");
+    return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
+      headers: {
+        "content-type": att.mime,
+        "content-length": String(bytes.byteLength),
+        "cache-control": "private, max-age=31536000, immutable",
+        // The mime is our own sniff (D-78b), not the producer's claim — but a
+        // browser that re-sniffs could still find HTML in a crafted polyglot, so
+        // it is told not to.
+        "x-content-type-options": "nosniff",
+      },
+    });
   });
 
   // Rename a thread from its history row (X-12b): {title}. The rail's rename is

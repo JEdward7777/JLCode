@@ -126,9 +126,24 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > compactor already receives none, since `buildCrossModelSummaryInput` flattens tool entries to
 > strings and never reads `attachments` (verified — 393 chars, no base64). What is left is a **size**
 > question, not a comprehension one: a prefix that over-windows *because of* images fails the D-44b
-> retry, loudly. Left as a known limit, not a slice. **P8d is fully struck; the next slice is P8e** —
-> the MCP bridge's dropped images, the browser rendering, and a peek — then P8f (paid — **ask
-> first**).
+> retry, loudly. Left as a known limit, not a slice. **P8d is fully struck.**
+>
+> **P8e built 2026-09-03 — the other two inputs, and the browser. 851 Tier-0/1 green, 68 files.**
+> The MCP bridge no longer writes `[image … — not inlined]` over a picture: `renderMcpContent`
+> returns `{content, attachments}` and the bytes ride P8b's flush. It **sniffs** rather than
+> believing the server's `mimeType` — a claim exactly like a filename (D-78b) — and a drop
+> (mislabelled bytes, over the 5 MB cap, a model that cannot see) always names its reason next to
+> the server's own text. The capability reaches a bridged tool through **`ToolContext`**, not
+> construction: MCP tools are built once per instance and shared by sessions whose models differ per
+> folder — the one place P8b's "settle it once in the factory" could not reach. **`entryView`'s open
+> question is decided (D-78j): metadata + a URL, never a `data:` URI** — the argument is fan-out,
+> not size, since an entry frame goes to *every* tab over the multiplexed bus (D-43). The route is
+> `GET /conversation/:id/attachment/:entryId/:index`, by **conversation** so a cold history load and
+> a live thread advertise the same URL (X-11), answered from the live session first because
+> persistence is async. A turn holding a 30 KB screenshot is under 4 KB of transcript JSON, and a
+> text-only tool entry ships with no `attachments` key at all. Peeked in Chrome with a real MCP
+> child (VISUAL-LOG "P8e"); one fix while looking — a flex column was stretching a 24×16 PNG to
+> 320px. **Next: P8f (paid — ask Joshua first).**
 >
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
@@ -1612,9 +1627,9 @@ file you can `rm` — and the conversation stops being one self-contained file. 
   all summariser inputs, never the live window).
 - **Compaction's summariser** never receives a parts message: it already flattens to text.
 
-### P8e — The other two inputs, and seeing it work (Tier-0/1 + a browser peek)
-- **The MCP bridge stops dropping images on the floor.** `renderMcpContent` (`src/mcp/bridge.ts:67`)
-  renders `[image image/png, ~N bytes — not inlined]` today — one of the three inputs is *already
+### P8e — The other two inputs, and seeing it work (Tier-0/1 + a browser peek) ✅ done (2026-09-03)
+- **The MCP bridge stops dropping images on the floor.** `renderMcpContent` rendered
+  `[image image/png, ~N bytes — not inlined]` over a picture — one of the three inputs was *already
   arriving* and being discarded. It becomes an attachment on the same path P8b built.
 - **The browser renders the image in the transcript** rather than a byte count, and the peek tool
   confirms it — **`harness/peek/peek.mjs shot` is exactly the artifact this whole phase exists for**
@@ -1622,7 +1637,31 @@ file you can `rm` — and the conversation stops being one self-contained file. 
   [`VISUAL-LOG.md`](VISUAL-LOG.md).
 - **Deliberately out of scope:** paste/drop upload from the browser stays with the standing
   "file viewer & upload/download chrome" row.
-- **Done when:** an MCP server's image reaches the model, and a peek shows the rendered transcript.
+- **Done when:** an MCP server's image reaches the model, and a peek shows the rendered transcript. ✅
+- **`entryView`'s shape, the question D-78h left open: metadata + a URL, never a `data:` URI
+  (D-78j).** Not a size argument but a **fan-out** one — an `entry` event goes to *every* open tab
+  over the multiplexed bus (D-43), so an inline blob is pushed N times per image per turn, again in
+  full on every `GET /session/:id`, and is uncacheable inside a JSON body. The route is
+  `GET /conversation/:id/attachment/:entryId/:index` — by **conversation**, so history (no session,
+  read from disk) and a live thread advertise the identical URL (X-11) — answered from the live
+  session first, because persistence is async and the browser can ask before the log is written.
+  `Cache-Control: immutable` is honest here: the tree is append-only (D-37).
+- **The bridge sniffs, and a drop is never silent.** The server's `mimeType` is a claim, exactly
+  like a filename (D-78b), so `classifySample` decides from a 12 KB decoded head. A mislabelled
+  body, an oversized one, or a text-only model each produce a line naming the reason, next to the
+  server's own text blocks. **`ToolContext.acceptsImages`** carries the capability, because a
+  bridged tool is built once per instance and shared by sessions whose models differ per folder —
+  the one place P8b's "settle it once in the factory" could not reach.
+- **Verified:** +11 tests (`images-p8e.test.ts`), the MCP half against a **real stdio child** so the
+  base64 makes a round trip through JSON-RPC. Both silent-failure guards were mutation-checked:
+  blanking the conversation id on the multiplexed bus fails the SSE parity test, and trusting the
+  server's `mimeType` fails the mislabelled-bytes test. Also asserted: the transcript JSON contains
+  no base64 at all (< 4 KB for a turn holding a 30 KB screenshot), a cold `GET /conversation/:id`
+  advertises the same URL, and a text-only tool entry ships with **no `attachments` key**.
+  **851 Tier-0/1 green, 68 files.**
+- **Peeked** (VISUAL-LOG "P8e"): both inputs render in the transcript, images stay visible while
+  the block is collapsed, and both refusals read their reason. One fix while looking — `.tool-image`
+  is a flex column, whose default `align-items: stretch` blew a 24×16 PNG up to 320px.
 
 ### P8f — Live validation (paid tier — **ask Joshua first**, TESTING.md)
 - One real vision call against a real screenshot: the model describes what is on it. Recorded into

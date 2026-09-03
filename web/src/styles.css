@@ -1544,6 +1544,52 @@ figure.mermaid svg {
   border-top: 1px solid var(--border);
   padding: 7px 9px;
 }
+/* Attached images (P8e). Outside `.tool-body` on purpose: a picture is the
+   result, so it stays visible when the block is collapsed. Thumbnails wrap and
+   cap their height — a 3000px screenshot must not push the reply off the page —
+   and each is a link to its own full-size bytes. */
+.tool-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 9px;
+  border-top: 1px solid var(--border);
+}
+.tool-image {
+  display: flex;
+  flex-direction: column;
+  /* Without this the column *stretches* the img to the block's width — a 24px
+     icon blown up to 320px, which is not what the model was handed. Seen in the
+     first P8e peek. */
+  align-items: flex-start;
+  gap: 3px;
+  max-width: 100%;
+  text-decoration: none;
+}
+.tool-image img {
+  display: block;
+  max-width: 320px;
+  max-height: 220px;
+  width: auto;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  /* A transparent PNG on a dark panel is invisible; a light mat is the honest
+     background to judge a screenshot against. */
+  background: #fff;
+}
+.tool-image:hover img {
+  border-color: var(--accent);
+}
+.tool-image-cap {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* `pre` (not pre-wrap): a wide line scrolls inside this box, never the page. */
 .tool-out {
   margin: 0;

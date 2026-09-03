@@ -9,7 +9,7 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Tool, ToolResult } from "../tools/types.js";
+import type { Tool, ToolContext, ToolResult } from "../tools/types.js";
 import type { LoadedSettings, McpServerConfig, ResolvedServer, SettingsScope } from "./config.js";
 import { loadSettings, serverEnv, settingsFiles, updateServerEntry } from "./config.js";
 import type { McpToolInfo } from "./bridge.js";
@@ -137,7 +137,7 @@ export class McpManager {
       lists: () => server.config,
       remember: (field, isPath) => this.remember(server, field, isPath),
       rememberWrite: (writes) => this.rememberWrite(server, info.name, writes),
-      call: (toolName, args) => this.call(connection, toolName, args),
+      call: (toolName, args, ctx) => this.call(connection, toolName, args, ctx),
     });
   }
 
@@ -166,16 +166,28 @@ export class McpManager {
     }
   }
 
-  private async call(connection: Connection, toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
+  private async call(
+    connection: Connection,
+    toolName: string,
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<ToolResult> {
     const { client, server } = connection;
     if (!client) return { content: `MCP server "${server.name}" is not connected`, isError: true };
     const timeout = (server.config.timeout ?? DEFAULT_TIMEOUT_SEC) * 1000;
     try {
       const result = await client.callTool({ name: toolName, arguments: args }, undefined, { timeout });
-      const content = renderMcpContent(result as { content?: unknown; structuredContent?: unknown });
+      // The session's answer to "can this model see?" (P8e) — a bridged tool is
+      // built once for the instance, so this cannot be baked in the way
+      // `read_file`'s is; it arrives with the call.
+      const { content, attachments } = await renderMcpContent(result as { content?: unknown; structuredContent?: unknown }, {
+        acceptsImages: ctx.acceptsImages === true,
+        label: `${server.name}/${toolName}`,
+      });
+      const carried = attachments.length > 0 ? { attachments } : {};
       return result.isError === true
-        ? { content: content || "the MCP tool reported an error", isError: true }
-        : { content };
+        ? { content: content || "the MCP tool reported an error", isError: true, ...carried }
+        : { content, ...carried };
     } catch (e) {
       return { content: `MCP call failed (${server.name}/${toolName}): ${(e as Error).message}`, isError: true };
     }

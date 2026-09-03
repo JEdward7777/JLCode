@@ -5,6 +5,22 @@
  * persistence projects (D-37) — the UI is just another subscriber (§11).
  */
 
+/**
+ * An image a tool produced (P8e, D-78j).
+ *
+ * The **bytes are not here**: `url` is a same-origin route the browser fetches
+ * once and caches, so an entry frame stays small enough to ride the multiplexed
+ * bus (D-43) to every open tab. `bytes` is the real size, so the block can say
+ * what it is loading before it has loaded.
+ */
+export interface AttachmentView {
+  mime: string;
+  bytes: number;
+  /** What the wire calls it too — the path read, or `<server>/<tool> image n`. */
+  name?: string;
+  url: string;
+}
+
 /** A conversation-tree node as the server ships it (server entryView). The
  *  browser walks these (tree.ts) to render the active branch + sibling arrows. */
 export interface EntryView {
@@ -20,6 +36,7 @@ export interface EntryView {
   toolCallId?: string; // tool → the assistant toolCalls entry it answers (X-11)
   content?: string; // tool
   isError?: boolean; // tool
+  attachments?: AttachmentView[]; // tool → images, by reference (P8e)
   summary?: string; // compaction
   by?: "agent" | "user"; // todo — who changed the list at this point (X-31)
 }

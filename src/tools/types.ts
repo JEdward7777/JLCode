@@ -29,6 +29,12 @@ export interface ToolContext {
   /** The shared todo list (X-31). Supplied by the Session, which owns the branch
    *  the operations are appended to and the read barrier over writes. */
   todos?: TodoAccess;
+  /** Whether this session's model accepts images (P8e). Native tools take the
+   *  same answer at construction, because `read_file` states it in its own
+   *  *description* and the two must not disagree (X-33) — but a bridged MCP tool
+   *  is built once per instance and shared by every session, so for those the
+   *  answer can only arrive with the call. */
+  acceptsImages?: boolean;
 }
 
 /** A flattened argument field and its value (jq-style name — D-47d). */

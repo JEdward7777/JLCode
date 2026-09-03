@@ -136,6 +136,12 @@ export interface SessionOptions {
    *  thread has grown enough to be about something else. Set false to keep the
    *  opening name (and pay for exactly one title call, as X-09 did). */
   autoRetitle?: boolean;
+  /** Whether this session's model can be handed a picture (P8b/P8e), resolved
+   *  once by the factory from the catalog plus the config override. The Session
+   *  never asks the question itself; it only carries the answer down to the
+   *  tools that cannot be told at construction — the bridged MCP ones, which are
+   *  built once for the whole instance. */
+  acceptsImages?: boolean;
 }
 
 /** Default watchdog interval — 30 minutes (D-34), stated once in the config
@@ -363,6 +369,8 @@ export class Session {
    *  auto-titling is on at all*; the opt-out keeps the opening name and the one
    *  call it cost. */
   private readonly autoRetitle: boolean;
+  /** Handed to every tool call's context (P8e) — see `SessionOptions`. */
+  private readonly acceptsImages: boolean;
   /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
   private readonly tasks: TaskRegistry;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
@@ -427,6 +435,7 @@ export class Session {
     this.spendCapUsd = options.spendCapUsd;
     this.autoTitle = options.autoTitle ?? false;
     this.autoRetitle = options.autoRetitle ?? true;
+    this.acceptsImages = options.acceptsImages === true;
     // A conversation that arrives already named is measured from **here**, not
     // from its first turn (X-17): the log doesn't say how far along the thread
     // was when that name was chosen, and re-titling on the first settle after
@@ -1916,7 +1925,12 @@ export class Session {
   ): Promise<void> {
     this.emit({ type: "tool-start", name: tool.name });
     const startedAt = Date.now();
-    const res = await tool.execute(args, { sandbox: this.sandbox!, tasks: this.tasks, todos: this.todoAccess });
+    const res = await tool.execute(args, {
+      sandbox: this.sandbox!,
+      tasks: this.tasks,
+      todos: this.todoAccess,
+      acceptsImages: this.acceptsImages,
+    });
     const note = edited ? "[note: the user edited the arguments before running]\n" : "";
     this.appendToolResult(call, note + res.content, res.isError ?? false, res.attachments);
     this.emit({

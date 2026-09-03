@@ -1523,3 +1523,46 @@ Not exercised visually: a note long enough to wrap, and the 12-line cap on the
 edit notice (Tier-0 covers the cap; posing it by hand means pasting twenty rows
 into the editor).
 
+
+## P8e — the images arrive, and the drops say why · 2026-09-03 · ✅ looked good (one fix while looking)
+
+**Screenshots:** [`visual/p8e-images.png`](visual/p8e-images.png) (both inputs
+rendered: a 30 KB screenshot from `read_file`, and a picture an MCP server sent)
+· [`visual/p8e-dropped.png`](visual/p8e-dropped.png) (the two refusals, expanded)
+
+This is the peek the **whole phase exists for**: `peek.mjs shot` writes the
+screenshots *I* look at while building JLCode, and until P8a its own agent got a
+page of U+FFFD instead. Posed with `peek up --mcp <settings>` pointing at
+`test/fixtures/mcp-test-server.mjs`, whose new `screenshot` tool returns a real
+`image` content block; the peek config now carries `acceptsImages: true`, because
+the peek's model id is deliberately unlisted so the catalog says `unknown` and
+P8b collapses that to text-only — without it every image surface is unpeekable.
+
+Confirmed with my own eyes:
+
+- **`read: screenshot.png`** — the transcript block shows the picture itself,
+  capped at 320×220 with `screenshot.png` under it, and the fake model's reply
+  says `I can see the image: screenshot.png` — i.e. the flush really did put an
+  `image_url` part in the user message after the tool result (P8b), driven
+  through the built `dist`, not a fixture.
+- **`mcp: shots__screenshot {}`** — the input that was being discarded renders
+  the same way, captioned `shots/screenshot image 1`, which is the *same* label
+  the wire's text part uses. The picture and the sentence about it cannot drift.
+- **The images show while the block is collapsed.** A picture is the result, not
+  noise behind a caret; the caret still hides the text half.
+- **A drop is never silent.** `{"kind":"lying"}` (a text body labelled
+  `image/png`) reads `[image claimed as image/png, 16 B — dropped: the bytes are
+  text, not one of image/png, …]`, and `{"kind":"big"}` reads `[image image/png,
+  6.0 MB — dropped: over the 5.0 MB an image may be to go to the model]` — with
+  the server's own `here is a big shot` line still above it.
+
+**What the browser changed while looking.** The first shot rendered the MCP
+server's 24×16 PNG blown up to 320px: `.tool-image` is a flex *column*, so its
+default `align-items: stretch` was resizing the `<img>` to the block's width. A
+tiny icon has to look tiny — that is information about what the model was handed.
+`align-items: flex-start` fixes it; the screenshot above is after that fix.
+
+Not exercised visually: many images in one turn (the flush groups them, Tier-0
+covers the wire shape), and a conversation reloaded from history — the URL a cold
+`GET /conversation/:id` advertises is asserted to be byte-identical in Tier-1
+instead.

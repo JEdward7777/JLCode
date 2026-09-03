@@ -183,6 +183,11 @@ function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model, mcp }) {
         // Fallback pricing so the spend chip has something to show (D-33);
         // the fake driver reports no authoritative cost.
         pricing: { promptPerMTok: 3, completionPerMTok: 15 },
+        // The peek's model id is deliberately unlisted (see below), so the
+        // catalog answers `unknown` for its modalities and P8b collapses that to
+        // text-only — which would make every image surface unpeekable. This is
+        // the documented way back (D-78g), and the same reason `--mcp` exists.
+        acceptsImages: true,
         compaction: {
           auto: false,
           triggerModes: [trigger],

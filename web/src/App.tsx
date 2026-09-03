@@ -2619,12 +2619,18 @@ function Message({
  *  a long `ls` or a stack trace shouldn't bury the conversation. Expanded it
  *  shows the full arguments and the **whole** output (the debug journal's 200-char
  *  preview is a journal concern, not a transcript one) in its own scroll box, so
- *  a wide line scrolls here instead of shoving the page sideways. */
+ *  a wide line scrolls here instead of shoving the page sideways.
+ *
+ *  Images are the exception to collapsing (P8e): a picture *is* the result, not
+ *  noise hiding behind a caret, so it shows whether or not the block is open —
+ *  and this is the surface the whole phase exists for, since the person and the
+ *  model should be looking at the same thing. */
 function ToolBlock({ entry, args }: { entry: EntryView; args?: string }) {
   const [open, setOpen] = useState(false);
   const content = entry.content ?? "";
   const stats = outputStats(content);
   const gist = summarizeArgs(args);
+  const images = entry.attachments ?? [];
   // A `write_file` call's args *are* a file (X-23) — show them as one, since
   // after the approval card is gone they are the only record of what was written.
   const file = fileArgs(entry.name, args);
@@ -2641,6 +2647,26 @@ function ToolBlock({ entry, args }: { entry: EntryView; args?: string }) {
         {entry.isError ? <span className="tool-badge">error</span> : null}
         <span className="tool-size">{stats.label}</span>
       </button>
+      {images.length > 0 ? (
+        <div className="tool-images">
+          {images.map((img, i) => (
+            // The bytes come down their own route, lazily and cached (D-78j) —
+            // the link opens the same URL full size, which is the cheapest
+            // possible "let me actually look at that".
+            <a
+              key={img.url}
+              className="tool-image"
+              href={img.url}
+              target="_blank"
+              rel="noreferrer"
+              title={`${img.name ?? img.mime} · ${formatBytes(img.bytes)}`}
+            >
+              <img src={img.url} alt={img.name ?? `attachment ${i + 1}`} loading="lazy" />
+              <span className="tool-image-cap">{img.name ?? img.mime}</span>
+            </a>
+          ))}
+        </div>
+      ) : null}
       {open ? (
         <div className="tool-body">
           {file ? (

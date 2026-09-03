@@ -106,6 +106,17 @@ export async function classifyFile(absPath: string): Promise<FileKind> {
   }
 }
 
+/**
+ * How many bytes a base64 string actually decodes to — padding subtracted, so
+ * the number matches what a `Content-Length` will say. `len * 3 / 4` alone is
+ * over by one or two on most inputs, which is fine for a "is this too big?"
+ * guess and wrong for anything the browser can check.
+ */
+export function base64Bytes(data: string): number {
+  const pad = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.floor((data.length * 3) / 4) - pad;
+}
+
 /** Human-readable size, for a refusal that says how big the thing it declined is. */
 export function humanBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

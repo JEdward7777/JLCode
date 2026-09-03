@@ -133,6 +133,10 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
       // long thread keeps the label it earned on turn one otherwise, which is
       // exactly when a label matters most.
       autoRetitle: config.autoRetitle !== false,
+      // The same one answer the native tools were built with, carried down to
+      // the bridged MCP tools, which are built once per instance and so cannot
+      // be told at construction (P8e).
+      acceptsImages,
       onAddRoot: (dir) => {
         const current = loadConfig(deps.paths);
         const existing = current.folderRoots?.[deps.cwd] ?? [];

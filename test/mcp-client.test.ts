@@ -61,7 +61,12 @@ describe("McpManager against a real stdio server", () => {
     const manager = await start(settings());
     const [status] = manager.statuses();
     expect(status!.state).toBe("connected");
-    expect(status!.tools).toEqual(["testsrv__echo", "testsrv__peek", "testsrv__touch_file"]);
+    expect(status!.tools).toEqual([
+      "testsrv__echo",
+      "testsrv__peek",
+      "testsrv__screenshot",
+      "testsrv__touch_file",
+    ]);
     expect(manager.tools().map((t) => t.name)).toEqual(status!.tools);
   });
 
@@ -173,14 +178,16 @@ describe("bridge helpers", () => {
     expect(bridgedToolName("s".repeat(40), "t".repeat(40))).toHaveLength(64);
   });
 
-  it("renders text, falls back to structured content, and names binary blocks", () => {
-    expect(renderMcpContent({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] })).toBe("a\nb");
-    expect(renderMcpContent({ content: [], structuredContent: { ok: 1 } })).toBe('{"ok":1}');
-    expect(renderMcpContent({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }] })).toMatch(
-      /\[image image\/png, ~3 bytes/,
+  it("renders text, falls back to structured content, and names non-image blocks", async () => {
+    expect((await renderMcpContent({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] })).content).toBe(
+      "a\nb",
+    );
+    expect((await renderMcpContent({ content: [], structuredContent: { ok: 1 } })).content).toBe('{"ok":1}');
+    expect((await renderMcpContent({ content: [{ type: "audio", data: "AAAA", mimeType: "audio/wav" }] })).content).toMatch(
+      /\[audio audio\/wav, ~3 bytes/,
     );
     expect(
-      renderMcpContent({ content: [{ type: "resource", resource: { uri: "file:///x", text: "body" } }] }),
+      (await renderMcpContent({ content: [{ type: "resource", resource: { uri: "file:///x", text: "body" } }] })).content,
     ).toBe("file:///x:\nbody");
   });
 });
