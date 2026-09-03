@@ -16,16 +16,34 @@ import {
   baseModelId,
   lookupWindow,
   resolveWindow,
+  parseModalities,
+  imageSupport,
   FALLBACK_CONTEXT_WINDOW,
 } from "../src/llm/models";
 
-/** A trimmed `GET /models` payload in the real shape. */
+/** A trimmed `GET /models` payload in the real shape — including the
+ *  `architecture.input_modalities` P8b reads for the image capability (D-78c),
+ *  which was in this payload all along and thrown away. `broken/no-length`
+ *  declares modalities but no window and `broken/zero-length` declares neither,
+ *  so the two maps are deliberately not the same set of ids. */
 const payload = {
   data: [
-    { id: "anthropic/claude-opus-5", context_length: 1000000 },
-    { id: "anthropic/claude-opus-5:batch", context_length: 1000000 },
-    { id: "openai/gpt-4o-mini", context_length: 128000 },
-    { id: "broken/no-length" },
+    {
+      id: "anthropic/claude-opus-5",
+      context_length: 1000000,
+      architecture: { input_modalities: ["text", "image", "file"] },
+    },
+    {
+      id: "anthropic/claude-opus-5:batch",
+      context_length: 1000000,
+      architecture: { input_modalities: ["text", "image", "file"] },
+    },
+    {
+      id: "openai/gpt-4o-mini",
+      context_length: 128000,
+      architecture: { input_modalities: ["text", "image"] },
+    },
+    { id: "broken/no-length", architecture: { input_modalities: ["text"] } },
     { id: "broken/zero-length", context_length: 0 },
   ],
 };
@@ -212,10 +230,82 @@ describe("ModelCatalog", () => {
     expect(await catalog.ensureKnown("anthropic/claude-opus-5")).toEqual({ refreshed: false });
   });
 
+  it("refetches a cache that predates modalities, then stops (P8b)", async () => {
+    // A catalog cached before P8b has every window it needs and no modalities at
+    // all. Left alone it would report the working model as text-only for a whole
+    // TTL, and images would silently not work — so a model whose modalities are
+    // unknown counts as not-known, exactly like a missing window.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ fetchedAt: new Date().toISOString(), windows: { "anthropic/claude-opus-5": 1000000 } }),
+      "utf8",
+    );
+    let calls = 0;
+    const counting = (async () => {
+      calls++;
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }) as unknown as typeof fetch;
+    const catalog = new ModelCatalog({ file, fetch: counting });
+    expect(catalog.isStale()).toBe(false);
+    expect(catalog.imageSupport("anthropic/claude-opus-5")).toBe("unknown");
+
+    await catalog.ensureKnown("anthropic/claude-opus-5");
+    expect(calls).toBe(1);
+    expect(catalog.imageSupport("anthropic/claude-opus-5")).toBe("yes");
+    // …and it is settled now, so the next ask costs nothing.
+    await catalog.ensureKnown("anthropic/claude-opus-5");
+    expect(calls).toBe(1);
+  });
+
+  it("keeps the modalities it fetched across a restart", async () => {
+    await new ModelCatalog({ file, fetch: okFetch() }).refresh();
+    const reopened = new ModelCatalog({ file, fetch: okFetch() });
+    expect(reopened.imageSupport("anthropic/claude-opus-5")).toBe("yes");
+    expect(reopened.modalitiesFor("openai/gpt-4o-mini")).toEqual(["text", "image"]);
+  });
+
   it("survives a corrupt cache file as a cold start", () => {
     fs.writeFileSync(file, "{not json", "utf8");
     const catalog = new ModelCatalog({ file, fetch: okFetch() });
     expect(catalog.isEmpty).toBe(true);
     expect(catalog.isStale()).toBe(true);
+  });
+});
+
+describe("input modalities — can this model be handed a picture? (P8b, D-78c)", () => {
+  it("keeps entries that declare input_modalities and skips the rest", () => {
+    expect(parseModalities(payload)).toEqual({
+      "anthropic/claude-opus-5": ["text", "image", "file"],
+      "anthropic/claude-opus-5:batch": ["text", "image", "file"],
+      "openai/gpt-4o-mini": ["text", "image"],
+      "broken/no-length": ["text"],
+    });
+  });
+
+  it("ignores a payload that isn't the shape we expect", () => {
+    expect(parseModalities({})).toEqual({});
+    expect(parseModalities({ data: [{ id: "x", architecture: { input_modalities: "text" } }] })).toEqual({});
+    expect(parseModalities({ data: [{ id: "x", architecture: { input_modalities: [] } }] })).toEqual({});
+  });
+
+  it("answers yes, no, and unknown — three answers, not two", () => {
+    const modalities = parseModalities(payload);
+    expect(imageSupport(modalities, "anthropic/claude-opus-5")).toBe("yes");
+    // Declared, and image is not among them: a real no.
+    expect(imageSupport(modalities, "broken/no-length")).toBe("no");
+    // Never declared. "We weren't told" is not "it can't" — treating it as a no
+    // is a caller's decision (the config override is the way back), not a fact
+    // this function may invent.
+    expect(imageSupport(modalities, "broken/zero-length")).toBe("unknown");
+    expect(imageSupport(modalities, "who/dis")).toBe("unknown");
+  });
+
+  it("falls back to the base id, so `:online` answers like the model it routes to", () => {
+    // The same miss H-06's window lookup had: `:online` is a routing modifier
+    // OpenRouter does not list, and it is one of Joshua's two presets.
+    const modalities = parseModalities(payload);
+    expect(imageSupport(modalities, "anthropic/claude-opus-5:online")).toBe("yes");
+    // …while a listed variant keeps its own answer rather than being flattened.
+    expect(imageSupport(modalities, "anthropic/claude-opus-5:batch")).toBe("yes");
   });
 });

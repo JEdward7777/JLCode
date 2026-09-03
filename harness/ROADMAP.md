@@ -91,9 +91,28 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > and **SVG stays on the text path** (it is source the model should edit, not a picture). An image
 > refusal names the format and size and says why; any other binary is refused naming its type where
 > `file-type` knows one. No wire, type or persistence change — `ToolResult` is untouched, and half
-> the new tests exist only to pin the text path byte-for-byte. **Next: P8b** (bytes to the model —
-> `ToolResult.attachments`, the `pendingImages` flush into a `user` message, `markable()`/`mark()`
-> learning parts so caching does not silently die, and `input_modalities` in the catalog).
+> the new tests exist only to pin the text path byte-for-byte.
+>
+> **P8b built 2026-09-03 — bytes to the model. 840 Tier-0/1 green, 67 files.** `ToolResult` and
+> `ToolEntry` gained `attachments`; `buildWireMessages` grew KiloCode's `pendingImages`/`flushImages`,
+> so a run of tool results flushes as **one** labelled `user` message while the `tool` messages stay
+> text-only and unbroken. `ChatMessage.content` widened to `string | ContentPart[] | null` on
+> **user only** — every other role, and the whole on-disk transcript, is untouched. `markable()`/
+> `mark()` learned parts (and mark the **last** one, so the images sit inside the cached prefix);
+> the cache *anchor* narrowed to a **typed** user turn, because the attachment message is a `user`
+> message written mid-turn that would otherwise steal it. `ModelCatalog` now keeps
+> `architecture.input_modalities` beside `context_length` and answers `yes`/`no`/**`unknown`**; the
+> session factory collapses `unknown` to text-only, with `ModelConfig.acceptsImages` as the
+> hand-editable way back, and `read_file` uses that one flag **twice** — what its description
+> advertises and what it does — so a model that cannot see is never told it can. Six calls the
+> sizing hadn't covered are recorded in **D-78g** (the 5 MB cap, per-image labels, the anchor, the
+> modality-aware `ensureKnown`, the `unknown` collapse, and `entryView` deliberately not shipping
+> blobs). Driven for real against a 240 KB screenshot through the built `dist`, not a fixture.
+> **Next: P8c** — the bytes stop bloating the transcript. Until it lands an attachment is inline
+> base64 in an **append-only** JSONL that `load()` re-parses on every resume, and the 5 MB cap is
+> all that bounds it. P8d then strips media from the replayed window on compaction and on
+> over-window recovery — note `truncateToolOutputsForSummary` cannot shrink an image today, so an
+> over-window *caused by* media fails loudly rather than recovering.
 >
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
@@ -1468,7 +1487,7 @@ Bottom-up as ever: **P8a is a strict improvement with no wire change at all** an
 - **Also driven for real**, not only against fixtures: the built `dist/tools/media.js` classifies
   KiloCode's own 200 KB `logo.png` as `image/png` and this repo's `.ts`/`.json`/`.md` as text.
 
-### P8b — Bytes to the model (Tier-0/1)
+### P8b — Bytes to the model (Tier-0/1) ✅ done (2026-09-03)
 - **`ToolResult` gains `attachments?: {mime, data}[]`** — additive; every existing tool and every
   consumer of `.content` is unchanged.
 - **`ChatMessage.content` widens to `string | ContentPart[] | null`, used on `user` only (D-78f).**
@@ -1485,7 +1504,32 @@ Bottom-up as ever: **P8a is a strict improvement with no wire change at all** an
   image branch advertised to it, so the failure is *absence*, not a 400.
 - **Done when:** a fake-driver session reads a PNG and the built request carries a text-only
   `tool` message plus a `user` message holding `data:image/png;base64,…`; a text-only model gets
-  neither; a cache breakpoint still lands on the turn.
+  neither; a cache breakpoint still lands on the turn. ✅
+- **Built as planned, plus six calls the sizing didn't cover (D-78g):** a **5 MB cap**
+  (`MAX_IMAGE_BYTES`) refusing rather than sending; the flushed message carrying a framing sentence
+  and a `[n] <path> (<mime>)` label before each image, because three parallel reads otherwise hand
+  the model three unlabelled pictures; the cache **anchor** narrowed to a *typed* user turn, since
+  the attachment message is a `user` message JLCode writes mid-turn and would have stolen the
+  anchor; `ensureKnown` counting unknown modalities as not-known, so a pre-P8b catalog refetches
+  once instead of reading text-only for a TTL; `unknown` capability collapsing to text-only with a
+  hand-editable `ModelConfig.acceptsImages` as the way back; and `entryView` **not** shipping
+  attachments, so no tab gets a blob it cannot render until P8e.
+- **Verified:** +25 tests (`images-p8b.test.ts`). The two that matter guard *silent* failures:
+  a parts message still gets its breakpoints (the old `typeof content === "string"` test would have
+  placed **zero**, no error — D-58's measured 12.3x in a new hat), on the **last** part so the
+  images sit inside the cached prefix; and a text-only conversation builds byte-for-byte the request
+  it always did, which is what keeps the committed Tier-3 replay cache valid. Both were
+  mutation-checked — reverting `markable()` fails 3, dropping the assistant-side flush fails 1.
+  The rest pin the wire shape: three reads → three `tool` messages and **one** `user` message, the
+  flush landing before the next assistant *and* the next user turn, compaction dropping unflushed
+  bytes, and the image surviving into the **next** turn (the wire is rebuilt from the tree, so an
+  attachment kept only on the live `ToolResult` would vanish while the model kept answering as if it
+  could see). **840 Tier-0/1 green, 67 files.**
+- **Also driven for real** through the built `dist`, against a 240 KB screenshot from
+  `harness/visual/` rather than a fixture: `tool` message text-only, one `user` message, one
+  327,506-char data URI, and not a replacement character in the request.
+- **No browser peek:** the server DTO drops attachments and nothing new is drawn — the transcript
+  shows the tool's sentence and no picture until P8e, which is the slice that opens `entryView`.
 
 ### P8c — The bytes stop bloating the transcript (Tier-0/1)
 - **Content-addressed sidecar (D-78d):** blobs in a sharded sha256 store (the `LlmCache.pathFor`

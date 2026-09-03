@@ -1,7 +1,7 @@
 /** A registry of tools: name → Tool, and the ToolDef[] advertised to the model. */
 import type { ToolDef } from "../llm/types.js";
 import type { Tool } from "./types.js";
-import { fileTools } from "./file-tools.js";
+import { fileTools, type FileToolsOptions } from "./file-tools.js";
 import { runCommandTool, type ShellToolOptions } from "./shell-tool.js";
 import { todoTools } from "./todo-tools.js";
 
@@ -28,12 +28,14 @@ export class ToolRegistry {
 /**
  * The default native tool set: file tools + shell + the shared todo list.
  *
- * `options` reaches `run_command` only, and only to state the configured
- * watchdog interval in its description (X-33). It is optional because every
- * caller that does not care — tests, bare embeddings — should get the same
- * 30-minute default the Session arms, and stating a number the session will not
- * honour is the one outcome worth ruling out.
+ * `options` carries the two things a tool can only learn from the session that
+ * built it: the configured watchdog interval, which `run_command` states in its
+ * description (X-33), and whether the model accepts images, which `read_file`
+ * both advertises and acts on (P8b). Both are optional because every caller that
+ * does not care — tests, bare embeddings — should get the conservative default:
+ * the 30-minute watchdog the Session arms, and no images. Stating a capability
+ * the session will not honour is the one outcome worth ruling out.
  */
-export function defaultTools(options: ShellToolOptions = {}): Tool[] {
-  return [...fileTools(), runCommandTool(options), ...todoTools()];
+export function defaultTools(options: ShellToolOptions & FileToolsOptions = {}): Tool[] {
+  return [...fileTools(options), runCommandTool(options), ...todoTools()];
 }

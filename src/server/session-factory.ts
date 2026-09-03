@@ -15,7 +15,7 @@ import { readWorkspaceInstructions, renderProjectInstructions } from "../workspa
 import type { ModelConfig } from "../config/types.js";
 import type { JlcodePaths } from "../paths.js";
 import type { LlmDriver } from "../llm/types.js";
-import type { ModelCatalog, WindowSource } from "../llm/models.js";
+import type { ImageSupport, ModelCatalog, WindowSource } from "../llm/models.js";
 import { Session } from "../session/session.js";
 import { ToolRegistry, defaultTools } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
@@ -42,6 +42,24 @@ export interface WindowResolution {
 }
 
 /**
+ * Whether this session may hand the model a picture (P8b, D-78c).
+ *
+ * The config wins when it says anything — the catalog can lag a model, and this
+ * is the only way back from a wrong answer. Otherwise the catalog decides, and
+ * an `"unknown"` model is treated as text-only: advertising a capability the
+ * provider will 400 on costs a turn mid-task, while withholding one costs a
+ * refusal that *names the reason*, which is the failure a person can act on.
+ */
+export function resolveImages(
+  config: ModelConfig,
+  catalog: ModelCatalog,
+): { acceptsImages: boolean; support: ImageSupport } {
+  const support = catalog.imageSupport(config.model);
+  if (config.acceptsImages !== undefined) return { acceptsImages: config.acceptsImages, support };
+  return { acceptsImages: support === "yes", support };
+}
+
+/**
  * Settle the windows a session runs under. The working model's window comes
  * from the config override, else the catalog, else a labelled fallback — it is
  * never undefined, which is the point of H-06. The compactor's window is only
@@ -65,6 +83,10 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
     const cfg = loadConfig(deps.paths);
     const roots = [deps.cwd, ...(cfg.folderRoots?.[deps.cwd] ?? [])];
     const windows = resolveWindows(config, deps.catalog);
+    // Can this model see? Settled here, once, and handed to `read_file` — which
+    // uses it twice, for what the description advertises and for what the tool
+    // actually does. Those two must not be able to disagree (X-33's lesson).
+    const { acceptsImages } = resolveImages(config, deps.catalog);
     // The workspace's own instructions (X-15), read **here** and exactly once
     // per session — the same reason the module comment gives: the system prompt
     // is the cached prefix, so this read must not be per turn. Doing it per
@@ -85,7 +107,11 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
     return new Session({
       config,
       driver: deps.makeDriver(config),
-      tools: new ToolRegistry([...defaultTools({ watchdogMinutes }), askUserTool(), ...deps.mcpTools()]),
+      tools: new ToolRegistry([
+        ...defaultTools({ watchdogMinutes, acceptsImages }),
+        askUserTool(),
+        ...deps.mcpTools(),
+      ]),
       watchdogMs: watchdogMinutes * 60_000,
       sandbox: new Sandbox(roots),
       // Live-switchable gate (D-07/D-08): rebuilt when the user changes

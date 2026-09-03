@@ -36,9 +36,24 @@ export const FALLBACK_CONTEXT_WINDOW = 128_000;
 /** Model id → context window in tokens. */
 export type ModelWindows = Record<string, number>;
 
+/**
+ * Model id → what it accepts as *input* (`["text","image","file"]`), from the
+ * same `GET /models` payload the windows come from (D-78c).
+ *
+ * X-37 assumed this was a fetch JLCode would have to add. It was already there
+ * and being thrown away: `parseModels` read `context_length` off each entry and
+ * dropped everything else, `architecture.input_modalities` included. So the
+ * capability check that makes an image refusal honest costs one more field on a
+ * request we already make once a day.
+ */
+export type ModelModalities = Record<string, string[]>;
+
 interface CatalogFile {
   fetchedAt: string;
   windows: ModelWindows;
+  /** Absent in a cache written before P8b — read as "nothing known", which is
+   *  what `ImageSupport` reports as `"unknown"` rather than as `"no"`. */
+  modalities?: ModelModalities;
 }
 
 /** Where a resolved window actually came from — the honesty half of the fix. */
@@ -75,6 +90,42 @@ export function parseModels(payload: unknown): ModelWindows {
     windows[model.id] = length;
   }
   return windows;
+}
+
+/** Pull `id → architecture.input_modalities` out of a `GET /models` payload.
+ *  An entry that doesn't declare them is skipped rather than recorded as an
+ *  empty list — "we were not told" and "it takes nothing" are different answers,
+ *  and only the second may be reported as a `no`. */
+export function parseModalities(payload: unknown): ModelModalities {
+  const data = (payload as { data?: unknown })?.data;
+  if (!Array.isArray(data)) return {};
+  const modalities: ModelModalities = {};
+  for (const entry of data) {
+    const model = entry as { id?: unknown; architecture?: { input_modalities?: unknown } };
+    if (typeof model.id !== "string") continue;
+    const inputs = model.architecture?.input_modalities;
+    if (!Array.isArray(inputs)) continue;
+    const named = inputs.filter((m): m is string => typeof m === "string");
+    if (named.length === 0) continue;
+    modalities[model.id] = named;
+  }
+  return modalities;
+}
+
+/**
+ * Whether a model can be handed an image, as three answers rather than two
+ * (P8b). `"unknown"` is the one that earns its keep: a model missing from the
+ * catalog, or a catalog cached before P8b, is not evidence that it is text-only,
+ * and silently treating it as such is how a capability quietly stops working —
+ * the H-06 shape. Callers decide what to do with a `"unknown"`; the config
+ * override (`acceptsImages`) is what settles it by hand.
+ */
+export type ImageSupport = "yes" | "no" | "unknown";
+
+export function imageSupport(modalities: ModelModalities, modelId: string): ImageSupport {
+  const inputs = modalities[modelId] ?? modalities[baseModelId(modelId)];
+  if (inputs === undefined) return "unknown";
+  return inputs.includes("image") ? "yes" : "no";
 }
 
 /**
@@ -131,6 +182,7 @@ export interface ModelCatalogOptions {
  */
 export class ModelCatalog {
   private windows: ModelWindows = {};
+  private modalities: ModelModalities = {};
   private fetchedAt = 0;
   private readonly file: string;
   private readonly doFetch: typeof fetch;
@@ -156,6 +208,7 @@ export class ModelCatalog {
       const cached = JSON.parse(readFileSync(this.file, "utf8")) as CatalogFile;
       if (cached && typeof cached.fetchedAt === "string" && cached.windows) {
         this.windows = cached.windows;
+        this.modalities = cached.modalities ?? {};
         this.fetchedAt = Date.parse(cached.fetchedAt) || 0;
       }
     } catch {
@@ -164,7 +217,11 @@ export class ModelCatalog {
   }
 
   private writeCache(): void {
-    const body: CatalogFile = { fetchedAt: new Date(this.now()).toISOString(), windows: this.windows };
+    const body: CatalogFile = {
+      fetchedAt: new Date(this.now()).toISOString(),
+      windows: this.windows,
+      modalities: this.modalities,
+    };
     try {
       mkdirSync(path.dirname(this.file), { recursive: true });
       writeFileSync(this.file, JSON.stringify(body), "utf8");
@@ -200,11 +257,17 @@ export class ModelCatalog {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
       if (!res.ok) return { refreshed: false, error: `HTTP ${res.status}` };
-      const windows = parseModels(await res.json());
+      const payload = await res.json();
+      const windows = parseModels(payload);
       // An empty parse means the shape changed under us; keeping the stale
       // catalog is strictly better than replacing it with nothing.
       if (Object.keys(windows).length === 0) return { refreshed: false, error: "no models in response" };
       this.windows = windows;
+      // Modalities ride the same parse. Not gated on being non-empty: windows
+      // are what make the catalog usable at all, and an empty modality map just
+      // means every model answers `"unknown"` — which is the honest answer, and
+      // the one the config override exists for.
+      this.modalities = parseModalities(payload);
       this.fetchedAt = this.now();
       this.writeCache();
       return { refreshed: true };
@@ -217,6 +280,16 @@ export class ModelCatalog {
     return lookupWindow(this.windows, modelId);
   }
 
+  /** What this model accepts as input, when the catalog said (P8b, D-78c). */
+  modalitiesFor(modelId: string): string[] | undefined {
+    return this.modalities[modelId] ?? this.modalities[baseModelId(modelId)];
+  }
+
+  /** Can we hand this model a picture? Three answers — see `ImageSupport`. */
+  imageSupport(modelId: string): ImageSupport {
+    return imageSupport(this.modalities, modelId);
+  }
+
   /**
    * Make sure *this* model is known, refetching out of turn if it isn't. The
    * TTL alone is not enough: a model released after the cache was written stays
@@ -227,7 +300,12 @@ export class ModelCatalog {
    */
   async ensureKnown(modelId: string): Promise<{ refreshed: boolean; error?: string }> {
     const stale = this.isStale();
-    if (!stale && this.windowFor(modelId) !== undefined) return { refreshed: false };
+    // Modalities count as "known" alongside the window (P8b): a catalog cached
+    // before P8b has every window it needs and no modalities at all, so without
+    // this the model reads as text-only for a whole TTL and images silently
+    // don't work — the same shape as the brand-new-model miss above.
+    const known = this.windowFor(modelId) !== undefined && this.modalitiesFor(modelId) !== undefined;
+    if (!stale && known) return { refreshed: false };
     return this.refresh(true);
   }
 

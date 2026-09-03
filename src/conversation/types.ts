@@ -37,12 +37,41 @@ export interface AssistantEntry extends BaseEntry {
   usage?: Usage;
 }
 
+/**
+ * Bytes a tool produced that are not text — today an image a vision model can
+ * look at (P8b, D-78a). It rides on the *entry* rather than only on the live
+ * `ToolResult` because the wire is rebuilt from the tree on every turn, resume,
+ * fork and rewind: an attachment the transcript did not keep would vanish from
+ * the replayed window the moment the process restarted, and the model would
+ * answer about a picture it can no longer see.
+ *
+ * `data` is base64 of the raw bytes, inline. **P8c moves it to a
+ * content-addressed sidecar** (`{sha, mime, bytes}`, D-78d) — `ConversationStore.load()`
+ * reads and parses the whole log on every resume, so an inline blob is a cost
+ * D-37's append-only rule never lets you take back. Until then, `read_file`'s
+ * size cap is what keeps the exposure bounded.
+ */
+export interface Attachment {
+  /** One of `media.ts`'s `IMAGE_MIMES` — what the `data:` URI declares. */
+  mime: string;
+  /** Base64 of the raw bytes, without the `data:` prefix. */
+  data: string;
+  /** Where it came from, as the user asked for it — the label the wire's text
+   *  part and the browser both show. */
+  name?: string;
+}
+
 export interface ToolEntry extends BaseEntry {
   type: "tool";
   toolCallId: string;
   name: string;
   content: string;
   isError?: boolean;
+  /** Non-text output (P8b). The tool message itself stays text — the wire
+   *  forbids anything else (D-78a) — and `buildWireMessages` flushes these into
+   *  a following `user` message. Absent on every entry ever written before this,
+   *  which is exactly the old shape, so no migration. */
+  attachments?: Attachment[];
 }
 
 export interface CompactionEntry extends BaseEntry {

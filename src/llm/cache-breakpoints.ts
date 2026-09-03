@@ -10,8 +10,10 @@
  * Placement lives *here*, at the wire boundary, and deliberately not in
  * `buildWireMessages`: `requestSignature` (D-24) hashes `req.messages`, so
  * markers in the transcript would change every local cache key and throw away a
- * test cache we paid real money for. The transcript stays plain strings; the
- * marker is a wire detail.
+ * test cache we paid real money for. The transcript carries no `cache_control`;
+ * the marker is a wire detail. (Since P8b the transcript *can* carry content
+ * parts — an attachment message, D-78f — so "plain strings" is no longer the
+ * distinction; "no marker" still is.)
  *
  * Wire format is a *content-part* field, not a message field. OpenRouter passes
  * `cache_control` through on individual content blocks:
@@ -24,18 +26,19 @@
  * is exactly the bug this file fixes: JLCode declared the field, never set it,
  * and would have had it ignored anyway.
  */
-import type { ChatMessage } from "./types.js";
+import type { ChatMessage, ContentPart } from "./types.js";
 
-/** A text content part, the only part shape we emit. */
-export interface TextPart {
-  type: "text";
-  text: string;
-  cache_control?: { type: "ephemeral" };
-}
+/**
+ * A content part as it goes on the wire: a transcript part (D-78f) plus the
+ * marker, which exists only out here. A `cache_control` in the transcript would
+ * change `requestSignature` and throw away a test cache we paid real money for —
+ * the reason placement lives in this file at all.
+ */
+export type WirePart = ContentPart & { cache_control?: { type: "ephemeral" } };
 
 /** A message as it goes on the wire: content may be parts once we mark it. */
 export type WireMessage = Omit<ChatMessage, "content"> & {
-  content: string | TextPart[] | null;
+  content: string | WirePart[] | null;
 };
 
 /**
@@ -59,21 +62,34 @@ export function supportsCacheControl(model: string): boolean {
 }
 
 /**
- * A message can carry a marker only if it has real string content. Assistant
- * turns that are pure tool calls have `content: null`, and a `tool` result whose
- * content is empty gives the provider nothing to hash — marking either is at
- * best a wasted breakpoint.
+ * A message can carry a marker only if it has real content. Assistant turns that
+ * are pure tool calls have `content: null`, and a `tool` result whose content is
+ * empty gives the provider nothing to hash — marking either is at best a wasted
+ * breakpoint.
+ *
+ * **Parts count (P8b, D-78f).** This test used to be `typeof content === "string"`,
+ * which was true of every message JLCode had ever built — until an attachment
+ * message arrived. It would have placed **zero** breakpoints on a request
+ * carrying an image, with no error and no way to notice: D-58's silent 12.3x
+ * wearing a new hat.
  */
 function markable(msg: ChatMessage): boolean {
-  return typeof msg.content === "string" && msg.content.length > 0;
+  if (typeof msg.content === "string") return msg.content.length > 0;
+  return Array.isArray(msg.content) && msg.content.length > 0;
 }
 
+/**
+ * A breakpoint caches the prefix **up to and including the block it sits on**,
+ * so on a multi-part message it goes on the *last* part — marking the leading
+ * text part would leave the images that follow it outside the cached prefix,
+ * which is the expensive half of the message.
+ */
 function mark(msg: ChatMessage): WireMessage {
   const { content, ...rest } = msg;
-  return {
-    ...rest,
-    content: [{ type: "text", text: content as string, cache_control: { type: "ephemeral" } }],
-  };
+  const parts: WirePart[] =
+    typeof content === "string" ? [{ type: "text", text: content }] : [...(content as ContentPart[])];
+  parts[parts.length - 1] = { ...parts[parts.length - 1]!, cache_control: { type: "ephemeral" } };
+  return { ...rest, content: parts };
 }
 
 function plain(msg: ChatMessage): WireMessage {
@@ -110,10 +126,16 @@ export function applyCacheBreakpoints(messages: ChatMessage[], model: string): W
   // turn ends with a run of adjacent `tool` results, so that rule puts the anchor
   // one slot from the write point, where it covers a near-identical prefix and
   // buys nothing. A user message is where a turn actually starts, so the anchor
-  // stays a genuinely distinct read point as the turn grows.
+  // stays a genuinely distinct read point as the turn grows — which is why the
+  // test here is for a *typed* turn, not merely a markable one. The attachment
+  // message (P8b) is a `user` message that starts no turn: it sits mid-turn,
+  // right after the tool results whose images it carries, so it would land the
+  // anchor one slot from the write point again. A turn the person typed is a
+  // bare string; parts mean JLCode wrote it.
   let anchor = -1;
   for (let i = writePoint - 1; i >= 1; i--) {
-    if (messages[i]!.role === "user" && markable(messages[i]!)) {
+    const msg = messages[i]!;
+    if (msg.role === "user" && typeof msg.content === "string" && msg.content.length > 0) {
       anchor = i;
       break;
     }

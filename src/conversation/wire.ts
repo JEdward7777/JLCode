@@ -13,8 +13,8 @@
  * Deliberately **not** in the system message: a date there would re-render every
  * turn and invalidate the whole cached prefix — the defect D-58 fixed at 12.3x.
  */
-import type { ChatMessage } from "../llm/types.js";
-import type { Conversation, Entry } from "./types.js";
+import type { ChatMessage, ContentPart } from "../llm/types.js";
+import type { Attachment, Conversation, Entry } from "./types.js";
 import { pathToLeaf } from "./tree.js";
 
 export interface WireOptions {
@@ -143,6 +143,39 @@ export function turnSections(entry: Entry, timeZone?: string): EnvSection[] {
   return time ? [time] : [];
 }
 
+/**
+ * The `user` message that carries a run of tool attachments (P8b, D-78a).
+ *
+ * It exists because the wire will not take the bytes where they belong: an
+ * `image_url` part inside a `role:"tool"` message is rejected outright, so the
+ * tool answers its `tool_call_id` with text and the picture arrives *next*, in
+ * the one role that accepts parts. That is a seam the model has to be told
+ * about, or it reads a stray image with no idea which of the three files it just
+ * asked for this is — hence a label part before each image rather than
+ * KiloCode's bare `content: pendingImages`.
+ *
+ * Text first is OpenRouter's own recommendation for mixed content. The whole
+ * message is a pure function of the entries, so it renders byte-identically on
+ * every later turn and the cached prefix (D-26) survives.
+ */
+export function attachmentsMessage(attachments: Attachment[]): ChatMessage {
+  const parts: ContentPart[] = [
+    {
+      type: "text",
+      text:
+        attachments.length === 1
+          ? "The tool result above produced an image. Images cannot be returned inside a tool message, so it is attached here:"
+          : `The tool results above produced ${attachments.length} images. Images cannot be returned inside a tool message, so they are attached here, in order:`,
+    },
+  ];
+  attachments.forEach((att, i) => {
+    const label = att.name ?? `attachment ${i + 1}`;
+    parts.push({ type: "text", text: `[${i + 1}] ${label} (${att.mime})` });
+    parts.push({ type: "image_url", image_url: { url: `data:${att.mime};base64,${att.data}` } });
+  });
+  return { role: "user", content: parts };
+}
+
 export function buildWireMessages(conv: Conversation, options: WireOptions = {}): ChatMessage[] {
   const system = options.system?.trim();
   const path = pathToLeaf(conv, options.leafId ?? conv.activeLeaf);
@@ -154,23 +187,40 @@ export function buildWireMessages(conv: Conversation, options: WireOptions = {})
   // always stands for everything from the root of the branch.
   const branchStart = path[0]?.ts;
   let messages: ChatMessage[] = [];
+  // Attachments accumulate across a run of adjacent tool results and flush as
+  // **one** user message before the next non-tool message (KiloCode's
+  // `pendingImages`/`flushImages`). Three parallel screenshot reads therefore
+  // make three tool messages and one user message, not three interleaved pairs —
+  // which matters because every `tool` message must sit unbroken after the
+  // assistant turn that called it.
+  let pending: Attachment[] = [];
+  const flush = () => {
+    if (pending.length === 0) return;
+    messages.push(attachmentsMessage(pending));
+    pending = [];
+  };
 
   for (const entry of path) {
     switch (entry.type) {
       case "compaction": {
-        // Reset: everything above is summarized away; keep only the summary.
+        // Reset: everything above is summarized away; keep only the summary —
+        // including any attachment that had not flushed yet, which belongs to a
+        // turn that no longer exists.
+        pending = [];
         const summary = `[Summary of the earlier conversation]\n${entry.summary}`;
         const span = stamps && branchStart ? summarySpanSection(branchStart, entry.ts, tz) : undefined;
         messages = [{ role: "user", content: span ? withEnvironmentDetails(summary, [span]) : summary }];
         break;
       }
       case "user":
+        flush();
         messages.push({
           role: "user",
           content: stamps ? withEnvironmentDetails(entry.text, turnSections(entry, tz)) : entry.text,
         });
         break;
       case "assistant": {
+        flush();
         const msg: ChatMessage = { role: "assistant", content: entry.text === "" ? null : entry.text };
         if (entry.toolCalls && entry.toolCalls.length > 0) msg.tool_calls = entry.toolCalls;
         if (entry.reasoning !== undefined) msg.reasoning_details = entry.reasoning;
@@ -179,9 +229,11 @@ export function buildWireMessages(conv: Conversation, options: WireOptions = {})
       }
       case "tool":
         messages.push({ role: "tool", tool_call_id: entry.toolCallId, name: entry.name, content: entry.content });
+        if (entry.attachments && entry.attachments.length > 0) pending.push(...entry.attachments);
         break;
     }
   }
+  flush();
   return [...systemMsg, ...messages];
 }
 

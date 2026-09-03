@@ -63,6 +63,8 @@ export type JournalRecord =
       name: string;
       argsPreview: string;
       contentPreview: string;
+      /** Named, not carried (P8b) — `shot.png (image/png)`. */
+      attachments?: string[];
       isError: boolean;
       entryId?: string;
     };

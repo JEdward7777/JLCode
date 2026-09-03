@@ -29,9 +29,37 @@ export interface Usage {
   costUsd?: number;
 }
 
+/**
+ * A piece of a multi-part message body. Only `user` messages ever carry parts
+ * (D-78f), and only because they have to: the OpenAI/OpenRouter wire **rejects**
+ * image content inside a `role:"tool"` message ("tool message content only
+ * supports text content"), so a tool that reads an image answers its
+ * `tool_call_id` with text and the bytes ride in a following `user` message.
+ * That one fact is what keeps `system`/`assistant`/`tool` content a bare string
+ * everywhere — including on disk (D-37) — instead of parts end to end.
+ *
+ * `image_url.url` is a `data:` URI (`data:image/png;base64,…`); JLCode never
+ * sends an http URL, because the model fetching a URL is a different trust story
+ * than us handing it bytes we already read through the fence.
+ */
+export interface TextPart {
+  type: "text";
+  text: string;
+}
+
+export interface ImagePart {
+  type: "image_url";
+  image_url: { url: string };
+}
+
+export type ContentPart = TextPart | ImagePart;
+
 export interface ChatMessage {
   role: Role;
-  content: string | null;
+  /** Parts only on `user`, and only for attachments (D-78f). Everything else —
+   *  and every text-only user turn — stays a bare string, which is also what
+   *  keeps `requestSignature` (D-24) hashing the same bytes it always did. */
+  content: string | ContentPart[] | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;

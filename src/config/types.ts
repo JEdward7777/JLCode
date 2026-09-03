@@ -121,6 +121,13 @@ export interface ModelConfig {
    *  live prefix, D-29/D-26) and rare (roughly log2(turns) over a thread's
    *  life), but not free. Auto-*titling* itself stays on either way. */
   autoRetitle?: boolean;
+  /** Override the catalog's answer to "can this model see images?" (P8b, D-78c).
+   *  Absent = ask OpenRouter's `architecture.input_modalities`, and treat an
+   *  unknown model as text-only. Hand-edited, like every field the CLI has no
+   *  flag for (D-68 keeps unknown keys); it exists for the same reason
+   *  `compaction.contextLength` does — a catalog can lag a model, and a
+   *  capability that can only be wrong in one direction needs a way back. */
+  acceptsImages?: boolean;
   compaction?: CompactionSettings;
   /** Per-turn environment details (X-25). Absent = defaults, i.e. stamped. */
   environment?: EnvironmentSettings;

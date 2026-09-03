@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { editTools, renderDiff } from "./edit-tools.js";
-import { classifyFile, humanBytes, looksBinary } from "./media.js";
+import { MAX_IMAGE_BYTES, classifyFile, humanBytes, looksBinary } from "./media.js";
 import type { FilePreview, Tool, ToolContext, ToolPreview, ToolResult } from "./types.js";
 
 const MAX_READ_CHARS = 100_000;
@@ -152,92 +152,130 @@ function previewSource(abs: string): { text: string; bytes: number } | { error: 
   }
 }
 
-const readFile: Tool = {
-  name: "read_file",
-  kind: "read",
-  mutates: false,
-  pathArgs: ["path"],
-  def: {
-    type: "function",
-    function: {
-      name: "read_file",
-      description:
-        "Read a UTF-8 text file within the workspace. Large files are capped, so use 'offset' and 'limit' " +
-        "to page through one that doesn't fit — the reply says how many lines the file has and where the " +
-        "returned window sits, so you can always reach the tail.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Workspace-relative or absolute path" },
-          offset: { type: "integer", description: "1-based line number to start at (default 1)" },
-          limit: { type: "integer", description: "How many lines to return (default: as many as fit)" },
+/**
+ * What the file tools need to know about the model on the other end (P8b).
+ *
+ * `acceptsImages` is settled once per session from the catalog's
+ * `architecture.input_modalities` (D-78c) and reaches the tool in two places
+ * that must agree: whether the description *advertises* images, and whether the
+ * image branch actually runs. A model that cannot see images is never told it
+ * can, so the failure is **absence** rather than a 400 mid-turn — the same rule
+ * X-33 applied to the watchdog interval, for the same reason.
+ */
+export interface FileToolsOptions {
+  acceptsImages?: boolean;
+}
+
+function readFileTool(options: FileToolsOptions): Tool {
+  const acceptsImages = options.acceptsImages === true;
+  return {
+    name: "read_file",
+    kind: "read",
+    mutates: false,
+    pathArgs: ["path"],
+    def: {
+      type: "function",
+      function: {
+        name: "read_file",
+        description:
+          "Read a UTF-8 text file within the workspace. Large files are capped, so use 'offset' and 'limit' " +
+          "to page through one that doesn't fit — the reply says how many lines the file has and where the " +
+          "returned window sits, so you can always reach the tail." +
+          (acceptsImages
+            ? " PNG, JPEG, GIF and WebP files come back as pictures you can actually look at: this tool's " +
+              "reply names the file, and the image itself is attached to the message right after it."
+            : ""),
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Workspace-relative or absolute path" },
+            offset: { type: "integer", description: "1-based line number to start at (default 1)" },
+            limit: { type: "integer", description: "How many lines to return (default: as many as fit)" },
+          },
+          required: ["path"],
         },
-        required: ["path"],
       },
     },
-  },
-  async execute(args, ctx) {
-    const p = reqStr(args, "path");
-    if (p === undefined) return err("read_file requires a string 'path'");
-    const offset = reqInt(args, "offset");
-    const limit = reqInt(args, "limit");
-    if (offset !== undefined && offset < 1) return err("read_file 'offset' is a 1-based line number");
-    if (limit !== undefined && limit < 1) return err("read_file 'limit' must be at least 1");
-    const r = ctx.sandbox.resolve(p);
-    if (!r.ok) return err(r.reason);
-    try {
-      // What is this, actually? Decided from a sample before any decode (P8a,
-      // D-78b), because decoding first is how a `.png` used to come back as
-      // U+FFFD mush through `ok()` — a successful read of nothing.
-      const kind = await classifyFile(r.path);
-      if (kind.kind === "image") {
-        const size = humanBytes(fs.statSync(r.path).size);
-        return err(
-          `${p} is a ${kind.ext.toUpperCase()} image (${kind.mime}, ${size}). read_file returns text, ` +
-            `and JLCode cannot yet hand an image to the model — so there is nothing useful to return ` +
-            `rather than a page of replacement characters.`,
-        );
-      }
-      if (kind.kind === "binary") {
-        const named = kind.mime ? `a binary file (${kind.mime})` : "not UTF-8 text";
-        const size = humanBytes(fs.statSync(r.path).size);
-        return err(`${p} is ${named}, ${size} — read_file only reads text.`);
-      }
-
-      const data = fs.readFileSync(r.path, "utf8");
-      // Whole file, unwindowed, within the cap: hand back exactly what's on disk.
-      if (offset === undefined && limit === undefined && data.length <= MAX_READ_CHARS) return ok(data);
-
-      const lines = data.split("\n");
-      const total = lines.length;
-      const from = (offset ?? 1) - 1;
-      if (from >= total) return err(`offset ${offset} is past the end of ${p} (${total} lines)`);
-      const window = lines.slice(from, limit === undefined ? undefined : from + limit);
-
-      // The char cap still applies to whatever window was asked for — a 'limit'
-      // of 100000 lines must not blow the context (D-53: the old unpageable cap
-      // is what left the agent anchoring into a file whose tail it never saw).
-      let text = window.join("\n");
-      let shownLines = window.length;
-      if (text.length > MAX_READ_CHARS) {
-        const kept: string[] = [];
-        let size = 0;
-        for (const line of window) {
-          if (size + line.length + 1 > MAX_READ_CHARS) break;
-          kept.push(line);
-          size += line.length + 1;
+    async execute(args, ctx) {
+      const p = reqStr(args, "path");
+      if (p === undefined) return err("read_file requires a string 'path'");
+      const offset = reqInt(args, "offset");
+      const limit = reqInt(args, "limit");
+      if (offset !== undefined && offset < 1) return err("read_file 'offset' is a 1-based line number");
+      if (limit !== undefined && limit < 1) return err("read_file 'limit' must be at least 1");
+      const r = ctx.sandbox.resolve(p);
+      if (!r.ok) return err(r.reason);
+      try {
+        // What is this, actually? Decided from a sample before any decode (P8a,
+        // D-78b), because decoding first is how a `.png` used to come back as
+        // U+FFFD mush through `ok()` — a successful read of nothing.
+        const kind = await classifyFile(r.path);
+        if (kind.kind === "image") {
+          const bytes = fs.statSync(r.path).size;
+          const what = `${kind.ext.toUpperCase()} image (${kind.mime}, ${humanBytes(bytes)})`;
+          // Not advertised → not attempted. The refusal names the model rather
+          // than blaming the file, because the file is fine (D-78c).
+          if (!acceptsImages) {
+            return err(
+              `${p} is a ${what}, and this conversation's model does not accept images — so there is ` +
+                `nothing useful to return rather than a page of replacement characters.`,
+            );
+          }
+          if (bytes > MAX_IMAGE_BYTES) {
+            return err(
+              `${p} is a ${what}, over the ${humanBytes(MAX_IMAGE_BYTES)} an image may be to go to the ` +
+                `model. Nothing was sent.`,
+            );
+          }
+          // Text answers the tool_call_id; the bytes ride in the user message the
+          // wire builder flushes after it, because the wire forbids image content
+          // in a tool message (D-78a).
+          return {
+            content: `${p} is a ${what}. The image itself is attached to the message after this result.`,
+            attachments: [{ mime: kind.mime, data: fs.readFileSync(r.path).toString("base64"), name: p }],
+          };
         }
-        text = kept.join("\n");
-        shownLines = kept.length;
+        if (kind.kind === "binary") {
+          const named = kind.mime ? `a binary file (${kind.mime})` : "not UTF-8 text";
+          const size = humanBytes(fs.statSync(r.path).size);
+          return err(`${p} is ${named}, ${size} — read_file only reads text.`);
+        }
+
+        const data = fs.readFileSync(r.path, "utf8");
+        // Whole file, unwindowed, within the cap: hand back exactly what's on disk.
+        if (offset === undefined && limit === undefined && data.length <= MAX_READ_CHARS) return ok(data);
+
+        const lines = data.split("\n");
+        const total = lines.length;
+        const from = (offset ?? 1) - 1;
+        if (from >= total) return err(`offset ${offset} is past the end of ${p} (${total} lines)`);
+        const window = lines.slice(from, limit === undefined ? undefined : from + limit);
+
+        // The char cap still applies to whatever window was asked for — a 'limit'
+        // of 100000 lines must not blow the context (D-53: the old unpageable cap
+        // is what left the agent anchoring into a file whose tail it never saw).
+        let text = window.join("\n");
+        let shownLines = window.length;
+        if (text.length > MAX_READ_CHARS) {
+          const kept: string[] = [];
+          let size = 0;
+          for (const line of window) {
+            if (size + line.length + 1 > MAX_READ_CHARS) break;
+            kept.push(line);
+            size += line.length + 1;
+          }
+          text = kept.join("\n");
+          shownLines = kept.length;
+        }
+        const last = from + shownLines;
+        const more = last < total ? ` — continue with offset ${last + 1}` : "";
+        return ok(`${text}\n[lines ${from + 1}-${last} of ${total}${more}]`);
+      } catch (e) {
+        return err(`read failed: ${(e as Error).message}`);
       }
-      const last = from + shownLines;
-      const more = last < total ? ` — continue with offset ${last + 1}` : "";
-      return ok(`${text}\n[lines ${from + 1}-${last} of ${total}${more}]`);
-    } catch (e) {
-      return err(`read failed: ${(e as Error).message}`);
-    }
-  },
-};
+    },
+  };
+}
 
 const writeFile: Tool = {
   name: "write_file",
@@ -632,6 +670,6 @@ const grep: Tool = {
   },
 };
 
-export function fileTools(): Tool[] {
-  return [readFile, writeFile, deleteFile, listDir, glob, grep, ...editTools()];
+export function fileTools(options: FileToolsOptions = {}): Tool[] {
+  return [readFileTool(options), writeFile, deleteFile, listDir, glob, grep, ...editTools()];
 }

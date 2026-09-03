@@ -18,7 +18,7 @@ import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
 import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages, pinnedProvider } from "../conversation/wire.js";
-import type { Conversation, Entry } from "../conversation/types.js";
+import type { Attachment, Conversation, Entry } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolGate, ToolPreview } from "../tools/types.js";
@@ -1741,13 +1741,22 @@ export class Session {
     return result;
   }
 
-  private appendToolResult(call: ToolCall, content: string, isError: boolean): void {
+  /** `attachments` carries non-text output (P8b) onto the entry, because the wire
+   *  is rebuilt from the tree — an image kept only on the live `ToolResult` would
+   *  be gone by the next turn, let alone the next resume. */
+  private appendToolResult(
+    call: ToolCall,
+    content: string,
+    isError: boolean,
+    attachments?: Attachment[],
+  ): void {
     this.pushEntry({
       type: "tool",
       toolCallId: call.id,
       name: call.function.name,
       content,
       isError,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     });
     this.emit({ type: "tool-end", name: call.function.name, isError });
   }
@@ -1909,7 +1918,7 @@ export class Session {
     const startedAt = Date.now();
     const res = await tool.execute(args, { sandbox: this.sandbox!, tasks: this.tasks, todos: this.todoAccess });
     const note = edited ? "[note: the user edited the arguments before running]\n" : "";
-    this.appendToolResult(call, note + res.content, res.isError ?? false);
+    this.appendToolResult(call, note + res.content, res.isError ?? false, res.attachments);
     this.emit({
       type: "debug",
       record: {
@@ -1919,6 +1928,12 @@ export class Session {
         argsPreview: JSON.stringify(args).slice(0, 300),
         contentPreview: res.content.slice(0, 200),
         isError: res.isError ?? false,
+        // The bytes never reach the journal — only that they exist and what
+        // they are. A base64 blob in the debug record would make the one file
+        // written for *reading* the least readable thing in the data dir.
+        ...(res.attachments && res.attachments.length > 0
+          ? { attachments: res.attachments.map((a) => `${a.name ?? "attachment"} (${a.mime})`) }
+          : {}),
         ...(this.activeAssistantId ? { entryId: this.activeAssistantId } : {}),
       },
     });

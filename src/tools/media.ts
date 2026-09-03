@@ -42,6 +42,18 @@ export const IMAGE_MIMES: ReadonlySet<string> = new Set([
  */
 export const SAMPLE_BYTES = 8192;
 
+/**
+ * The largest image we will hand to a model (P8b). Two independent reasons for a
+ * cap, and the smaller of the two wins: providers refuse oversized images
+ * outright (Anthropic's per-image limit is 5 MB), and until P8c moves the bytes
+ * to a sidecar every attachment is inline base64 in an **append-only** log —
+ * 4/3 of this number, in a file `ConversationStore.load()` re-parses on every
+ * resume, fork and rewind, forever. A screenshot is a few hundred KB; anything
+ * near this is not a screenshot, so the refusal costs nothing real and the
+ * silent alternative (a 400 from the provider mid-turn) costs a turn.
+ */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
 export type FileKind =
   /** A vision model could look at this. */
   | { kind: "image"; mime: string; ext: string }

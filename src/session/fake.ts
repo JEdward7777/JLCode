@@ -142,6 +142,21 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     // A tool result (or anything non-user) just settled → wrap up the turn.
     if (!last || last.role !== "user") return textReply("Done — the tool ran and reported back.");
 
+    // An attachment message (P8b): a `user` message JLCode wrote, not one the
+    // person typed, so none of the `prefix:` commands below can match it. Say
+    // what arrived — offline, that is the only way to *see* that the flush put
+    // the images where the wire needs them, and it keeps a `read:` of a PNG from
+    // falling through to "You said: ".
+    if (Array.isArray(last.content)) {
+      const images = last.content.filter((part) => part.type === "image_url").length;
+      const names = last.content
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => /^\[\d+\] (.*) \(image\/\w+\)$/.exec(part.text)?.[1])
+        .filter((name): name is string => name !== undefined);
+      const what = names.length > 0 ? `: ${names.join(", ")}` : "";
+      return textReply(`I can see ${images === 1 ? "the image" : `${images} images`}${what}.`);
+    }
+
     // The prefixes below match on what the *user* typed, so the X-25
     // environment block comes off first — otherwise `write: a.txt | hi` would
     // write the timestamp into the file.

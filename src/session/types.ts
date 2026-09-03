@@ -42,6 +42,10 @@ export type DebugRecord =
       argsPreview: string;
       contentPreview: string;
       isError: boolean;
+      /** Non-text output, named but never carried (P8b): `shot.png (image/png)`.
+       *  The journal is the one file written to be *read*, so a base64 blob has
+       *  no business in it — the bytes live on the entry. */
+      attachments?: string[];
       /** The assistant entry that issued this tool call (per-turn linkage). */
       entryId?: string;
     };

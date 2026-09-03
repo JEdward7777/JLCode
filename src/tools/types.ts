@@ -7,6 +7,7 @@ import type { ToolDef } from "../llm/types.js";
 import type { Sandbox } from "./sandbox.js";
 import type { TaskRegistry } from "./task-registry.js";
 import type { TodoAccess } from "../conversation/todos.js";
+import type { Attachment } from "../conversation/types.js";
 
 /** Capability class, used by the Ask/Plan/Code mode gate. */
 export type ToolKind = "read" | "write" | "command" | "meta";
@@ -14,6 +15,10 @@ export type ToolKind = "read" | "write" | "command" | "meta";
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  /** Bytes the tool produced that are not text — an image the model can look at
+   *  (P8b). Additive: `content` still says everything a text-only consumer needs,
+   *  because the wire forbids non-text in a tool message anyway (D-78a). */
+  attachments?: Attachment[];
 }
 
 export interface ToolContext {
