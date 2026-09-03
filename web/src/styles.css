@@ -511,6 +511,23 @@ body.row-resizing {
 .reasoning summary {
   cursor: pointer;
 }
+/* The 🔊 rides on the disclosure line as an inline element. **Not flex**: a
+   `display: flex` summary is no longer a `list-item`, so it silently loses the
+   ▸/▾ marker — the affordance that says the block opens. Seen in the P8e peek. */
+.reasoning summary .icon {
+  /* Only on hover (or while it is reading): a speaker on every planning block in
+     a long thread is noise, and the row is already a click target. */
+  opacity: 0;
+  font-size: 11px;
+  padding: 0 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.reasoning:hover summary .icon,
+.reasoning summary .icon:focus-visible,
+.reasoning summary .icon.on {
+  opacity: 1;
+}
 .reasoning pre {
   white-space: pre-wrap;
   margin: 6px 0 0;

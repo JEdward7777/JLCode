@@ -1566,3 +1566,35 @@ Not exercised visually: many images in one turn (the flush groups them, Tier-0
 covers the wire shape), and a conversation reloaded from history — the URL a cold
 `GET /conversation/:id` advertises is asserted to be byte-identical in Tier-1
 instead.
+
+### Riding along with the same peek — the favicon and the reasoning speaker
+
+**Screenshots:** [`visual/p8e-reasoning-tts.png`](visual/p8e-reasoning-tts.png)
+(a reasoning-only turn: 🔊 on the disclosure line, and **no** speaker in the
+tools bar below it) · [`visual/p8e-favicon.png`](visual/p8e-favicon.png) (the
+mark at 16/32/64/128, which is the only way to know whether it survives a tab)
+
+Two items off Joshua's observed list (X-38, X-39), both browser-only, both
+cheaper to look at while a peek was already posed.
+
+Confirmed with my own eyes:
+
+- **The dead button is gone.** A `read_file` turn has planning and no text; its
+  tools bar now shows only ⓘ, where it used to offer a 🔊 wired to `""`. Driving
+  this at all needed the fake driver's tool calls to emit a reasoning delta —
+  they never had, so the very shape that produced the bug was unpeekable.
+- **The reasoning has its own speaker**, revealed on hover, keyed separately from
+  the reply so the two reads do not fight.
+- **The favicon reads as `>_` down to 16 px.**
+
+**What changed while looking, twice.** (1) The summary was laid out with
+`display: flex` to seat the button — which silently drops the `▸`/`▾` marker,
+because a flex `summary` is no longer a `list-item`. The button is inline again.
+(2) The favicon rendered as a **broken image at every size**: its own comment
+contained a `--`, which XML forbids inside a comment, so the file failed to parse
+while still being served as a `200 image/svg+xml`. Both screenshots above are
+after those fixes; both are the kind of thing only a look catches.
+
+Not exercised: the voice itself. This container's Chrome has no speech engine, so
+what was checked is which controls exist and what they are wired to — the channel
+below them is H-07's, and unchanged here.

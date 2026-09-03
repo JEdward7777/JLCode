@@ -70,6 +70,12 @@ function textReply(text: string): StreamEvent[] {
 
 function toolCall(name: string, args: unknown): StreamEvent[] {
   return [
+    // Planning, then the call and **no text** — which is what a real turn looks
+    // like, and the one shape the fake driver could not produce before. It is
+    // also the turn that exposed a dead 🔊 (an entry rendered for its reasoning
+    // alone, whose speak button read `entry.text`, i.e. nothing), so without
+    // this the fix is unpeekable.
+    { type: "reasoning", delta: `I should call ${name} for this.` },
     { type: "tool_call", index: 0, id: `fake_${Date.now()}`, name, argsDelta: JSON.stringify(args) },
     { type: "finish", reason: "tool_calls" },
     { type: "usage", usage: { promptTokens: 1000, completionTokens: 20 } },

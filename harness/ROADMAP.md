@@ -143,7 +143,23 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > persistence is async. A turn holding a 30 KB screenshot is under 4 KB of transcript JSON, and a
 > text-only tool entry ships with no `attachments` key at all. Peeked in Chrome with a real MCP
 > child (VISUAL-LOG "P8e"); one fix while looking — a flex column was stretching a 24×16 PNG to
-> 320px. **Next: P8f (paid — ask Joshua first).**
+> 320px.
+>
+> **Two of Joshua's observed items rode along with that peek (X-38, X-39).**
+> **X-38 — the TTS "jam" was a dead button**, and his own diagnosis was right: a
+> tool-calling turn has planning and no text, the transcript renders it for the
+> reasoning alone, and its 🔊 was wired to `entry.text` — `""`. The speaker
+> correctly refuses to say nothing (H-07), so the click did nothing, which is what
+> a jam looks like from the outside. The reply's button now appears only when there
+> is a reply, and the reasoning block gained its own, keyed `<entryId>:reasoning`.
+> Nothing in `tts.ts` changed. **X-39 — a favicon**: `web/public/favicon.svg`, a
+> `>_` prompt in the app's own colours, checked at 16/32/64/128. Both fixes needed
+> a look to be right: a `display: flex` summary silently loses its ▸ marker, and a
+> `--` inside the SVG's comment made the whole file fail to parse while still
+> serving `200 image/svg+xml`. The fake driver's tool calls now emit a reasoning
+> delta — realistic, and what made X-38 peekable at all. Seven items are left on
+> `observed_items_needing_filed_in_harness.txt`, still untriaged. **Next: P8f
+> (paid — ask Joshua first).**
 >
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge

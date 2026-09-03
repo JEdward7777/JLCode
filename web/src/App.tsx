@@ -1676,7 +1676,7 @@ function ChatPane({
               onEdit={(entryId, text) => onEditMessage(id, entryId, text)}
               journal={journal.filter((r) => r.entryId === entry.id)}
               onNeedJournal={onLoadJournal}
-              speaking={speakingId === entry.id}
+              speakingId={speakingId}
               onSpeak={onSpeak}
             />
           );
@@ -1914,7 +1914,7 @@ function PeekPane({
               onEdit={() => {}}
               journal={journal.filter((r) => r.entryId === entry.id)}
               onNeedJournal={loadJournal}
-              speaking={speakingId === entry.id}
+              speakingId={speakingId}
               onSpeak={onSpeak}
             />
           );
@@ -2510,7 +2510,7 @@ function Message({
   readOnly = false,
   journal,
   onNeedJournal,
-  speaking,
+  speakingId,
   onSpeak,
 }: {
   entry: EntryView;
@@ -2522,7 +2522,9 @@ function Message({
   readOnly?: boolean;
   journal: JournalRecord[];
   onNeedJournal: () => void;
-  speaking: boolean;
+  /** The whole speaker key, not a boolean: a turn has **two** things that can be
+   *  read — the reply and the planning above it — and they light up separately. */
+  speakingId: string | null;
   onSpeak: (id: string, text: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -2582,11 +2584,37 @@ function Message({
   }
 
   // assistant
+  //
+  // Two readable things, and until now one dead button (Joshua, 2026-09-03). A
+  // tool-calling turn often has *only* reasoning — it is rendered, so it got a
+  // 🔊 that spoke `entry.text`, which is `""`. The speaker correctly refuses to
+  // say nothing, so the click did nothing at all, which from the outside is
+  // indistinguishable from a jam. Now the reply's button appears only when there
+  // is a reply, and the planning has its own.
+  const reasoningKey = `${entry.id}:reasoning`;
+  const speakingReply = speakingId === entry.id;
+  const speakingReasoning = speakingId === reasoningKey;
+  const spokenReply = plainText(entry.text ?? "");
   return (
     <div className="msg assistant">
       {entry.reasoningText ? (
         <details className="reasoning">
-          <summary>reasoning</summary>
+          <summary>
+            reasoning
+            <button
+              className={`icon ${speakingReasoning ? "on" : ""}`}
+              title={speakingReasoning ? "stop" : "read the reasoning aloud"}
+              // A button inside a `summary` would otherwise fold the block it is
+              // asking to be read.
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onSpeak(reasoningKey, entry.reasoningText ?? "");
+              }}
+            >
+              {speakingReasoning ? "◼" : "🔊"}
+            </button>
+          </summary>
           <pre>{entry.reasoningText}</pre>
         </details>
       ) : null}
@@ -2598,9 +2626,15 @@ function Message({
       ) : null}
       <div className="msg-tools">
         {arrows}
-        <button className={`icon ${speaking ? "on" : ""}`} title={speaking ? "stop" : "read aloud"} onClick={() => onSpeak(entry.id, entry.text ?? "")}>
-          {speaking ? "◼" : "🔊"}
-        </button>
+        {spokenReply !== "" ? (
+          <button
+            className={`icon ${speakingReply ? "on" : ""}`}
+            title={speakingReply ? "stop" : "read aloud"}
+            onClick={() => onSpeak(entry.id, entry.text ?? "")}
+          >
+            {speakingReply ? "◼" : "🔊"}
+          </button>
+        ) : null}
         <button
           className={`icon ${showJournal ? "on" : ""}`}
           title="debug journal for this turn"

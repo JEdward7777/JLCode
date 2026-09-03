@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Vite copies `web/public/` to the build root, and the Hono static route
+         already knows `.svg` — so this is served at `/favicon.svg` in dev and
+         from `dist/web` in production with no other wiring. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>JLCode</title>
   </head>
   <body>
