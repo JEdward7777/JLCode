@@ -69,6 +69,14 @@ hit returns the cached result without throwing); on a miss it calls through and 
 > shows up immediately in ordinary use, so this gap cannot hide for long — and a test that must
 > re-spend to stay true is worse than a narrower test that stays free.
 
+> **A recorded image fixture is keyed by its own bytes (P8f, 2026-09-03).** `requestSignature`
+> hashes the messages, base64 included, so **`test/fixtures/cat.jpg` must never be re-encoded** —
+> not optimised, not resized, not run through a converter. The bytes *are* the cache key; change
+> them and the next run either spends again or throws the live-cache MISS. Only the *response* is
+> stored, so the committed cache stays small (the picture lives in the repo once). The same reason
+> the path in that test is **relative**: it appears in the tool-call arguments, the tool result and
+> the attachment label, so an absolute path would key the fixture to one checkout.
+
 **Two different jobs:** the cache (Tiers 0–1) catches regressions in **our** code; the
 periodic Tier-3 live runs catch **provider-side drift** — the exact rot that breaks KiloCode.
 So Tier 3 gets run occasionally even when the cached tiers are green.

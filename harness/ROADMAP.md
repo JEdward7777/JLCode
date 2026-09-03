@@ -6,8 +6,10 @@ items). Phases **0–6 done** (M1 "talk to a client" + M2 "does real work" + M3 
 P6a…P6c all shipped). **Phase 6 — compaction (M4) — is DONE:** headless trigger detection (P6a) +
 the safe-harbor engine (P6b) + trigger-mode UX, the cross-model summary path, and the live Fable
 validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode surface**
-(D-40). **Milestone M4 reached (O-02 resolved by design, D-38). Next: post-v1 backlog** (see
-"Later" + the H-01 hardening item).
+(D-40). **Milestone M4 reached (O-02 resolved by design, D-38).** The post-v1 phases are done too:
+**Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
+post-v1 backlog** (see "Later" + the H-01 hardening item + the untriaged rows on
+`observed_items_needing_filed_in_harness.txt`).
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
@@ -161,8 +163,21 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > `observed_items_needing_filed_in_harness.txt`**, still untriaged — including one
 > Joshua added mid-session: *"safe-auto mode doesn't seem to actually do anything.
 > I still have to click aprove just like if it were in manual"*, which reads as a
-> defect in the D-08 gate rather than a nicety. **Next: P8f (paid — ask Joshua
-> first).**
+> defect in the D-08 gate rather than a nicety.
+>
+> **P8f built 2026-09-03 — a live model looked at a picture. Phase 8 is DONE (X-37 closed).**
+> Joshua proposed the smoke test and supplied the subject: a 36 KB photo of a cat, and the reply has
+> to contain the word. `anthropic/claude-fable-5` answered *"It shows a fluffy brown tabby cat with
+> yellow-green eyes looking at the camera"* — **two calls, $0.033**, recorded into the committed
+> request-keyed cache and free forever after (7.4 s live → 27 ms replayed). The test drives the whole
+> chain, not the wire: the model chooses to call `read_file`, P8a classifies by magic bytes, P8b
+> flushes the bytes into the following `user` message. Staying free needed two things and Joshua
+> named the first before it bit: `turnTimestamps: false` (a wall clock re-keys the cache every run,
+> TESTING.md's standing rule) and a **relative** path, since the path appears three times in the
+> request. The image bytes are part of the key, so `cat.jpg` must never be re-encoded — recorded in
+> TESTING.md. **Caching measured rather than argued:** the second call read 1,721 of 2,132 prompt
+> tokens from cache, so an image turn still lands on a warm prefix (D-26/D-78). **852 Tier-0/1 green,
+> 69 files**, plus this Tier-3 test replaying free.
 >
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
@@ -1682,10 +1697,32 @@ file you can `rm` — and the conversation stops being one self-contained file. 
   the block is collapsed, and both refusals read their reason. One fix while looking — `.tool-image`
   is a flex column, whose default `align-items: stretch` blew a 24×16 PNG up to 320px.
 
-### P8f — Live validation (paid tier — **ask Joshua first**, TESTING.md)
-- One real vision call against a real screenshot: the model describes what is on it. Recorded into
-  the request-keyed cache so it replays free, the way P6c's Fable tests do.
-- **Done when:** a live model reads `peek.mjs shot` output and says what it sees.
+### P8f — Live validation (paid tier) ✅ done (2026-09-03)
+- One real vision call: the model describes what is in a photograph. Recorded into the
+  request-keyed cache so it replays free, the way P6c's Fable tests do.
+- **Done when:** a live model looks at an image and says what it sees. ✅
+- **Joshua's design, and his spend** — a cat, and the reply has to contain the word. A keyword on a
+  photograph is deliberately blunt: it cannot pass by accident (the fake driver's stand-in says
+  "I can see the image", never "cat") and it cannot fail for a reason that isn't the feature. The
+  subject is his 36 KB `test/fixtures/cat.jpg`, not a `peek.mjs shot` as the row originally guessed —
+  a screenshot needs a fuzzy assertion where an animal needs one word.
+- **`anthropic/claude-fable-5` answered:** *"It shows a fluffy brown tabby cat with yellow-green
+  eyes looking at the camera."* Every clause of that is true of the photo. **Two calls, $0.033
+  total**, then free forever from the committed fixture (7.4 s live → 27 ms replayed).
+- **Built as `test/vision-live.test.ts`,** driving the *whole* chain rather than hand-feeding the
+  wire: the model chooses to call `read_file`, P8a classifies by magic bytes, P8b flushes the bytes
+  into the following `user` message, and Fable describes the picture. It also asserts the old bug as
+  an **absence** — no U+FFFD anywhere in the tool result.
+- **Two things keep it free, and both are load-bearing.** `turnTimestamps: false`, for the reason
+  TESTING.md already records (Joshua, 2026-08-09) — a wall clock in the request re-keys the cache
+  every run. And the **path is relative**, fenced by a sandbox on `test/fixtures/`: it appears three
+  times in the request (the tool-call arguments, the tool result, the attachment label), so an
+  absolute temp path would key the fixture to one checkout. The image bytes are part of the key too,
+  so **`cat.jpg` must never be re-encoded** — noted in TESTING.md beside the timestamp rule.
+- **Caching measured, not just researched.** D-78 argued from documentation that an image does not
+  cost the prefix cache; the second call read **1,721 of 2,132 prompt tokens from cache** (D-26), so
+  a turn that carries a picture still lands on a warm prefix. What that shows is the prefix *above*
+  the image caching normally — the image's own turn was written fresh, as expected.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 

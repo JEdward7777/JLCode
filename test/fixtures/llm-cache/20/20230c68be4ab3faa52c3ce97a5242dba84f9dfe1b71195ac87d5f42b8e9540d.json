@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"toolu_01WuGGPcHrTSH7SafYaUCxbk","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"cat.jpg\"}"}}],"finishReason":"tool_calls","provider":"Anthropic","usage":{"promptTokens":1723,"completionTokens":52,"totalTokens":1775,"cachedTokens":0,"costUsd":0.0241325}}
