@@ -28,6 +28,7 @@ import { TODO_GUIDANCE, TODO_READ } from "../tools/todo-tools.js";
 import {
   planTodoSnapshot,
   planTodoWrite,
+  renderTodoDiff,
   renderTodoList,
   todoCensus,
   todosOn,
@@ -1463,7 +1464,7 @@ export class Session {
     const plan = planTodoWrite(items, input);
     if (!plan.ok) return plan;
     this.appendTodoOps(plan.ops, "agent");
-    return { ok: true, items: plan.items };
+    return { ok: true, items: plan.items, changed: plan.changed };
   }
 
   /** Record todo ops on the branch and announce the new list. An agent write
@@ -1479,17 +1480,25 @@ export class Session {
    *
    * Their edit is a snapshot rather than a stream of keystrokes, because that is
    * what leaving edit mode means: this is the list now. It enqueues a message
-   * telling the agent **that** the list changed and how much is outstanding, not
-   * what it says — pull delivery (Joshua's call). Returns false when nothing
-   * changed, in which case nobody is told anything.
+   * telling the agent the list changed and **what** changed — a capped diff, not
+   * the list itself (D-77): the census alone left the agent to re-read before it
+   * could tell whether the edit touched its work. Delivery stays pull, so the
+   * full list is still a `todo_read` away. Returns false when nothing changed,
+   * in which case nobody is told anything.
    */
-  async setTodos(rows: { id?: string; text: string; done?: boolean }[]): Promise<boolean> {
-    const op = planTodoSnapshot(this.todos, rows);
+  async setTodos(rows: { id?: string; text: string; done?: boolean; note?: string }[]): Promise<boolean> {
+    const before = this.todos;
+    const op = planTodoSnapshot(before, rows);
     if (!op) return false;
     this.appendTodoOps([op], "user");
-    await this.enqueue(`[todo] The user edited the todo list — ${todoCensus(this.todos)}. Call ${TODO_READ} to see it.`, {
-      openTurn: false,
-    });
+    // A pure re-order changes the list without changing any item, so it has a
+    // real diff of no lines — say that rather than queueing a bare census.
+    const diff = renderTodoDiff(before, this.todos);
+    const what = diff.length > 0 ? diff.map((l) => `  ${l}`).join("\n") : "  (the items were re-ordered)";
+    await this.enqueue(
+      `[todo] The user edited the todo list — ${todoCensus(this.todos)}.\n${what}\nCall ${TODO_READ} for the full list.`,
+      { openTurn: false },
+    );
     return true;
   }
 

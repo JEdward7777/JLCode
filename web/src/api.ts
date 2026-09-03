@@ -228,6 +228,8 @@ export interface TodoItem {
   id: string;
   text: string;
   done: boolean;
+  /** A short outcome hung under the item — "done — commit 6173b82" (D-77). */
+  note?: string;
 }
 
 /** The settled-state snapshot carried on the SSE `ready` frame and returned by
@@ -561,7 +563,11 @@ export async function queueMessage(id: string, text: string): Promise<void> {
 /** Commit the todo list as the user left it (X-31). Sent when they leave edit
  *  mode, not per keystroke: the whole list is the unit, and the server turns an
  *  actual change into the queued nudge that tells the agent to re-read. */
-export async function setTodos(id: string, items: { id?: string; text: string; done: boolean }[]): Promise<void> {
+export async function setTodos(
+  id: string,
+  // An omitted `note` keeps whatever note the item already carries, server-side.
+  items: { id?: string; text: string; done: boolean; note?: string }[],
+): Promise<void> {
   const res = await fetch(`/session/${id}/todos`, {
     method: "PUT",
     headers: { "content-type": "application/json" },

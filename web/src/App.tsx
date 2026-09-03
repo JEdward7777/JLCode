@@ -535,7 +535,7 @@ export function App() {
    *  decides whether anything actually changed — and therefore whether the agent
    *  is told — so a no-op close of the editor stays a no-op. */
   const saveTodos = useCallback(
-    async (id: string, items: { id?: string; text: string; done: boolean }[]) => {
+    async (id: string, items: { id?: string; text: string; done: boolean; note?: string }[]) => {
       try {
         await apiSetTodos(id, items);
       } catch (err) {
@@ -1421,7 +1421,7 @@ function ChatPane({
   onInput: (id: string, text: string) => void;
   onSubmit: (id: string) => void;
   onQueue: (id: string) => void;
-  onSaveTodos: (id: string, items: { id?: string; text: string; done: boolean }[]) => void;
+  onSaveTodos: (id: string, items: { id?: string; text: string; done: boolean; note?: string }[]) => void;
   onChangeMode: (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
   onChangeTriggerMode: (id: string, mode: TriggerMode) => void;
   onCompact: (id: string, opts?: { skip?: boolean }) => void;
@@ -2124,22 +2124,37 @@ function StopControl({ active, onStop }: { active: boolean; onStop: (scope: "har
  * agent can be told about once, at a turn boundary, rather than a keystroke
  * stream nobody can act on.
  *
+ * An item may carry a **note** — the outcome the agent recorded when it struck
+ * the item (D-77). It shows under the text here, and is editable like the text,
+ * but it is not a second list: leaving it alone is the normal case.
+ *
  * A draft is local until saved, so the agent striking an item mid-edit cannot
  * yank a row out from under a cursor. The flip side is that saving replaces
  * what the agent wrote in the meantime, so when that happens the panel says so
  * out loud rather than letting the clobber be silent — the same principle as
  * the agent's own read barrier, pointed the other way.
  */
-function TodoPanel({ items, onSave }: { items: TodoItem[]; onSave: (items: { id?: string; text: string; done: boolean }[]) => void }) {
+function TodoPanel({
+  items,
+  onSave,
+}: {
+  items: TodoItem[];
+  onSave: (items: { id?: string; text: string; done: boolean; note?: string }[]) => void;
+}) {
   const [open, setOpen] = useState(() => readBoolPref("todo.open", false));
-  const [draft, setDraft] = useState<{ id?: string; text: string; done: boolean }[] | null>(null);
+  const [draft, setDraft] = useState<{ id?: string; text: string; done: boolean; note?: string }[] | null>(null);
   // What the list said when editing began — the comparison that spots an agent
   // write landing underneath the draft.
   const [base, setBase] = useState<TodoItem[]>([]);
   const editing = draft !== null;
   const undone = items.filter((i) => !i.done).length;
   const changedUnderneath =
-    editing && (items.length !== base.length || items.some((i, n) => base[n]?.id !== i.id || base[n]?.text !== i.text || base[n]?.done !== i.done));
+    editing &&
+    (items.length !== base.length ||
+      items.some(
+        (i, n) =>
+          base[n]?.id !== i.id || base[n]?.text !== i.text || base[n]?.done !== i.done || (base[n]?.note ?? "") !== (i.note ?? ""),
+      ));
 
   const toggle = () => {
     const next = !open;
@@ -2149,9 +2164,9 @@ function TodoPanel({ items, onSave }: { items: TodoItem[]; onSave: (items: { id?
   };
   const startEdit = () => {
     setBase(items);
-    setDraft(items.map((i) => ({ id: i.id, text: i.text, done: i.done })));
+    setDraft(items.map((i) => ({ id: i.id, text: i.text, done: i.done, note: i.note })));
   };
-  const patch = (n: number, row: Partial<{ text: string; done: boolean }>) =>
+  const patch = (n: number, row: Partial<{ text: string; done: boolean; note: string }>) =>
     setDraft((d) => (d ? d.map((r, i) => (i === n ? { ...r, ...row } : r)) : d));
 
   if (items.length === 0 && !editing) {
@@ -2204,13 +2219,38 @@ function TodoPanel({ items, onSave }: { items: TodoItem[]; onSave: (items: { id?
             ? draft!.map((row, n) => (
                 <div className="todo-item editing" key={row.id ?? `new-${n}`}>
                   <input type="checkbox" checked={row.done} onChange={(e) => patch(n, { done: e.target.checked })} />
-                  <input
-                    className="todo-text"
-                    value={row.text}
-                    spellCheck={false}
-                    autoFocus={n === draft!.length - 1 && row.text === ""}
-                    onChange={(e) => patch(n, { text: e.target.value })}
-                  />
+                  <span className="todo-body">
+                    <input
+                      className="todo-text"
+                      value={row.text}
+                      spellCheck={false}
+                      autoFocus={n === draft!.length - 1 && row.text === ""}
+                      onChange={(e) => patch(n, { text: e.target.value })}
+                    />
+                    {/* The note field appears only where there is a note to show
+                        or you asked for one — a second box on every row turns a
+                        ten-item list into a wall. Emptying it clears the note. */}
+                    {row.note !== undefined && (
+                      <span className="todo-note-row">
+                        {/* The same ↳ the view mode draws, so a note field never
+                            reads as a second item. */}
+                        <span className="todo-note-lead">↳</span>
+                        <input
+                          className="todo-text todo-note-input"
+                          value={row.note}
+                          placeholder="note — e.g. done, commit 6173b82"
+                          spellCheck={false}
+                          autoFocus={row.note === ""}
+                          onChange={(e) => patch(n, { note: e.target.value })}
+                        />
+                      </span>
+                    )}
+                  </span>
+                  {row.note === undefined && (
+                    <button className="icon" title="add a note" onClick={() => patch(n, { note: "" })}>
+                      ✎
+                    </button>
+                  )}
                   <button className="icon" title="remove" onClick={() => setDraft((d) => (d ? d.filter((_, i) => i !== n) : d))}>
                     ✕
                   </button>
@@ -2219,7 +2259,10 @@ function TodoPanel({ items, onSave }: { items: TodoItem[]; onSave: (items: { id?
             : items.map((item) => (
                 <div className={`todo-item ${item.done ? "done" : ""}`} key={item.id}>
                   <span className="todo-box">{item.done ? "☑" : "☐"}</span>
-                  <span className="todo-text">{item.text}</span>
+                  <span className="todo-body">
+                    <span className="todo-text">{item.text}</span>
+                    {item.note && <span className="todo-item-note">↳ {item.note}</span>}
+                  </span>
                 </div>
               ))}
           {editing && (

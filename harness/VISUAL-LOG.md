@@ -1461,3 +1461,65 @@ which draws the ⚠ *"the agent changed the list while you were editing"* note �
 it needs a live model to produce, and the condition behind it is a pure
 comparison covered at Tier-0. Also unseen: a list long enough to hit the panel's
 `30vh` scroll cap.
+
+---
+
+## D-77 — notes, rewording, and being told what changed · 2026-09-03 · ✅ looked good (one fix while looking)
+
+**Screenshots:** [`visual/d77-todo-panel-notes.png`](visual/d77-todo-panel-notes.png)
+(the panel: a struck item with its outcome hung under it) ·
+[`visual/d77-todo-edit-notes.png`](visual/d77-todo-edit-notes.png) (edit mode:
+the note field, and the ✎ that offers one to the rows without)
+
+Posed with `peek up` plus a new fake-driver seed — `todo:` reads the list,
+`todo: {json}` writes it verbatim — so the *agent's* half of the surface can be
+driven offline for the first time. Sequence: read (empty), add four, then one
+call that rewords one item, notes another and strikes it. The person's half was
+driven through the same `PUT /session/:id/todos` the panel calls.
+
+Confirmed with my own eyes:
+
+- **The tool result marks what the call touched and hangs the note under its
+  item**, aligned to the text column:
+
+  ```
+  Todo list (3 of 4 items still undone) — → marks what this call changed:
+  → [x] td_92b039547031  read the harness
+                         ↳ done — commit 6173b82
+  → [ ] td_06b37c7745a9  regenerate the fixtures (~5 calls)
+    [ ] td_48fa80097e7f  wire the renderer
+  ```
+  The untouched rows are still there, unmarked — the whole list, which is what
+  makes the next write safe (D-77c).
+- **The reword landed in place**: `(~2 calls)` → `(~5 calls)` on the same id,
+  which is the stale-wording complaint that opened the report.
+- **The panel draws the note quietly and never strikes it through.** The item
+  above it is struck; the outcome under it stays readable, which is the point of
+  recording it.
+- **The person's save that says nothing about notes keeps them.** A `PUT` with
+  the note field absent — one reword, one strike, one add, one deletion —
+  returned the item with `note: "done — commit 6173b82"` intact (D-77f).
+- **The queued notice says what changed**, not just how many are left:
+
+  ```
+  [todo] The user edited the todo list — 2 of 4 items still undone.
+    ~ td_48fa80097e7f  wire the renderer + the panel (was: wire the renderer)
+    x td_f59bd832a854  update ROADMAP
+    + td_688c0acd11fb  check the favicon slice
+    - td_06b37c7745a9  regenerate the fixtures (~5 calls)
+  Call todo_read for the full list.
+  ```
+- **The barrier still re-arms after that edit** — the next blind `todo_write`
+  came back `Refused: the todo list has changed since you last read it`, with the
+  current list (notes and all) attached. The two mechanisms back each other up,
+  which is what the field report said it valued.
+
+**What the browser changed.** In edit mode the note started as a second
+full-width input under the text — it read as a *second item*, not as a note. It
+now sits behind the same `↳` the view mode and the tool result use, at the muted
+size. The screenshot above is after that fix.
+
+Not exercised visually: a note long enough to wrap, and the 12-line cap on the
+edit notice (Tier-0 covers the cap; posing it by hand means pasting twenty rows
+into the editor).
+

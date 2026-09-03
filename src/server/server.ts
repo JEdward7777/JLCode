@@ -628,6 +628,9 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         id: typeof i.id === "string" ? i.id : undefined,
         text: typeof i.text === "string" ? i.text : "",
         done: i.done === true,
+        // Absent means "leave the note alone" — a client that knows nothing of
+        // notes must not erase them by saving (D-77).
+        note: typeof i.note === "string" ? i.note : undefined,
       }));
     const changed = await session.setTodos(rows);
     await flushDurable();

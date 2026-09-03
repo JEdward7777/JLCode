@@ -10,6 +10,7 @@ import {
   foldTodos,
   planTodoSnapshot,
   planTodoWrite,
+  renderTodoDiff,
   renderTodoList,
   todosOn,
   todoTip,
@@ -140,6 +141,53 @@ describe("todo fold + operations (X-31)", () => {
     expect(planTodoWrite(items, { strike: ["t2"] }).ok).toBe(true);
   });
 
+  it("folds an edit: rewording, noting, and clearing a note", () => {
+    const items = foldTodos([
+      { op: "add", items: [{ id: "a", text: "regenerate fixtures (~2 calls)" }, { id: "b", text: "two" }] },
+      { op: "edit", edits: [{ id: "a", text: "regenerate fixtures (~5 calls)" }] },
+      { op: "edit", edits: [{ id: "a", note: "done — commit 6173b82" }] },
+      { op: "edit", edits: [{ id: "b", note: "gone" }, { id: "b", note: "" }] },
+    ]);
+    expect(items[0]).toEqual({ id: "a", text: "regenerate fixtures (~5 calls)", done: false, note: "done — commit 6173b82" });
+    // An empty note clears it rather than storing "", and an absent field leaves
+    // the other alone — the two fields have different authors.
+    expect(items[1]).toEqual({ id: "b", text: "two", done: false });
+  });
+
+  it("rewords and notes in one atomic call, and reports what it touched", () => {
+    const items = [
+      { id: "t1", text: "regenerate fixtures (~2 calls)", done: false },
+      { id: "t2", text: "write the tools", done: false },
+    ];
+    const plan = planTodoWrite(items, {
+      edit: [
+        { item: "regenerate fixtures (~2 calls)", text: "regenerate fixtures (~5 calls)" },
+        { item: "t2", note: "done — commit 6173b82" },
+      ],
+      strike: ["t2"],
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.items[0]!.text).toBe("regenerate fixtures (~5 calls)");
+    expect(plan.items[1]).toEqual({ id: "t2", text: "write the tools", done: true, note: "done — commit 6173b82" });
+    expect(plan.changed.sort()).toEqual(["t1", "t2"]);
+  });
+
+  it("refuses an edit that would duplicate another item, or that asks for nothing", () => {
+    const items = [
+      { id: "t1", text: "one", done: false },
+      { id: "t2", text: "two", done: false },
+    ];
+    expect(planTodoWrite(items, { edit: [{ item: "t1", text: "two" }] }).ok).toBe(false);
+    expect(planTodoWrite(items, { edit: [{ item: "t1", text: "  " }] }).ok).toBe(false);
+    expect(planTodoWrite(items, { edit: [{ item: "t1" }] }).ok).toBe(false);
+    const missed = planTodoWrite(items, { add: ["three"], edit: [{ item: "nope", note: "x" }] });
+    expect(missed.ok).toBe(false);
+    if (missed.ok) return;
+    expect(missed.error).toContain("no item matches");
+    expect(missed.error).toContain("one"); // the current list rides along
+  });
+
   it("rejects a duplicate add, which would make strike-by-text ambiguous", () => {
     const items = [{ id: "t1", text: "one", done: false }];
     expect(planTodoWrite(items, { add: ["one"] }).ok).toBe(false);
@@ -161,6 +209,50 @@ describe("todo fold + operations (X-31)", () => {
     expect(renderTodoList([])).toBe("The todo list is empty.");
   });
 
+  it("hangs a note under its item, and marks the rows a call changed", () => {
+    const items = [
+      { id: "t1", text: "one", done: true, note: "done — commit 6173b82" },
+      { id: "t2", text: "two", done: false },
+    ];
+    const plain = renderTodoList(items);
+    expect(plain).toContain("[x] t1  one");
+    expect(plain).toContain("↳ done — commit 6173b82");
+    expect(plain).not.toContain("→"); // no gutter when nothing is being marked
+    const marked = renderTodoList(items, ["t2"]);
+    expect(marked).toContain("→ marks what this call changed");
+    expect(marked).toContain("→ [ ] t2  two");
+    expect(marked).toContain("  [x] t1  one");
+  });
+
+  it("says what changed across a person's edit, and caps a flood", () => {
+    const before = [
+      { id: "t1", text: "read the harness", done: false },
+      { id: "t2", text: "wire it up", done: false },
+      { id: "t3", text: "delete me", done: false },
+    ];
+    const after = [
+      { id: "t1", text: "read the harness", done: true },
+      { id: "t2", text: "wire the renderer", done: false },
+      { id: "t7", text: "check the favicon slice", done: false },
+    ];
+    expect(renderTodoDiff(before, after)).toEqual([
+      "x t1  read the harness",
+      "~ t2  wire the renderer (was: wire it up)",
+      "+ t7  check the favicon slice",
+      "- t3  delete me",
+    ]);
+    // A note appearing on an otherwise unchanged item is itself the change.
+    expect(renderTodoDiff(before, [{ ...before[0]!, note: "n" }, before[1]!, before[2]!])[0]).toBe(
+      "~ t1  read the harness (note: n)",
+    );
+    // Re-ordering alone touches no item — the caller says so in its own words.
+    expect(renderTodoDiff(before, [before[2]!, before[1]!, before[0]!])).toEqual([]);
+    const flood = Array.from({ length: 20 }, (_, n) => ({ id: `x${n}`, text: `item ${n}`, done: false }));
+    const capped = renderTodoDiff([], flood, 5);
+    expect(capped).toHaveLength(6);
+    expect(capped[5]).toBe("…and 15 more changes.");
+  });
+
   it("keeps ids across a person's edit, and reports no-change as no-change", () => {
     const current = [
       { id: "t1", text: "one", done: false },
@@ -179,6 +271,22 @@ describe("todo fold + operations (X-31)", () => {
     expect(items[2]!.id).toMatch(/^td_/); // a new row gets a fresh id
     // An emptied row is a deletion, not a blank item.
     expect(foldTodos([planTodoSnapshot(current, [{ id: "t1", text: "  " }, { id: "t2", text: "two" }])!])).toHaveLength(1);
+  });
+
+  it("keeps the agent's notes through a person's save unless they clear them", () => {
+    const current = [
+      { id: "t1", text: "one", done: true, note: "done — commit 6173b82" },
+      { id: "t2", text: "two", done: false, note: "blocked on the fence" },
+    ];
+    // A client that knows nothing about notes sends none — and erases none.
+    expect(planTodoSnapshot(current, [{ id: "t1", text: "one", done: true }, { id: "t2", text: "two" }])).toBeNull();
+    const op = planTodoSnapshot(current, [
+      { id: "t1", text: "one", done: true, note: "" }, // emptied in the editor → cleared
+      { id: "t2", text: "two reworded", done: false, note: "still blocked" },
+    ]);
+    const items = foldTodos([op!]);
+    expect(items[0]).toEqual({ id: "t1", text: "one", done: true });
+    expect(items[1]).toEqual({ id: "t2", text: "two reworded", done: false, note: "still blocked" });
   });
 });
 
@@ -252,6 +360,21 @@ describe("todo state on the branch (X-31)", () => {
     const announced = events.filter((e) => e.type === "todos");
     expect(announced).toHaveLength(2);
     expect(announced[1]!.type === "todos" && announced[1]!.items[0]!.done).toBe(true);
+  });
+
+  it("hands the write back as the whole list, with this call's rows marked", async () => {
+    const { session } = makeSession(
+      scripted([{ name: TODO_READ, args: {} }, { name: TODO_WRITE, args: { add: ["one", "two"] } }]),
+    );
+    await session.send("go");
+    const ids = session.todos.map((t) => t.id);
+    // No re-read in between: the agent's own write left it current, which is
+    // what the guidance now says out loud (D-77).
+    const result = await runWrite(session, { edit: [{ item: "one", note: "done — commit 6173b82" }], strike: ["one"] });
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain(`→ [x] ${ids[0]}  one`);
+    expect(result.content).toContain("↳ done — commit 6173b82");
+    expect(result.content).toContain(`  [ ] ${ids[1]}  two`); // untouched, unmarked, still shown
   });
 
   it("rewinding shows the list as it stood there; the ops never replay to the model", async () => {
@@ -335,7 +458,12 @@ describe("the nudges (X-31)", () => {
     expect(session.status).toBe("idle"); // no model call was made on their behalf
     expect(session.queuedMessages).toHaveLength(1);
     expect(session.queuedMessages[0]!.text).toContain("1 of 1 item still undone");
-    expect(session.queuedMessages[0]!.text).not.toContain("mine"); // the count, not the payload
+    // The census *and* what changed (D-77) — the count alone left the agent to
+    // re-read before it could tell whether the edit touched its work. The full
+    // list is still a read away: this is a diff, not the payload.
+    expect(session.queuedMessages[0]!.text).toContain("+ ");
+    expect(session.queuedMessages[0]!.text).toContain("mine");
+    expect(session.queuedMessages[0]!.text).toContain(TODO_READ);
     expect(events.some((e) => e.type === "todos")).toBe(true);
     // Nothing changed → nobody is told anything.
     expect(await session.setTodos(session.todos)).toBe(false);
@@ -399,6 +527,17 @@ describe("the todo list over HTTP (X-31)", () => {
     const again = await send(app, `/session/${id}/todos`, "PUT", { items: put.json.todos });
     expect(again.json.changed).toBe(false);
     expect(again.json.queue).toHaveLength(1);
+
+    // A note the person types lands; a save that says nothing about notes keeps
+    // the ones already there (D-77).
+    const noted = await send(app, `/session/${id}/todos`, "PUT", {
+      items: [{ ...put.json.todos[0], note: "done — by hand" }, put.json.todos[1]],
+    });
+    expect(noted.json.todos[0].note).toBe("done — by hand");
+    const blind = await send(app, `/session/${id}/todos`, "PUT", {
+      items: [{ id: noted.json.todos[0].id, text: "from the browser", done: false }, noted.json.todos[1]],
+    });
+    expect(blind.json.todos[0].note).toBe("done — by hand");
 
     // …and it is durable: the ops are in the conversation log.
     const conv = store.load(put.json.conversationId as string)!;

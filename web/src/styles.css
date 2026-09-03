@@ -2053,12 +2053,47 @@ figure.mermaid svg {
 }
 .todo-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 2px 2px;
   font-size: 13px;
 }
 .todo-item .todo-box {
+  color: var(--muted);
+  line-height: 1.5;
+}
+/* Text plus its optional note, stacked — the row stays one item either way. */
+.todo-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.todo-item .todo-text {
+  line-height: 1.5;
+}
+/* The outcome the agent recorded when it struck the item (D-77). Kept quiet: it
+   is provenance, not another thing to do — and never struck through, since the
+   whole point is that it stays readable after the item is done. */
+.todo-item-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.todo-item.done .todo-item-note {
+  text-decoration: none;
+}
+.todo-note-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.todo-note-lead {
+  color: var(--muted);
+  font-size: 12px;
+}
+.todo-item.editing .todo-note-input {
+  font-size: 12px;
   color: var(--muted);
 }
 .todo-item.done .todo-text {

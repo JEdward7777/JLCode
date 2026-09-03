@@ -196,6 +196,19 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     if (msg.startsWith("delete:")) return toolCall("delete_file", { path: after("delete:") || "note.txt" });
     if (msg.startsWith("run:")) return toolCall("run_command", { command: after("run:") || "echo hi" });
     if (msg.startsWith("read:")) return toolCall("read_file", { path: after("read:") || "README.md" });
+    // `todo:` reads the shared list; `todo: {"add":["one"]}` writes it, args
+    // verbatim. The write is refused until a read has happened (the X-31
+    // barrier), so a peek sends the bare form first — which is the barrier
+    // working, not the fake misbehaving.
+    if (msg.startsWith("todo:")) {
+      const rest = after("todo:");
+      if (rest === "") return toolCall("todo_read", {});
+      try {
+        return toolCall("todo_write", JSON.parse(rest) as Record<string, unknown>);
+      } catch {
+        return textReply(`fake driver: \`todo:\` wants JSON args for todo_write, got ${JSON.stringify(rest)}`);
+      }
+    }
     // `ask: <question>` — or `ask: <question> | a, b, c` to name the options,
     // which is what poses the D-72 card with something other than Yes/No.
     if (msg.startsWith("ask:")) {

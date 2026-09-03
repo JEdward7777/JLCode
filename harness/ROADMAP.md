@@ -55,6 +55,21 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > other file of the batch; the refusal is otherwise unchanged and never redirects. No browser peek:
 > the task panel lists only *running* tasks and never rendered a kill reason, so nothing new is
 > drawn. Also open and unblocked: X-14, X-16, X-18, and X-34/X-36 as deferred rows.
+> **D-77 built 2026-09-03 — the todo list answers its own field report.** Joshua relayed a report
+> from an agent that had *used* X-31 for a session; his question round took all four
+> recommendations, and they shipped as one slice. The agent can now **reword** an item (`edit`, a new
+> op in the fold) and **hang an outcome note** under it (`note`, a new field) — so "~2 calls" stops
+> lying after the fifth call, and "done — commit 6173b82" lives on the list rather than only in the
+> transcript. `todo_write` still returns the **whole** list but marks the rows it touched with a
+> gutter arrow; the person's edit notice carries a **capped diff** (`+ ~ x o -`) instead of a bare
+> count; and the "must I re-read before every write?" worry turned out to be a prompt bug, not a
+> missing etag — `TODO_GUIDANCE` now says the rule the barrier actually enforces. A snapshot that
+> says nothing about notes **keeps** them, so an older page cannot erase them by saving. The fake
+> driver learned `todo:`, which is how this got peeked at all (VISUAL-LOG "D-77"; one fix while
+> looking — the note field read as a second item until it got the `↳`). **791 Tier-0/1 green, 65
+> files.** The todo block is struck from `observed_items_needing_filed_in_harness.txt` per that
+> file's own operation note; the other items in it are untriaged and still Joshua's list.
+>
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
 > already drops the `image` blocks servers send it. The cost is not the tool: `ChatMessage.content`

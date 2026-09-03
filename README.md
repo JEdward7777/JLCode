@@ -135,9 +135,11 @@ of, and a **Skip** for saying nothing at all. A skipped question goes back as *"
 user declined — none of these"*, not as the closest option, so the agent can't quietly
 proceed on an answer you never gave. The **todo list** sits between the transcript and the
 composer: the agent keeps it as it works, and you can edit it — add, reword, re-order,
-tick, delete — with **edit** and **Save**. Saving is the whole commit, and it tells the
-agent the list changed so it re-reads before writing again; it never starts a turn on
-your behalf. The list is per branch and outlives compaction, so it is the one thing a
+tick, delete — with **edit** and **Save**. A finished item can carry a short **note**
+(*done — commit 6173b82*); the agent writes those as it strikes things off, and the ✎ on
+a row lets you write one yourself. Saving is the whole commit, and it tells the agent
+exactly what changed — added, reworded, struck, removed — so it need not re-read the
+whole list to find out; it never starts a turn on your behalf. The list is per branch and outlives compaction, so it is the one thing a
 long thread cannot forget. Each thread names
 itself after the first exchange and **re-names itself as it wanders** — a thread that
 has roughly doubled in length, or that has just been compacted, gets asked again, so a

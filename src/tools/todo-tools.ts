@@ -4,8 +4,8 @@
  *
  * Delivery is **pull, with a nudge** (Joshua's call). Nothing is injected per
  * turn — the guidance below is in the system prompt, the person's edits arrive
- * as a queued message saying only that the list changed, and the compaction
- * summary states the count. Reading is always the agent's move. Per-turn
+ * as a queued message carrying a capped diff of what changed (D-77), and the
+ * compaction summary states the count. Reading is always the agent's move. Per-turn
  * injection was considered and rejected as premature; if drift shows up in real
  * use it is a small change on top of this.
  *
@@ -28,11 +28,12 @@ export const TODO_WRITE = "todo_write";
 export const TODO_GUIDANCE = [
   "## Todo list",
   "",
-  `You share a todo list with the user. \`${TODO_READ}\` returns it; \`${TODO_WRITE}\` appends items and strikes them off.`,
+  `You share a todo list with the user. \`${TODO_READ}\` returns it; \`${TODO_WRITE}\` adds items, rewords them, notes them and strikes them off.`,
   "",
   "- Keep it for work that spans several turns. A one-step request does not need a list.",
-  `- **Read before you write.** \`${TODO_WRITE}\` is refused until you have read the current list at least once, and again after the user has edited it — they can add, reword, re-order and strike items at any time, so the list you remember may not be the list that exists.`,
+  `- **Read it once before your first write.** After that your own writes keep you current — every write hands back the whole list — so there is no need to re-read before each one. Read again when you are told the user edited the list, and after a rewind or a fork: the list follows the branch.`,
   "- Strike items as you finish them, not in a batch at the end.",
+  `- **Reword an item when it goes stale** (\`edit\` with \`text\`) — an estimate you have overrun or a number that has moved is worse than no note at all. **Record the outcome when you strike it** (\`edit\` with \`note\`, e.g. "done — commit 6173b82"): the note lives on the list, where a compaction summary cannot blur it, and the transcript cannot.`,
   "- Address items by their exact text, or by the id shown on every read. Never by position.",
   "- The list survives compaction. When a summary tells you items are outstanding, read the list rather than guessing what they were.",
 ].join("\n");
@@ -69,12 +70,15 @@ export function todoWriteTool(): Tool {
       function: {
         name: TODO_WRITE,
         description:
-          "Change the shared todo list: append new items, strike finished ones, or un-strike one that " +
-          "turned out not to be done. Items are addressed by their **exact** text or by the id from " +
-          `${TODO_READ} — never by position, since the user may have re-ordered the list. A target that ` +
-          "matches nothing is refused and the whole call is dropped, with the current list attached. " +
-          `You must call ${TODO_READ} at least once, and again after the user edits the list, before a ` +
-          "write is accepted. Returns the updated list.",
+          "Change the shared todo list: append new items, reword one or attach a short outcome note to " +
+          "it, strike finished ones, or un-strike one that turned out not to be done. Items are " +
+          `addressed by their **exact** text or by the id from ${TODO_READ} — never by position, since ` +
+          "the user may have re-ordered the list. A target that matches nothing is refused and the " +
+          "whole call is dropped, with the current list attached. Fields apply in the order " +
+          "add → edit → strike → unstrike, so an item reworded in this same call must be addressed " +
+          `after that by its new text or its id. You must call ${TODO_READ} at least once, and again ` +
+          "after the user edits the list, before a write is accepted. Returns the whole list with the " +
+          "rows this call changed marked.",
         parameters: {
           type: "object",
           properties: {
@@ -82,6 +86,25 @@ export function todoWriteTool(): Tool {
               type: "array",
               items: { type: "string" },
               description: "New items to append, in order. Each must be distinct from every item already on the list.",
+            },
+            edit: {
+              type: "array",
+              description:
+                "Reword items, and/or hang a short outcome note under them. Use this when wording goes " +
+                "stale, and when striking something worth recording the result of.",
+              items: {
+                type: "object",
+                properties: {
+                  item: { type: "string", description: "The item to change: its exact text, or its id." },
+                  text: { type: "string", description: "New wording. Omit to leave the wording alone." },
+                  note: {
+                    type: "string",
+                    description:
+                      'A short outcome to hang under the item, e.g. "done — commit 6173b82". Pass "" to clear it.',
+                  },
+                },
+                required: ["item"],
+              },
             },
             strike: {
               type: "array",
@@ -101,13 +124,22 @@ export function todoWriteTool(): Tool {
       if (!ctx.todos) return Promise.resolve({ content: "no todo list is available in this session", isError: true });
       const strings = (value: unknown): string[] | undefined =>
         Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : undefined;
+      const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+      const edits = Array.isArray(args.edit)
+        ? args.edit
+            .filter((v): v is Record<string, unknown> => Boolean(v) && typeof v === "object")
+            .map((v) => ({ item: str(v.item) ?? "", text: str(v.text), note: str(v.note) }))
+        : undefined;
       const result = ctx.todos.write({
         add: strings(args.add),
+        edit: edits,
         strike: strings(args.strike),
         unstrike: strings(args.unstrike),
       });
       return Promise.resolve(
-        result.ok ? { content: renderTodoList(result.items) } : { content: result.error, isError: true },
+        result.ok
+          ? { content: renderTodoList(result.items, result.changed) }
+          : { content: result.error, isError: true },
       );
     },
   };
