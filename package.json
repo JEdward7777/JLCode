@@ -29,6 +29,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "diff": "^7.0.0",
+    "file-type": "^22.0.2",
     "hono": "^4.6.0"
   },
   "devDependencies": {

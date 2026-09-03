@@ -85,6 +85,16 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > persistence** — it only stops `read_file` returning U+FFFD mush through `ok()`. P8f is paid and
 > **must be asked about first**.
 >
+> **P8a built 2026-09-03 — `read_file` stops lying about binaries. 809 Tier-0/1 green, 66 files.**
+> New `src/tools/media.ts` classifies from an 8 KB sample by **magic bytes** (`file-type` v22, D-45),
+> never the extension: a PNG named `notes.txt` is caught, a `.png` full of text still reads as text,
+> and **SVG stays on the text path** (it is source the model should edit, not a picture). An image
+> refusal names the format and size and says why; any other binary is refused naming its type where
+> `file-type` knows one. No wire, type or persistence change — `ToolResult` is untouched, and half
+> the new tests exist only to pin the text path byte-for-byte. **Next: P8b** (bytes to the model —
+> `ToolResult.attachments`, the `pendingImages` flush into a `user` message, `markable()`/`mark()`
+> learning parts so caching does not silently die, and `input_modalities` in the catalog).
+>
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
 > already drops the `image` blocks servers send it. The cost is not the tool: `ChatMessage.content`
@@ -1430,7 +1440,7 @@ messages only, and `ToolResult.content` / `ToolEntry.content` stay `string`.
 
 Bottom-up as ever: **P8a is a strict improvement with no wire change at all** and ships on its own.
 
-### P8a — Stop lying about binaries: the sniff and the honest refusal (Tier-0)
+### P8a — Stop lying about binaries: the sniff and the honest refusal (Tier-0) ✅ done (2026-09-03)
 - **The sniff (D-78b):** read a **4 KB sample** first, classify by **magic bytes**, with the
   filename's mime as a *fallback only* — never the trigger, so a `.png` full of text still reads
   as text and a mislabelled screenshot is still caught.
@@ -1440,7 +1450,23 @@ Bottom-up as ever: **P8a is a strict improvement with no wire change at all** an
   into the read path (it reaches only the `write_file` approval preview, `file-tools.ts:299,360`).
 - **No wire, persistence or type change.** `ToolResult` is untouched.
 - **Done when:** reading a PNG and reading a `.tar.gz` each fail with a sentence that says which,
-  every existing text read is byte-identical, and Tier-0/1 is green.
+  every existing text read is byte-identical, and Tier-0/1 is green. ✅
+- **Built as `src/tools/media.ts`** — `classifySample`/`classifyFile` over **`file-type` v22**
+  (D-45: the mainline package for signatures, and it lets a refusal *name* the format —
+  "a binary file (application/gzip)" beats "not UTF-8 text"). KiloCode hand-rolls the same table in
+  12 lines; the dep earns its place on the naming, not on the four image signatures. `looksBinary`
+  moved here from `file-tools.ts` rather than being copied, so there is one definition, and the
+  `write_file` preview now shares it.
+- **Verified:** +18 tests (`media-classify.test.ts`) in two halves, because both directions are the
+  point. **The refusals:** a PNG named `.png` *and* a PNG named `notes.txt` both refused naming
+  `image/png`; gzip refused naming `application/gzip`; a signature-less blob of NULs refused as
+  "not UTF-8 text" without inventing a format. **The text path unchanged:** whole-file read
+  byte-for-byte, `offset`/`limit` paging with the `[lines 10-12 of 50 — continue with offset 13]`
+  footer intact, an empty file still empty (not "binary"), a missing file still "read failed", an
+  out-of-fence path still refused before touching disk — and **SVG still text**, which is the one
+  that would have been a regression in *ability* rather than a bug. **809 Tier-0/1 green, 66 files.**
+- **Also driven for real**, not only against fixtures: the built `dist/tools/media.js` classifies
+  KiloCode's own 200 KB `logo.png` as `image/png` and this repo's `.ts`/`.json`/`.md` as text.
 
 ### P8b — Bytes to the model (Tier-0/1)
 - **`ToolResult` gains `attachments?: {mime, data}[]`** — additive; every existing tool and every

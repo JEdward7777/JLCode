@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { editTools, renderDiff } from "./edit-tools.js";
+import { classifyFile, humanBytes, looksBinary } from "./media.js";
 import type { FilePreview, Tool, ToolContext, ToolPreview, ToolResult } from "./types.js";
 
 const MAX_READ_CHARS = 100_000;
@@ -116,15 +117,6 @@ function countLines(text: string): number {
   return text.replace(/\n$/, "").split("\n").length;
 }
 
-/**
- * Not text: a NUL byte survives the utf8 decode, and anything else invalid comes
- * back as U+FFFD. Either way the "content" is already mangled, so a preview
- * shows the file's size rather than pretending to render it.
- */
-function looksBinary(text: string): boolean {
-  return /[\u0000\uFFFD]/.test(text);
-}
-
 /** Cap a body for an approval card: whole lines only, so the tail is never half
  *  a line, and never more than `MAX_PREVIEW_CHARS` however few lines that is. */
 function capBody(text: string, maxLines: number): { body: string; omitted: number } {
@@ -194,6 +186,24 @@ const readFile: Tool = {
     const r = ctx.sandbox.resolve(p);
     if (!r.ok) return err(r.reason);
     try {
+      // What is this, actually? Decided from a sample before any decode (P8a,
+      // D-78b), because decoding first is how a `.png` used to come back as
+      // U+FFFD mush through `ok()` — a successful read of nothing.
+      const kind = await classifyFile(r.path);
+      if (kind.kind === "image") {
+        const size = humanBytes(fs.statSync(r.path).size);
+        return err(
+          `${p} is a ${kind.ext.toUpperCase()} image (${kind.mime}, ${size}). read_file returns text, ` +
+            `and JLCode cannot yet hand an image to the model — so there is nothing useful to return ` +
+            `rather than a page of replacement characters.`,
+        );
+      }
+      if (kind.kind === "binary") {
+        const named = kind.mime ? `a binary file (${kind.mime})` : "not UTF-8 text";
+        const size = humanBytes(fs.statSync(r.path).size);
+        return err(`${p} is ${named}, ${size} — read_file only reads text.`);
+      }
+
       const data = fs.readFileSync(r.path, "utf8");
       // Whole file, unwindowed, within the cap: hand back exactly what's on disk.
       if (offset === undefined && limit === undefined && data.length <= MAX_READ_CHARS) return ok(data);
