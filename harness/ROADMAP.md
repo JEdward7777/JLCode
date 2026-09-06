@@ -195,6 +195,16 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > with an attention dot instead of `idle`. Peeked in Chrome including the resume by real mouse click
 > (VISUAL-LOG "D-79"); the fake driver learned `loop:` and `peek up --rounds N` poses it.
 >
+> **D-80 built 2026-09-06 — D-79's pause was invisible in an already-open tab. 871 Tier-0/1 green.**
+> The pause fired correctly and Joshua's browser drew nothing; his guess ("the wrong frontend
+> loaded") was right, and rendering *his* live session URL in a clean browser proved it. The static
+> route sent **no cache headers at all**, so the browser heuristically reused an `index.html` naming
+> a previous build's asset hashes. Now `index.html` and the SPA fallback are `no-cache` and
+> `assets/*` is `immutable` — the pairing, not one or the other. Plus the defensive half: an
+> unrecognized `awaiting-*` status now reads **"waiting…"** with the attention dot instead of falling
+> through to `idle`, so a tab older than its server cannot re-create the exact "it just stopped"
+> appearance D-79 removed.
+>
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
 > already drops the `image` blocks servers send it. The cost is not the tool: `ChatMessage.content`

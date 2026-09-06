@@ -86,6 +86,27 @@ function resolveStatic(root: string, urlPath: string): string | null {
   return fs.existsSync(index) ? index : null; // SPA fallback (and traversal → index)
 }
 
+/** What a static file may be cached as (D-80).
+ *
+ * The two halves are opposites and both matter. Vite content-hashes everything
+ * under `assets/`, so those files are **immutable** — a changed build is a
+ * changed name, and a year-long cache is free correctness. `index.html` is the
+ * one file whose name never changes and whose whole job is to *name the current
+ * hashes*, so it must be revalidated every load.
+ *
+ * Serving both with **no** cache headers at all — which is what this did — is
+ * the worst of the two: with no `Cache-Control`, no `ETag` and no
+ * `Last-Modified`, a browser falls back to heuristic caching and may reuse
+ * `index.html` for as long as it likes. That pins a tab to a *previous* build's
+ * asset hashes, which is exactly how a session paused correctly on the server
+ * and rendered as `idle` in a browser running last week's client.
+ */
+function cacheControlFor(file: string): string {
+  return /[\\/]assets[\\/]/.test(file) && path.extname(file) !== ".html"
+    ? "public, max-age=31536000, immutable"
+    : "no-cache"; // revalidate every load — index.html names the current build
+}
+
 /**
  * Where the browser fetches one attachment's bytes (P8e, D-78j).
  *
@@ -973,7 +994,12 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       const file = resolveStatic(root, new URL(c.req.url).pathname);
       if (!file) return c.text("client not built (run `npm run build`)", 404);
       const data = await fs.promises.readFile(file);
-      return new Response(data, { headers: { "content-type": STATIC_TYPES[path.extname(file)] ?? "application/octet-stream" } });
+      return new Response(data, {
+        headers: {
+          "content-type": STATIC_TYPES[path.extname(file)] ?? "application/octet-stream",
+          "cache-control": cacheControlFor(file),
+        },
+      });
     });
   }
 

@@ -6,6 +6,7 @@ import { newAttentionMemory, stepAttention } from "./attention";
 import { createBlipper } from "./blip";
 import { createSpeaker, newAutoReadMemory, plainText, stepAutoRead } from "./tts";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
+import { isAwaiting } from "./session-state";
 import { fitModelLabel } from "./model-label";
 import { isViewSwitch, newFollow, stepFollow, type FollowEvent, type FollowState } from "./scroll";
 import {
@@ -1042,11 +1043,16 @@ function SessionRail({
     if (s.working || s.status === "running") return "working…";
     if (s.tasks.length > 0) return "task running";
     if (s.status === "halted") return "halted";
+    // A pause this build has no card for — i.e. the server is newer than this
+    // tab (D-80). Never call it `idle`: that is what makes a stopped session
+    // look like a finished one, which is the whole of D-79.
+    if (isAwaiting(s.status)) return "waiting…";
     return "idle";
   };
   const dotClass = (s: SessionSlice): string => {
     if (s.persistenceFault) return "halt"; // a stalled write stops the session (D-46)
     if (s.pendingApproval || s.pendingAsk || s.pendingStall || s.capReached) return "attn";
+    if (isAwaiting(s.status)) return "attn"; // an unrecognized pause is still a pause (D-80)
     if (s.working || s.status === "running" || s.tasks.length > 0) return "busy";
     if (s.status === "halted") return "halt";
     return "";

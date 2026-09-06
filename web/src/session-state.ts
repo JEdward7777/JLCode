@@ -201,6 +201,21 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
 }
 
 /**
+ * Is this status one where the session is **waiting on a person** (D-80)?
+ *
+ * Matched on the `awaiting-` prefix rather than against a list, deliberately. A
+ * client is often older than the server it talks to — a tab left open across a
+ * deploy, or a stale `index.html` — and the failure that costs most is a *new*
+ * pause rendering as `idle`, because that is indistinguishable from "the agent
+ * finished" and is the exact defect D-79 set out to kill. A pause this build has
+ * never heard of still stops the turn, so it still has to look like one; what it
+ * cannot do is draw the right card, and "waiting…" is the honest version of that.
+ */
+export function isAwaiting(status: string): boolean {
+  return status.startsWith("awaiting-");
+}
+
+/**
  * The wire events that mean **the session just handed the turn back to you**
  * (X-26). Every one of them ends the working state, whether by finishing, by
  * pausing for an answer, or by failing.

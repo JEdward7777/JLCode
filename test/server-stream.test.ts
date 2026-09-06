@@ -142,6 +142,24 @@ describe("static client serving", () => {
     expect(await res.text()).toContain("JLCode");
   });
 
+  // D-80: the pairing is the point. `index.html` names the current build's asset
+  // hashes, so a cached copy pins a tab to a *previous* build — which is how a
+  // session paused correctly on the server and rendered as `idle` in the browser.
+  it("index.html must be revalidated; hashed assets may be cached forever", async () => {
+    const app = makeApp(webDir);
+    const index = await app.request("/");
+    expect(index.headers.get("cache-control")).toBe("no-cache");
+    const js = await app.request("/assets/app.js");
+    expect(js.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+  });
+
+  it("the SPA fallback is index.html, so it carries index.html's caching", async () => {
+    // A deep link serves index.html's *bytes*; caching them under the deep
+    // link's name would strand that route on an old build all the same.
+    const res = await makeApp(webDir).request("/some/deep/link");
+    expect(res.headers.get("cache-control")).toBe("no-cache");
+  });
+
   it("API routes still win over the static catch-all", async () => {
     const res = await makeApp(webDir).request("/health");
     expect((await res.json()).ok).toBe(true);

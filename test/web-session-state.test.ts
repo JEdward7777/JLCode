@@ -5,7 +5,7 @@
  * and the events that flip status/spend/prompt state.
  */
 import { describe, it, expect } from "vitest";
-import { newSlice, reduceEvent, sliceFromDescriptor, applyState, isUnresumable } from "../web/src/session-state";
+import { newSlice, reduceEvent, sliceFromDescriptor, applyState, isUnresumable, isAwaiting } from "../web/src/session-state";
 import type { SessionDescriptor, WireEvent } from "../web/src/api";
 
 describe("session slice from a roster descriptor", () => {
@@ -103,6 +103,27 @@ describe("the tool-round budget pause folds into the slice (D-79)", () => {
       request: { id: "stall1", rounds: 3, budget: 3, nextBudget: 6 },
     } as unknown as WireEvent);
     expect(after.settleSeq).toBe(before.settleSeq + 1);
+  });
+});
+
+describe("a pause this build does not know about (D-80)", () => {
+  // A tab older than the server it is talking to. The card cannot be drawn — but
+  // calling the session `idle` would make a stopped turn look like a finished
+  // one, which is the whole of D-79 wearing a stale-bundle disguise.
+  it("every awaiting-* status reads as waiting, known or not", () => {
+    expect(isAwaiting("awaiting-continue")).toBe(true);
+    expect(isAwaiting("awaiting-approval")).toBe(true);
+    expect(isAwaiting("awaiting-something-not-invented-yet")).toBe(true);
+    expect(isAwaiting("idle")).toBe(false);
+    expect(isAwaiting("running")).toBe(false);
+    expect(isAwaiting("halted")).toBe(false);
+  });
+
+  it("an unknown pause still lands as not-working, with no card to draw", () => {
+    const s = applyState(newSlice("s1"), { status: "awaiting-something-new" as never });
+    expect(s.working).toBe(false);
+    expect(s.pendingStall).toBeNull();
+    expect(isAwaiting(s.status)).toBe(true);
   });
 });
 
