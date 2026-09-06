@@ -219,6 +219,7 @@ function stateOf(session: Session): Record<string, unknown> {
   if (session.status === "awaiting-approval") base.approvalRequest = session.awaitingApproval;
   if (session.status === "awaiting-input") base.question = session.awaitingInput;
   if (session.status === "awaiting-compaction") base.compactionRequest = session.awaitingCompaction;
+  if (session.status === "awaiting-continue") base.stallRequest = session.awaitingContinue;
   if (session.status === "awaiting-persistence") base.persistenceFault = session.awaitingPersistence;
   return base;
 }
@@ -561,6 +562,18 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } else {
       await session.compactNow();
     }
+    await flushDurable();
+    return c.json(stateOf(session));
+  });
+
+  // Resume a turn paused on the tool-round budget (D-79). No body: Continue means
+  // "keep going on double the budget", and the loop picks up at the model call it
+  // was about to make — nothing was dropped to replay.
+  app.post("/session/:id/continue", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (session.status !== "awaiting-continue") return c.json({ error: "not paused for continue" }, 409);
+    await session.continueRun();
     await flushDurable();
     return c.json(stateOf(session));
   });

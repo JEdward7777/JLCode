@@ -13,6 +13,7 @@
  * global `WebSocket`, which is why it wants Node 22+.
  *
  *   node harness/peek/peek.mjs up --ctx 4000 --buffer 1000 --trigger suggest
+ *   node harness/peek/peek.mjs up --rounds 3      # then `chat "loop:"` → the D-79 card
  *   node harness/peek/peek.mjs chat "hello there"
  *   node harness/peek/peek.mjs shot x24-normal --crop topbar
  *   node harness/peek/peek.mjs click ".tool-head" --shot x23-expanded
@@ -167,7 +168,7 @@ async function waitFor(url, label, timeoutMs = 15000) {
 /** An isolated config with exactly the compaction knobs a peek wants to pose.
  *  `contextLength`/`bufferTokens` are the two dials that decide what the
  *  compaction surfaces (and X-24's meter) actually show, so they are flags. */
-function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model, mcp }) {
+function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model, mcp, rounds }) {
   fs.mkdirSync(cfgDir, { recursive: true });
   fs.mkdirSync(workDir, { recursive: true });
   const config = {
@@ -188,6 +189,10 @@ function writeConfig({ cfgDir, workDir, ctx, buffer, trigger, model, mcp }) {
         // text-only — which would make every image surface unpeekable. This is
         // the documented way back (D-78g), and the same reason `--mcp` exists.
         acceptsImages: true,
+        // The tool-round budget (D-79). Small values pose the Continue card in a
+        // few turns instead of fifty — `--rounds 3` plus the fake driver's
+        // `loop:` is the whole recipe.
+        ...(rounds ? { commands: { toolRounds: Number(rounds) } } : {}),
         compaction: {
           auto: false,
           triggerModes: [trigger],
@@ -250,7 +255,7 @@ async function cmdUp(flags) {
   // comes from this config and no network fetch is attempted (H-06/D-60).
   const model = flags.model ?? "peek/model";
   const trigger = flags.trigger ?? "suggest";
-  writeConfig({ cfgDir, workDir, ctx: flags.ctx, buffer: flags.buffer, trigger, model, mcp: flags.mcp });
+  writeConfig({ cfgDir, workDir, ctx: flags.ctx, buffer: flags.buffer, trigger, model, mcp: flags.mcp, rounds: flags.rounds });
 
   const cli = path.join(REPO, "dist", "cli.js");
   if (!fs.existsSync(cli)) throw new Error(`no build at ${cli} — run \`npm run build\` first`);

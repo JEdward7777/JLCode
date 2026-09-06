@@ -22,6 +22,14 @@ import type {
  *  check at a different time than the one that fires is worse than none. */
 export const DEFAULT_WATCHDOG_MINUTES = 30;
 
+/** Model turns a single user message gets before the loop pauses and asks (D-79).
+ *  Not a cost backstop — the spend cap (D-33) is that, and it is measured in the
+ *  unit that actually matters. This one catches a loop that has stopped
+ *  converging, so it sits where "still working" stops being credible on its own
+ *  rather than where a normal piece of work ends: real turns run 10-25 rounds.
+ *  The value it replaces was 12, and it **ended the turn** there, silently. */
+export const DEFAULT_TOOL_ROUNDS = 50;
+
 /** Are user turns stamped with the time they were sent (X-25e)? Stated once,
  *  here, because the default is the interesting part: **absent means on**, so a
  *  config written before X-25 — and every config nobody ever edits — gets the
@@ -46,6 +54,16 @@ export function projectInstructionsEnabled(config: { environment?: EnvironmentSe
 export function commandWatchdogMinutes(config: { commands?: CommandSettings } | undefined): number {
   const m = config?.commands?.watchdogMinutes;
   return typeof m === "number" && Number.isFinite(m) && m >= 0 ? m : DEFAULT_WATCHDOG_MINUTES;
+}
+
+/** Model turns one user message gets before the loop pauses to ask (D-79).
+ *  Resolved here rather than defaulted in `Session` so the browser, the factory
+ *  and the constructor cannot disagree about the number. `0` is not a way to
+ *  disable the pause — an unbounded loop is the bug this exists to catch — so a
+ *  non-positive value falls back to the default. */
+export function toolRoundBudget(config: { commands?: CommandSettings } | undefined): number {
+  const n = config?.commands?.toolRounds;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_TOOL_ROUNDS;
 }
 
 /** Fields a caller supplies when creating a config (id/timestamps are generated). */

@@ -10,7 +10,7 @@
  * cannot, by construction.
  */
 import { loadConfig, saveConfig } from "../config/store.js";
-import { commandWatchdogMinutes, projectInstructionsEnabled } from "../config/operations.js";
+import { commandWatchdogMinutes, toolRoundBudget, projectInstructionsEnabled } from "../config/operations.js";
 import { readWorkspaceInstructions, renderProjectInstructions } from "../workspace/instructions.js";
 import type { ModelConfig } from "../config/types.js";
 import type { JlcodePaths } from "../paths.js";
@@ -104,6 +104,10 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
     // new face, a setting that looks stored and reaches only half of what it
     // governs.
     const watchdogMinutes = commandWatchdogMinutes(config);
+    // The tool-round budget (D-79), resolved from the same `commands` group. A
+    // setting that reaches no factory is the H-06 defect; this one governs when
+    // the loop stops to ask whether it is still getting somewhere.
+    const toolRounds = toolRoundBudget(config);
     return new Session({
       config,
       driver: deps.makeDriver(config),
@@ -113,6 +117,7 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
         ...deps.mcpTools(),
       ]),
       watchdogMs: watchdogMinutes * 60_000,
+      maxToolIterations: toolRounds,
       sandbox: new Sandbox(roots),
       // Live-switchable gate (D-07/D-08): rebuilt when the user changes
       // mode/approval from the browser. Starts from the config defaults.

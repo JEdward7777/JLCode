@@ -92,6 +92,9 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   edit: <path> | <a> => <b>   → an apply_edits batch (unified-diff card, D-53)
  *   run: <command>              → a run_command call (approval card, edit-approve)
  *   read: <path>                → a read_file call
+ *   loop: [path]                → read_file, over and over, until the tool-round
+ *                                 budget pauses the turn (D-79). The one surface
+ *                                 that needs a model which will not stop.
  *   ask: <q> [| a, b, c]        → a single-question ask_user form (D-72 escape hatch)
  *   form:                       → a multi-question ask_user form
  *   mcp: <tool> <json>          → a bridged MCP call, e.g. `mcp: srv__echo {"text":"hi"}`
@@ -143,8 +146,25 @@ export function fakeAgentDriver(): LlmDriver {
  *  notice is reachable without a long wait. */
 let flakyLeft = 2;
 
+/** The most recent thing the *person* typed, stripped of JLCode's per-turn
+ *  framing (X-25) — as opposed to the last message, which is usually a tool
+ *  result. Only `loop:` needs this: every other prefix is answered on the turn
+ *  it arrives, before any tool result can push it out of last place. */
+function lastUserMessage(req: ChatRequest): string {
+  const user = [...req.messages].reverse().find((m) => m.role === "user" && typeof m.content === "string");
+  return typeof user?.content === "string" ? stripEnvironmentDetails(user.content).trim() : "";
+}
+
 function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     const last = req.messages[req.messages.length - 1];
+    // `loop:` keeps calling read_file forever, so the tool-round pause (D-79) is
+    // reachable offline. It has to be answered *before* the wrap-up below —
+    // that line is what makes every other prefix a one-round affair, and a
+    // budget can only be exhausted by a model that refuses to stop.
+    if (lastUserMessage(req).startsWith("loop:")) {
+      const path = lastUserMessage(req).slice("loop:".length).trim() || "README.md";
+      return toolCall("read_file", { path });
+    }
     // A tool result (or anything non-user) just settled → wrap up the turn.
     if (!last || last.role !== "user") return textReply("Done — the tool ran and reported back.");
 

@@ -48,6 +48,16 @@ export type DebugRecord =
       attachments?: string[];
       /** The assistant entry that issued this tool call (per-turn linkage). */
       entryId?: string;
+    }
+  | {
+      /** Something the loop did that is neither a call nor a tool — a pause, a
+       *  budget, a decision taken on the agent's behalf (D-79). The journal is
+       *  where "why did it stop?" gets answered, so a stop that leaves no record
+       *  is a stop nobody can diagnose. */
+      kind: "note";
+      message: string;
+      /** The assistant entry the note follows (per-turn linkage). */
+      entryId?: string;
     };
 
 export type SessionStatus =
@@ -56,6 +66,7 @@ export type SessionStatus =
   | "awaiting-approval"
   | "awaiting-input"
   | "awaiting-compaction"
+  | "awaiting-continue"
   | "awaiting-persistence"
   | "halted";
 
@@ -89,6 +100,22 @@ export interface CompactionRequest {
   prefixTokens: number;
   threshold: number;
   window: number;
+}
+
+/** The loop paused because it has taken its whole budget of model turns without
+ *  handing the turn back (D-79). Not a failure and not a cost breach — just the
+ *  point at which "still working" becomes a claim worth checking. Every tool
+ *  call issued so far has already run: the pause sits *before* the next model
+ *  call, never between a call and its result. Resolved via Session.continueRun,
+ *  which resumes the same turn on a doubled budget. */
+export interface StallRequest {
+  id: string;
+  /** Model turns taken since the user's message. */
+  rounds: number;
+  /** The budget that was just spent. */
+  budget: number;
+  /** What Continue would raise it to. */
+  nextBudget: number;
 }
 
 /**
@@ -252,6 +279,10 @@ export type SessionEvent =
   // `cancelable` mode offers Compact/Skip, `hard` offers Compact only. Resolved
   // via Session.resolveCompaction (server /session/:id/compact).
   | { type: "awaiting-compaction"; request: CompactionRequest }
+  // The loop has taken `budget` model turns on one user message without handing
+  // the turn back (D-79). It holds here — pending tool calls all executed — and
+  // Session.continueRun resumes on a doubled budget.
+  | { type: "awaiting-continue"; request: StallRequest }
   // The live compaction trigger mode changed (P6c, D-27) — the header selector,
   // persisted as the config default (like mode/approval).
   | { type: "trigger-mode"; mode: CompactionTrigger }

@@ -1598,3 +1598,46 @@ after those fixes; both are the kind of thing only a look catches.
 Not exercised: the voice itself. This container's Chrome has no speech engine, so
 what was checked is which controls exist and what they are wired to — the channel
 below them is H-07's, and unchanged here.
+
+---
+
+## D-79 — the pause that used to be a silent stop · 2026-09-06 · ✅ looked good (one fix while looking)
+
+**Loaded:** `node harness/peek/peek.mjs up --rounds 1` (and `--rounds 3`) →
+`chat "loop: README.md"`, then the Continue button by **real mouse click**.
+Both dials are new and exist for this: `--rounds N` writes
+`commands.toolRounds`, and the fake driver's `loop:` keeps calling `read_file`
+forever, since a budget can only be exhausted by a model that will not stop
+(D-77g's precedent — a surface with no offline driver is a surface nobody looks
+at).
+
+**Screenshots:** [`visual/d79-continue-card.png`](visual/d79-continue-card.png)
+(the card, after one round) ·
+[`visual/d79-continue-rail.png`](visual/d79-continue-rail.png) (the rail badge) ·
+[`visual/d79-continued.png`](visual/d79-continued.png) (after clicking Continue:
+six tool calls, six results, the card back at budget → 12) ·
+[`visual/d79-journal-note.png`](visual/d79-journal-note.png) (the new `note`
+record in the drawer)
+
+Confirmed with my own eyes:
+
+- **Every tool call has a result, and then the card.** Three `read_file` rows,
+  three results, *then* the pause — which is the whole fix. The old cap ended the
+  turn one step earlier, leaving the last call issued and never run.
+- **Continue resumes the same turn**, by real click: three more rounds, spend
+  $0.0099 → $0.0198 (six turns, not a restart), and the card returns saying
+  budget → 12. Nothing was replayed and no duplicate entry appeared.
+- **The rail no longer says `idle`.** It reads **`continue?`** with the amber
+  attention dot. This is the surface that made the original bug so convincing —
+  a session that had quietly given up looked exactly like one that had finished.
+- **The journal says why it stopped.** `NOTE — Paused after 1 model turn on one
+  message (budget 1). Continue → 2.`, in the drawer *and* in the persisted
+  `.journal.jsonl`. The investigation that produced D-79 was slow precisely
+  because that line did not exist; `tail` on the journal now answers it.
+- **Typing instead of clicking still works.** A fresh message while paused starts
+  a new turn on a fresh budget (checked over HTTP: `status: idle`, the reply
+  landed) — so the card is an offer, not a gate.
+
+**What changed while looking:** the card and the note both read "1 model
+**turns**". Pluralised in both places — a one-round budget only comes up in a
+peek, but the same string renders at every other count too.

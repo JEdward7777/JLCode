@@ -181,6 +181,13 @@ request only, leaving background commands and your queued messages alone (Stop i
 still there for everything else). Blips you never see — a rate limit or a 5xx is
 re-sent automatically, with the backoff shown as it happens.
 
+On a long piece of work JLCode eventually stops and asks: *"50 model turns on
+this message without finishing — still getting somewhere?"* with a **Continue**
+button that doubles the budget and picks up exactly where it paused. Nothing is
+lost when it asks — every tool call it made has already run — and typing a new
+message instead is just as good an answer. The first number is
+`commands.toolRounds` in your config if 50 is the wrong place for it to ask.
+
 Past threads are in the rail too, under **HISTORY** below the live ones — filtered
 to the folder you're serving, with an *all folders* toggle. Clicking one **peeks**
 at it: the transcript renders read-only from disk, with branch arrows to walk it,

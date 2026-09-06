@@ -98,6 +98,12 @@ export interface CommandSettings {
    *  a runaway. The number is also stated in `run_command`'s description, so
    *  changing it changes what the model is told. */
   watchdogMinutes?: number;
+  /** Model turns one user message may take before the loop pauses to ask whether
+   *  it is still getting somewhere (D-79). Absent = 50; the budget **doubles**
+   *  on each Continue, so this is where the first question lands, not a ceiling.
+   *  Lives beside the watchdog for the same reason: how patient to be with a
+   *  long run is a question about the model you are paying for. */
+  toolRounds?: number;
 }
 
 /** A named model configuration a user works under (e.g. "Client A — Opus"). */

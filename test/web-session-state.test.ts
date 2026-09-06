@@ -73,6 +73,39 @@ describe("compaction events fold into the slice (D-27, P6c)", () => {
   });
 });
 
+describe("the tool-round budget pause folds into the slice (D-79)", () => {
+  it("applyState surfaces a pending Continue", () => {
+    const s = applyState(newSlice("s1"), {
+      status: "awaiting-continue",
+      stallRequest: { id: "stall1", rounds: 50, budget: 50, nextBudget: 100 },
+    });
+    expect(s.pendingStall?.nextBudget).toBe(100);
+    expect(s.working).toBe(false);
+  });
+
+  it("awaiting-continue sets the card; the resumed turn clears it", () => {
+    let s = newSlice("s1");
+    s = reduceEvent(s, {
+      type: "awaiting-continue",
+      request: { id: "stall1", rounds: 50, budget: 50, nextBudget: 100 },
+    } as unknown as WireEvent);
+    expect(s.pendingStall?.rounds).toBe(50);
+    expect(s.working).toBe(false);
+    s = reduceEvent(s, { type: "assistant-start" } as WireEvent);
+    expect(s.pendingStall).toBeNull();
+    expect(s.working).toBe(true);
+  });
+
+  it("counts as a settle — the turn came back to you (X-26)", () => {
+    const before = newSlice("s1");
+    const after = reduceEvent(before, {
+      type: "awaiting-continue",
+      request: { id: "stall1", rounds: 3, budget: 3, nextBudget: 6 },
+    } as unknown as WireEvent);
+    expect(after.settleSeq).toBe(before.settleSeq + 1);
+  });
+});
+
 describe("the context meter's reading folds into the slice (X-24)", () => {
   it("a live `context` event updates tokens, and carries window/threshold when known", () => {
     let s = newSlice("s1");

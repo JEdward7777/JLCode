@@ -17,6 +17,7 @@ import type {
   QueuedMessage,
   SessionDescriptor,
   SessionState,
+  StallRequest,
   TaskView,
   TodoItem,
   TriggerMode,
@@ -69,6 +70,10 @@ export interface SessionSlice {
   triggerMode: TriggerMode;
   needsCompaction: boolean;
   pendingCompaction: CompactionRequest | null;
+  /** The turn used its whole tool-round budget and is waiting on Continue (D-79).
+   *  Nothing is half-done behind it: the pause sits between a landed tool result
+   *  and the next model call. */
+  pendingStall: StallRequest | null;
   /** The window compaction is measured against, and where that number came from
    *  (D-44c). `"fallback"` means we could not look the model up and are guessing,
    *  which the UI must say out loud — H-06 hid for a month behind a window that
@@ -142,6 +147,7 @@ export function newSlice(id: string, model = ""): SessionSlice {
     triggerMode: "cancelable",
     needsCompaction: false,
     pendingCompaction: null,
+    pendingStall: null,
     contextWindow: null,
     contextWindowSource: null,
     contextThreshold: null,
@@ -184,6 +190,7 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (state.triggerMode) next.triggerMode = state.triggerMode;
   if (typeof state.needsCompaction === "boolean") next.needsCompaction = state.needsCompaction;
   next.pendingCompaction = state.compactionRequest ?? null;
+  next.pendingStall = state.stallRequest ?? null;
   if (typeof state.contextWindow === "number") next.contextWindow = state.contextWindow;
   if (state.contextWindowSource) next.contextWindowSource = state.contextWindowSource as SessionSlice["contextWindowSource"];
   if (typeof state.contextThreshold === "number") next.contextThreshold = state.contextThreshold;
@@ -205,6 +212,7 @@ const SETTLE_EVENTS: ReadonlySet<string> = new Set([
   "awaiting-approval",
   "awaiting-input",
   "awaiting-compaction",
+  "awaiting-continue",
   "awaiting-persistence",
   "cap-reached",
   "error",
@@ -279,6 +287,8 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
         live: { text: "", reasoning: "" },
         liveParent: (e.parent as string | null) ?? null,
         pendingCompaction: null,
+        pendingStall: null, // the turn resumed — whatever paused it is spent
+
         retryable: false, // an attempt is under way; there is nothing to re-send
       };
     case "reasoning":
@@ -313,6 +323,10 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, needsCompaction: true };
     case "awaiting-compaction":
       return { ...s, working: false, live: null, pendingCompaction: e.request as CompactionRequest };
+    case "awaiting-continue":
+      // The budget ran out (D-79). Not an error and not a stop — the turn is
+      // intact and one click resumes it, so it gets a card rather than a notice.
+      return { ...s, working: false, live: null, pendingStall: e.request as StallRequest };
     case "compacted":
       // A compaction landed — clear the crossed flag + any pending pause. The
       // fresh compaction entry arrives via the normal `entry` event.

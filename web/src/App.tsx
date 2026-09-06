@@ -15,6 +15,7 @@ import {
   setTitle as apiSetTitle,
   setTriggerMode as apiSetTriggerMode,
   compact as apiCompact,
+  continueRun as apiContinue,
   resolvePersistence as apiResolvePersistence,
   setCap as apiSetCap,
   stopSession as apiStop,
@@ -56,6 +57,7 @@ import {
   type Mode,
   type QueuedMessage,
   type CompactionRequest,
+  type StallRequest,
   type PersistenceFault,
   type SessionDescriptor,
   type SessionState,
@@ -597,6 +599,18 @@ export function App() {
     [],
   );
 
+  // Resume a turn paused on the tool-round budget (D-79). Optimistic: clear the
+  // card and show working straight away, because the loop picks up at the model
+  // call it paused before — there is nothing to replay and nothing to undo.
+  const doContinue = useCallback(async (id: string) => {
+    dispatch({ t: "patch", id, patch: { pendingStall: null, working: true } });
+    try {
+      await apiContinue(id);
+    } catch (err) {
+      dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
+    }
+  }, []);
+
   // Persistence recovery (D-46): retry the stalled writes, or discard them. The
   // session only leaves `awaiting-persistence` if the retry actually lands, so a
   // still-full disk keeps the banner up (with `retryFailed` set) rather than
@@ -888,6 +902,7 @@ export function App() {
           onChangeMode={changeMode}
           onChangeTriggerMode={changeTriggerMode}
           onCompact={doCompact}
+          onContinue={doContinue}
           onResolvePersistence={resolvePersistence}
           retryingPersistence={retryingPersistence}
           onResolveApproval={resolveApproval}
@@ -1019,6 +1034,10 @@ function SessionRail({
     if (s.persistenceFault) return "can’t save"; // outranks everything (D-46)
     if (s.pendingApproval) return "needs approval";
     if (s.pendingAsk) return "needs answer";
+    // A paused turn must never read as a finished one (D-79) — the rail badge is
+    // the surface a person actually scans when a session goes quiet, and "idle"
+    // there is what made the old silent stop look like the agent's own choice.
+    if (s.pendingStall) return "continue?";
     if (s.capReached) return "cap reached";
     if (s.working || s.status === "running") return "working…";
     if (s.tasks.length > 0) return "task running";
@@ -1027,7 +1046,7 @@ function SessionRail({
   };
   const dotClass = (s: SessionSlice): string => {
     if (s.persistenceFault) return "halt"; // a stalled write stops the session (D-46)
-    if (s.pendingApproval || s.pendingAsk || s.capReached) return "attn";
+    if (s.pendingApproval || s.pendingAsk || s.pendingStall || s.capReached) return "attn";
     if (s.working || s.status === "running" || s.tasks.length > 0) return "busy";
     if (s.status === "halted") return "halt";
     return "";
@@ -1398,6 +1417,7 @@ function ChatPane({
   onChangeMode,
   onChangeTriggerMode,
   onCompact,
+  onContinue,
   onResolvePersistence,
   retryingPersistence,
   onResolveApproval,
@@ -1425,6 +1445,7 @@ function ChatPane({
   onChangeMode: (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
   onChangeTriggerMode: (id: string, mode: TriggerMode) => void;
   onCompact: (id: string, opts?: { skip?: boolean }) => void;
+  onContinue: (id: string) => void;
   onResolvePersistence: (id: string, opts?: { discard?: boolean }) => void;
   retryingPersistence: boolean;
   onResolveApproval: (
@@ -1707,6 +1728,7 @@ function ChatPane({
             windowSource={slice.contextWindowSource}
           />
         )}
+        {slice.pendingStall && <StallCard request={slice.pendingStall} onContinue={() => onContinue(id)} />}
         {/* suggest mode: non-blocking nudge once the budget is crossed (D-27). */}
         {slice.triggerMode === "suggest" && slice.needsCompaction && !slice.pendingCompaction && (
           <CompactionBanner
@@ -2306,6 +2328,28 @@ function TasksPanel({ tasks, onKill }: { tasks: TaskView[]; onKill: (id: string)
 }
 
 /** Cap-reached banner (D-33): nothing was killed; raising the cap resumes. */
+/** The tool-round budget ran out (D-79). Deliberately *not* phrased as a failure:
+ *  the common case is a long piece of work that is going fine, so the card asks
+ *  rather than accuses, and says in as many words that nothing was lost — the
+ *  bug it replaces silently dropped the pending tool call, which is exactly the
+ *  way for work to look done without having happened. */
+function StallCard({ request, onContinue }: { request: StallRequest; onContinue: () => void }) {
+  return (
+    <div className="card cap-banner">
+      <div className="fence-note">
+        ⏸ {request.rounds} model {request.rounds === 1 ? "turn" : "turns"} on this message without finishing — pausing
+        to ask whether it is still getting somewhere. Nothing was lost: every tool call has run, and Continue picks up
+        at the next model call.
+      </div>
+      <div className="actions">
+        <button className="primary" onClick={onContinue}>
+          Continue (budget → {request.nextBudget})
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CapBanner({ spendUsd, capUsd, onRaise }: { spendUsd: number; capUsd: number | null; onRaise: (v: number) => void }) {
   return (
     <div className="card cap-banner">
@@ -2754,6 +2798,16 @@ function JournalRow({ r }: { r: JournalRecord }) {
         {r.error ? <div className="jerr">{r.error}</div> : null}
         {r.reasoningPreview ? <pre className="jprev">💭 {r.reasoningPreview}</pre> : null}
         {r.textPreview ? <pre className="jprev">{r.textPreview}</pre> : null}
+      </div>
+    );
+  }
+  if (r.kind === "note") {
+    return (
+      <div className="jrow">
+        <div className="jrow-head">
+          <span className="jkind">note</span>
+          <span className="jmeta">{r.message}</span>
+        </div>
       </div>
     );
   }

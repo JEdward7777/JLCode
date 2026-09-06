@@ -18,7 +18,7 @@ import type { SessionSlice } from "./session-state";
 /** Why a session is asking for you. Ordered by how much it outranks: a stalled
  *  write stops everything (D-46), a pause is a demand, and `idle` is the mildest
  *  — the turn simply landed, which is still "your turn" (X-26's trigger list). */
-export type AttentionReason = "fault" | "approval" | "input" | "compaction" | "cap" | "idle";
+export type AttentionReason = "fault" | "approval" | "input" | "compaction" | "continue" | "cap" | "idle";
 
 /**
  * What this session is waiting on right now, or `null` while it is busy.
@@ -34,6 +34,9 @@ export function attentionOf(s: SessionSlice): AttentionReason | null {
   if (s.pendingApproval) return "approval";
   if (s.pendingAsk) return "input";
   if (s.pendingCompaction) return "compaction";
+  // The tool-round pause (D-79) is a demand like the others: the turn is held
+  // open and goes nowhere until someone answers it.
+  if (s.pendingStall) return "continue";
   if (s.capReached) return "cap";
   if (s.working) return null;
   return "idle";

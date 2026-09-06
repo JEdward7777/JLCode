@@ -11,7 +11,7 @@
 import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
-import { DEFAULT_WATCHDOG_MINUTES, turnTimestampsEnabled } from "../config/operations.js";
+import { DEFAULT_TOOL_ROUNDS, DEFAULT_WATCHDOG_MINUTES, turnTimestampsEnabled } from "../config/operations.js";
 import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
@@ -65,6 +65,7 @@ import type {
   AskUserQuestion,
   AskUserRequest,
   CompactionRequest,
+  StallRequest,
   LearnAnswers,
   LearnRequest,
   PersistenceFault,
@@ -100,6 +101,8 @@ export interface SessionOptions {
   /** Initial mode/approval (default from the config). Reported + re-gated live. */
   mode?: Mode;
   approval?: ApprovalPolicy;
+  /** Model turns one user message may take before the loop pauses to ask
+   *  whether it is still making progress (D-79). Doubles on every Continue. */
   maxToolIterations?: number;
   /** Called when the user chooses "remember this root" (D-19) — to persist it. */
   onAddRoot?: (dir: string) => void;
@@ -336,6 +339,17 @@ export class Session {
   /** A pre-send compaction decision the loop is paused on (P6c, D-27) — set in
    *  the `cancelable` / `hard` trigger modes. Resolved via resolveCompaction. */
   private pendingCompaction: CompactionRequest | undefined;
+  /** The "still working?" pause the tool-round budget raises (D-79). Resolved
+   *  via continueRun, which doubles the budget and resumes the same turn. */
+  private pendingStall: StallRequest | undefined;
+  /** Model turns taken on the **current user message** (D-79). Reset by `send`
+   *  and by nothing else: an approval, an ask_user answer or a compaction
+   *  decision resumes the same turn, so the count has to survive them — the old
+   *  per-`runLoop` counter is exactly why the budget was unpredictable. */
+  private toolRounds = 0;
+  /** The live budget `toolRounds` is measured against. Starts at
+   *  `maxToolIterations` each user message and doubles on every Continue. */
+  private iterationBudget: number;
   /** A stalled persistence write the session is stopped on (D-46). Raised from
    *  outside the loop by the store's fault listener; cleared by retry/discard. */
   private pendingPersistence: PersistenceFault | undefined;
@@ -411,7 +425,8 @@ export class Session {
     this.gate = options.buildGate
       ? options.buildGate(this.mode, this.approval)
       : (options.gate ?? new AllowAllGate());
-    this.maxToolIterations = options.maxToolIterations ?? 12;
+    this.maxToolIterations = options.maxToolIterations ?? DEFAULT_TOOL_ROUNDS;
+    this.iterationBudget = this.maxToolIterations;
     this.onAddRoot = options.onAddRoot;
     // The system prompt, composed once and never again (X-15c/d). Order is
     // base → the **workspace's** instructions → the **config's** addendum, and
@@ -697,6 +712,46 @@ export class Session {
     await this.advance();
   }
 
+  get awaitingContinue(): StallRequest | undefined {
+    return this.pendingStall;
+  }
+
+  /** Raise the "still working?" pause (D-79). Reached only from the one point in
+   *  the loop where nothing is half-done: the tool batch is drained, its results
+   *  are on the tree, and the next model call has not been made. */
+  private raiseStallPause(): void {
+    const request: StallRequest = {
+      id: newId("stall"),
+      rounds: this.toolRounds,
+      budget: this.iterationBudget,
+      nextBudget: this.iterationBudget * 2,
+    };
+    this.pendingStall = request;
+    this.status = "awaiting-continue";
+    // The journal is where "why did it stop?" is answered (D-15). The bug this
+    // pause replaces was invisible precisely because it wrote nothing here.
+    this.emit({
+      type: "debug",
+      record: {
+        kind: "note",
+        message: `Paused after ${request.rounds} model turn${request.rounds === 1 ? "" : "s"} on one message (budget ${request.budget}). Continue → ${request.nextBudget}.`,
+        entryId: this.activeAssistantId,
+      },
+    });
+    this.emit({ type: "awaiting-continue", request });
+  }
+
+  /** Resume a stalled turn on a doubled budget (D-79) — the Continue button.
+   *  Nothing is replayed and nothing was dropped: the loop picks up at the model
+   *  call it was about to make. */
+  async continueRun(): Promise<void> {
+    const pending = this.pendingStall;
+    if (!pending) throw new Error("No pending continue");
+    this.pendingStall = undefined;
+    this.iterationBudget = pending.nextBudget;
+    await this.advance();
+  }
+
   /** Compact on demand from the UI (P6c) — the `manual`/`suggest` "Compact now"
    *  button. Only runs from a settled (idle) session; a no-op otherwise (so it
    *  can't race a live turn). compact() clears needsCompaction on success. */
@@ -738,6 +793,7 @@ export class Session {
       this.pendingApproval = undefined;
       this.pendingQuestion = undefined;
       this.pendingCompaction = undefined;
+      this.pendingStall = undefined;
       this.emit({ type: "queue", queue: [] });
     }
     this.emit({ type: "stopped", scope });
@@ -1058,6 +1114,12 @@ export class Session {
     // everything this turn produces chains off here no matter where the reader
     // navigates while it runs.
     this.turnLeaf = this.conversation.activeLeaf;
+    // A fresh message is a fresh turn, so the tool-round budget starts over
+    // (D-79) — and it starts over *here only*: approval, ask_user and compaction
+    // all resume the same turn and must keep spending the same budget.
+    this.toolRounds = 0;
+    this.iterationBudget = this.maxToolIterations;
+    this.pendingStall = undefined;
     const entry = this.pushEntry({ type: "user", text });
     this.emit({ type: "user", entryId: entry.id, text });
     this.pendingToolCalls = [];
@@ -1194,6 +1256,7 @@ export class Session {
         this.status === "awaiting-approval" ||
         this.status === "awaiting-input" ||
         this.status === "awaiting-compaction" ||
+        this.status === "awaiting-continue" ||
         this.capReached;
       if (!suspended) this.turnLeaf = undefined;
     }
@@ -1202,7 +1265,13 @@ export class Session {
   private async runLoop(): Promise<void> {
     this.status = "running";
     if (this.pendingToolCalls.length === 0) this.flushPendingUser();
-    for (let iter = 0; iter < this.maxToolIterations; iter++) {
+    // Unbounded by construction (D-79). What used to end the turn here was a
+    // `for` over `maxToolIterations` that simply *fell out the bottom* into the
+    // same code as a finished answer: no event, no journal line, and the last
+    // batch of tool calls left un-run. The budget now lives on `toolRounds` and
+    // is spent at the one point where stopping costs nothing — before the next
+    // model call, with every tool call already executed and its result landed.
+    for (;;) {
       // Global stop observed at a turn boundary (D-34): soft or hard both settle
       // here; a hard stop has already aborted/killed/cleared.
       if (this.stopScope) return this.settleStopped();
@@ -1239,6 +1308,14 @@ export class Session {
         return;
       }
 
+      // Out of budget (D-79). Every tool call this turn issued has run and its
+      // result is on the tree, so the pause costs nothing to hold and nothing to
+      // resume — Continue simply takes the next turn on a doubled budget.
+      if (this.toolRounds >= this.iterationBudget) {
+        this.raiseStallPause();
+        return;
+      }
+
       // Pre-send compaction (D-44/D-27): once ground-truth usage from a previous
       // turn latched needsCompaction, act *before* the next send per the live
       // trigger mode. `auto` compacts silently; `cancelable`/`hard` pause for a
@@ -1257,6 +1334,7 @@ export class Session {
       }
 
       const result = await this.assistantTurnWithRestart();
+      this.toolRounds++; // spent whether or not it answered — a failed round is a round
       if (!result) {
         if (this.stopScope) this.settleStopped(); // aborted by a hard stop
         return; // else error/halt/over-window already handled

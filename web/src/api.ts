@@ -84,6 +84,13 @@ export type JournalRecord =
       attachments?: string[];
       isError: boolean;
       entryId?: string;
+    }
+  | {
+      /** Something the loop did that was neither a call nor a tool (D-79) — a
+       *  pause, a budget, a decision taken on the agent's behalf. */
+      kind: "note";
+      message: string;
+      entryId?: string;
     };
 
 export type Mode = "ask" | "plan" | "code";
@@ -100,6 +107,16 @@ export interface CompactionRequest {
   prefixTokens: number;
   threshold: number;
   window: number;
+}
+
+/** The loop paused because one user message has used its whole budget of model
+ *  turns (D-79). Not a failure: every tool call already ran, and Continue resumes
+ *  the same turn on `nextBudget`. */
+export interface StallRequest {
+  id: string;
+  rounds: number;
+  budget: number;
+  nextBudget: number;
 }
 
 /** A stalled persistence write the session is stopped on (D-46). Recoverable:
@@ -273,6 +290,7 @@ export interface SessionState {
   triggerMode?: TriggerMode; // live compaction trigger mode (D-27, P6c)
   needsCompaction?: boolean; // budget crossed — drives the suggest banner (D-44)
   compactionRequest?: CompactionRequest; // pending pre-send compaction pause (D-27)
+  stallRequest?: StallRequest; // the turn used its whole tool-round budget (D-79)
   /** The window compaction measures against and where the number came from
    *  (D-44c/H-06) — `"fallback"` means we are guessing and must say so. */
   contextWindow?: number | null;
@@ -524,6 +542,12 @@ export async function setTriggerMode(id: string, mode: TriggerMode): Promise<voi
  *  skips a cancelable pause), or compact on demand (manual/suggest "Compact now"). */
 export async function compact(id: string, opts: { skip?: boolean } = {}): Promise<void> {
   await postJson(`/session/${id}/compact`, opts);
+}
+
+/** Resume a turn paused on the tool-round budget (D-79) — the Continue button.
+ *  The budget doubles and the loop picks up where it paused. */
+export async function continueRun(id: string): Promise<void> {
+  await postJson(`/session/${id}/continue`, {});
 }
 
 /** Recover from a stalled persistence write (D-46): retry the queued records, or

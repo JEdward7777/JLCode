@@ -179,6 +179,22 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > tokens from cache, so an image turn still lands on a warm prefix (D-26/D-78). **852 Tier-0/1 green,
 > 69 files**, plus this Tier-3 test replaying free.
 >
+> **D-79 built 2026-09-06 — the agent loop stopped stopping. 867 Tier-0/1 green, 71 files.**
+> Reported live: a session ran a command, printed a reasoning block, and quit. It was `runLoop`'s
+> `for (let iter = 0; iter < this.maxToolIterations; iter++)` — **12**, hardcoded, in no spec
+> document — falling out of the bottom into the same code as a finished answer: no event, no journal
+> line, and **the model's last tool call left un-run and then discarded** by the next `send`. Eight
+> orphaned tool calls sit at exactly 12 turns across the logs, so this was the repeating bug; it read
+> as random because the counter restarted at zero on every approval / `ask_user` / compaction resume.
+> Now: the budget lives on a field, is spent **before the next model call** (batch drained, results
+> on the tree — nothing to drop), and raises `awaiting-continue` with a card, a `POST
+> /session/:id/continue`, and a **doubling** budget. Per **user message**, default **50**
+> (`commands.toolRounds`), because none of the eight hits was a runaway and D-33's spend cap is the
+> real cost backstop. Two things fell out: the journal gained a **`note`** record — the investigation
+> was slow precisely because the stop wrote nothing there — and the rail badge now says **"continue?"**
+> with an attention dot instead of `idle`. Peeked in Chrome including the resume by real mouse click
+> (VISUAL-LOG "D-79"); the fake driver learned `loop:` and `peek up --rounds N` poses it.
+>
 > **X-37 filed 2026-08-13 — the model reading images.** Joshua's ask, filed not built. `read_file`
 > decodes every file as UTF-8, so a `.png` returns U+FFFD mush and *no error*, and the MCP bridge
 > already drops the `image` blocks servers send it. The cost is not the tool: `ChatMessage.content`
