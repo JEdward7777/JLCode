@@ -215,6 +215,10 @@ export function buildCompactionInstruction(opts: { hasPriorSummary?: boolean } =
     "config keys, and concrete values.\n" +
     priorLine +
     "- Be faithful and specific; never invent facts. Stay concise (well under ~4000 tokens).\n" +
+    // Said in prose rather than with `tool_choice:"none"`, which would invalidate
+    // the messages cache this ask exists to ride (D-81).
+    "- Do not call any tool. Write the summary as your reply; a tool call here is " +
+    "not executed, and the compaction is discarded if you produce no prose.\n" +
     "- Output ONLY the summary Markdown — no preamble, no sign-off, no code fences around it."
   );
 }

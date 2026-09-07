@@ -121,11 +121,12 @@ export interface ModelConfig {
   systemPromptAddendum?: string;
   defaultMode: Mode;
   defaultApproval: ApprovalPolicy;
-  /** Re-title a thread as it drifts (X-17). Default **on**; `false` keeps the
-   *  name the opening exchange earned. The opt-out exists because every
-   *  re-title is a billed model call — cheap (the question rides the cached
-   *  live prefix, D-29/D-26) and rare (roughly log2(turns) over a thread's
-   *  life), but not free. Auto-*titling* itself stays on either way. */
+  /** Re-title a thread as it drifts (X-17). Default **off** since D-81; `true`
+   *  buys it back. Every re-title is a billed model call against a prefix only
+   *  ever larger than the first one's, and it usually answers with the name the
+   *  thread already carries — so the default keeps the name the opening exchange
+   *  earned and leaves drift to the one-click rename (X-12b). Auto-*titling*
+   *  itself stays on either way, and now fires early rather than at settle. */
   autoRetitle?: boolean;
   /** Override the catalog's answer to "can this model see images?" (P8b, D-78c).
    *  Absent = ask OpenRouter's `architecture.input_modalities`, and treat an

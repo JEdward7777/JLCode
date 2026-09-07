@@ -126,10 +126,12 @@ describe("Session.compact() — the engine (D-28/D-29)", () => {
     // Spend was charged for the summary call.
     expect(events.some((e) => e.type === "spend")).toBe(true);
 
-    // Cache-reuse (D-29): the exact live prefix + one ephemeral instruction,
-    // tool_choice none, capped output. Nothing about the prefix was reshaped.
+    // Cache-reuse (D-29/D-81): the exact live prefix + one ephemeral
+    // instruction, capped output, nothing about the prefix reshaped — and
+    // `tool_choice` left unset, because setting it invalidates the messages
+    // cache this whole path exists to ride.
     const req = requests[1]!;
-    expect(req.tool_choice).toBe("none");
+    expect(req.tool_choice).toBeUndefined();
     expect(req.max_tokens).toBe(COMPACTION_MAX_TOKENS);
     expect(req.messages.slice(0, -1)).toEqual(prefix);
     const instr = req.messages[req.messages.length - 1]!;

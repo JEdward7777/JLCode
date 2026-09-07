@@ -134,10 +134,11 @@ export interface SessionOptions {
    *  somewhere to keep and show a label (the server + browser rail) benefits —
    *  a headless session would pay for a string nobody reads. */
   autoTitle?: boolean;
-  /** Re-title the thread as it drifts (X-17). Defaults **on**, but only means
-   *  anything when `autoTitle` is on: it is the same call, asked again after the
-   *  thread has grown enough to be about something else. Set false to keep the
-   *  opening name (and pay for exactly one title call, as X-09 did). */
+  /** Re-title the thread as it drifts (X-17). Defaults **off** (D-81): a
+   *  re-title is a full billed call against a prefix that is only ever bigger
+   *  than the first one, and it usually answers with the name the thread already
+   *  has. A stale label is a one-click rename (X-12b); set true to buy drift
+   *  re-titling back. Only means anything when `autoTitle` is on. */
   autoRetitle?: boolean;
   /** Whether this session's model can be handed a picture (P8b/P8e), resolved
    *  once by the factory from the catalog plus the config override. The Session
@@ -449,7 +450,7 @@ export class Session {
     this.pricing = options.config.pricing;
     this.spendCapUsd = options.spendCapUsd;
     this.autoTitle = options.autoTitle ?? false;
-    this.autoRetitle = options.autoRetitle ?? true;
+    this.autoRetitle = options.autoRetitle ?? false;
     this.acceptsImages = options.acceptsImages === true;
     // A conversation that arrives already named is measured from **here**, not
     // from its first turn (X-17): the log doesn't say how far along the thread
@@ -576,9 +577,11 @@ export class Session {
    *  into a single `compaction` overlay entry so the next request replays only
    *  `system + summary`. Provably Fable-safe by construction (zero thinking is
    *  replayed across the cut). Same-model **cache-reuse** path (D-29): the exact
-   *  live prefix is resent with an **ephemeral** instruction (`tool_choice:none`,
-   *  never persisted), so the provider serves the prefix from prompt cache; only
-   *  the short instruction + summary output are billed. The `forced` variant
+   *  live prefix is resent with an **ephemeral** instruction (never persisted),
+   *  so the provider serves the prefix from prompt cache; only the short
+   *  instruction + summary output are billed. `ephemeralRequest` is what makes
+   *  that true — it copies the tools, pin and reasoning the cache keys on, and
+   *  leaves `tool_choice` alone (D-81). The `forced` variant
    *  (D-44b over-window recovery) truncates tool outputs in the summary input so
    *  it fits when the live prefix itself over-windowed — trading the cache hit for
    *  a request that fits (the fuller flattened/cross-model path is P6c). Returns
@@ -606,12 +609,12 @@ export class Session {
       : opts.forced
         ? truncateToolOutputsForSummary(prefix)
         : prefix;
-    const req: ChatRequest = {
+    const req = this.ephemeralRequest({
       model,
-      messages: [...input, { role: "user", content: buildCompactionInstruction({ hasPriorSummary }) }],
-      tool_choice: "none",
-      max_tokens: COMPACTION_MAX_TOKENS,
-    };
+      messages: input,
+      instruction: buildCompactionInstruction({ hasPriorSummary }),
+      maxTokens: COMPACTION_MAX_TOKENS,
+    });
     const startedAt = Date.now();
     this.abortController = new AbortController();
     const events: StreamEvent[] = [];
@@ -639,7 +642,9 @@ export class Session {
         ms: Date.now() - startedAt,
         model: req.model,
         messages: req.messages.length,
-        tools: [],
+        // What actually went on the wire. A hardcoded `[]` here is what hid
+        // D-81's missing-tools defect in the journal for as long as it did.
+        tools: (req.tools ?? []).map((t) => t.function.name),
         finishReason: result.finishReason,
         usage: result.usage,
         textPreview: `[compaction${opts.forced ? " forced" : ""}] ${summary.slice(0, 160)}`,
@@ -1086,6 +1091,56 @@ export class Session {
     return req;
   }
 
+  /**
+   * An **ephemeral ask** that rides the live prefix (D-29): the title question
+   * (X-09/X-17) and the same-model compaction summary. Both append one
+   * instruction to the exact live transcript and throw the answer away.
+   *
+   * Riding the prefix is only worth anything if the provider actually serves it
+   * from cache, and the cache keys on more than the messages. Anthropic's tiers
+   * invalidate top-down, so an ask must match `buildRequest()` on **every**
+   * field ahead of the instruction:
+   *
+   *   - `tools` — tool definitions render at position 0, *ahead of* system, so
+   *     omitting them changes the prompt at byte zero and forces a full rebuild.
+   *     This is the defect that made every title call in this repo's history a
+   *     full-price ~200k-token write (D-81).
+   *   - `provider` — caches are per-deployment; an unpinned route can land on a
+   *     backend that has never seen this prefix.
+   *   - `reasoning` — a thinking/effort change invalidates the messages cache.
+   *
+   * `tool_choice` is deliberately **not** set, even though these asks want prose:
+   * changing it invalidates the messages cache, which is the whole ~200k we came
+   * for. The instructions tell the model not to call tools instead, and both
+   * callers already treat an answer with no usable text as "no result".
+   */
+  private ephemeralRequest(opts: {
+    model: string;
+    messages: ChatMessage[];
+    instruction: string;
+    maxTokens: number;
+  }): ChatRequest {
+    const req: ChatRequest = {
+      model: opts.model,
+      messages: [...opts.messages, { role: "user", content: opts.instruction }],
+      max_tokens: opts.maxTokens,
+    };
+    // Caches are model-scoped, so a cross-model compactor has no prefix to ride
+    // and must not inherit a pin meant for the working model's backend. With no
+    // cache to lose, `tool_choice:"none"` is free here — so take the hard
+    // guarantee of prose rather than relying on the instruction.
+    if (opts.model !== this.config.model) {
+      req.tool_choice = "none";
+      return req;
+    }
+    if (this.tools) req.tools = this.tools.defs();
+    const reasoning = this.reasoningParam();
+    if (reasoning) req.reasoning = reasoning;
+    const pin = pinnedProvider(this.conversation, this.workingLeaf);
+    if (pin) req.provider = { order: [pin], allow_fallbacks: false };
+    return req;
+  }
+
   /** Whether a new user message can open a turn right now; throws the reason if
    *  not. Split out so `editFork` can ask *before* it moves the leaf (H-05). */
   private assertCanSend(): void {
@@ -1347,6 +1402,14 @@ export class Session {
         });
         break;
       }
+      // Name the thread as soon as there is something to name (X-09), rather
+      // than only when the run settles. `maybeAutoTitle` is called at the settle
+      // below too, but an autonomous run's *first* settle can be 190 messages
+      // in — and the ask is billed against whatever the prefix is by then. Every
+      // first title in this repo's history but four landed past message 30; the
+      // one that fired at message 7 cost $0.012 against $0.51-$2.47 for the rest
+      // (D-81). The trigger is idempotent, so this fires once and then no-ops.
+      await this.maybeAutoTitle();
       if (!this.tools || result.toolCalls.length === 0) break; // final answer
       this.pendingToolCalls = [...result.toolCalls];
     }
@@ -1391,11 +1454,11 @@ export class Session {
 
   /** Name the conversation (X-09), and re-name it as it drifts (X-17). Joshua's
    *  design: once the first exchange has happened, tag an **ephemeral** question
-   *  onto the end of the live conversation — asked of the active model,
-   *  `tool_choice:"none"`, never appended to the tree — so the title comes from
-   *  the real context without flattening or re-shaping anything, and the
-   *  prompt-cache reuse that makes same-model compaction cheap (D-29) pays for
-   *  most of it. A failure is swallowed: a label is a nicety and must never cost
+   *  onto the end of the live conversation — asked of the active model, never
+   *  appended to the tree — so the title comes from the real context without
+   *  flattening or re-shaping anything, and the prompt-cache reuse that makes
+   *  same-model compaction cheap (D-29, via `ephemeralRequest`) pays for most
+   *  of it. A failure is swallowed: a label is a nicety and must never cost
    *  a turn.
    *
    *  X-17 makes this repeatable rather than once-per-session, on the trigger in
@@ -1411,15 +1474,12 @@ export class Session {
     // re-asking at every settle.
     this.titleMark = this.branchTitleMark();
 
-    const req: ChatRequest = {
+    const req = this.ephemeralRequest({
       model: this.config.model,
-      messages: [
-        ...this.wire(),
-        { role: "user", content: buildTitleInstruction(this.conversation.title) },
-      ],
-      tool_choice: "none",
-      max_tokens: TITLE_MAX_TOKENS,
-    };
+      messages: this.wire(),
+      instruction: buildTitleInstruction(this.conversation.title),
+      maxTokens: TITLE_MAX_TOKENS,
+    });
     const startedAt = Date.now();
     const events: StreamEvent[] = [];
     try {
@@ -1438,7 +1498,7 @@ export class Session {
         ms: Date.now() - startedAt,
         model: req.model,
         messages: req.messages.length,
-        tools: [],
+        tools: (req.tools ?? []).map((t) => t.function.name),
         finishReason: result.finishReason,
         usage: result.usage,
         textPreview: `[title] ${result.text.slice(0, 160)}`,

@@ -71,16 +71,16 @@ describe("model config operations", () => {
     expect(step2.updated.id).toBe(added.id); // same config, edited in place
   });
 
-  it("stores the auto-re-title opt-out, and clears it rather than storing the default (X-17)", () => {
+  it("stores the auto-re-title opt-in, and clears it rather than storing the default (X-17/D-81)", () => {
     const { config, added } = addModelConfig(defaultConfig(), base("A", "m"));
-    expect(added.autoRetitle).toBeUndefined(); // on by default, unwritten
+    expect(added.autoRetitle).toBeUndefined(); // off by default since D-81, unwritten
 
-    const off = updateModelConfig(config, added.id, { autoRetitle: false });
-    expect(off.updated.autoRetitle).toBe(false);
-    // Turning it back on removes the field instead of writing `true` — the
+    const on = updateModelConfig(config, added.id, { autoRetitle: true });
+    expect(on.updated.autoRetitle).toBe(true);
+    // Turning it back off removes the field instead of writing `false` — the
     // default is the absence of the setting.
-    const on = updateModelConfig(off.config, added.id, { autoRetitle: true });
-    expect(on.updated.autoRetitle).toBeUndefined();
+    const off = updateModelConfig(on.config, added.id, { autoRetitle: false });
+    expect(off.updated.autoRetitle).toBeUndefined();
   });
 
   it("stores the command watchdog interval, and tells 0 apart from unset (X-33)", () => {

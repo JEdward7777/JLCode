@@ -18,7 +18,12 @@ export const TITLE_MAX_CHARS = 60;
 /** The ephemeral instruction, appended as a final user message and dropped.
  *  With a `current` name it becomes the **re**-title question (X-17): the model
  *  is shown the name the thread already carries and told it may keep it, so an
- *  undrifted thread answers with the name it has and nothing is rewritten. */
+ *  undrifted thread answers with the name it has and nothing is rewritten.
+ *
+ *  It ends by forbidding tool calls in prose rather than with `tool_choice`,
+ *  which would invalidate the messages cache this ask exists to ride (D-81).
+ *  A stray tool call is harmless anyway: no text means no title, and the
+ *  trigger backs off on its own schedule. */
 export function buildTitleInstruction(current?: string): string {
   const lines = ["Ignore the task for one moment. Name this conversation.", ""];
   if (current) {
@@ -33,6 +38,8 @@ export function buildTitleInstruction(current?: string): string {
     "Reply with a short title — at most 6 words, no quotes, no trailing period,",
     "no preamble. It should say what this thread is about, so it can be told",
     "apart from other threads in a list. Reply with the title and nothing else.",
+    "Do not call any tool; you are only naming the thread, and a tool call here",
+    "is not executed. Answer from the conversation above.",
   );
   return lines.join("\n");
 }

@@ -303,10 +303,10 @@ export async function runConfig(args: string[]): Promise<number> {
       // And where compaction actually fires under it (X-27) — a threshold you
       // can set is only useful if you can read it back.
       process.stdout.write(thresholdLines(budget));
-      // Drift re-titling (X-17) — stated only when it is off, since a setting
-      // that is on by default and printed every time is just noise.
-      if (selected.autoRetitle === false) {
-        process.stdout.write(`    auto re-title off — threads keep their opening name\n`);
+      // Drift re-titling (X-17) — stated only when it is on, since D-81
+      // off is the default and a default printed every time is just noise.
+      if (selected.autoRetitle === true) {
+        process.stdout.write(`    auto re-title on — threads are renamed as they drift\n`);
       }
       // Whether the model is told what day it is (X-25). Stated here for the
       // same reason the window is: the failure it fixes is silent, so "off"

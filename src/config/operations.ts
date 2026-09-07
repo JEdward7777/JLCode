@@ -194,8 +194,9 @@ export function updateModelConfig(
     ...(patch.systemPromptAddendum !== undefined ? { systemPromptAddendum: patch.systemPromptAddendum } : {}),
     ...(patch.defaultMode !== undefined ? { defaultMode: patch.defaultMode } : {}),
     ...(patch.defaultApproval !== undefined ? { defaultApproval: patch.defaultApproval } : {}),
-    // X-17: on is the default, so `true` clears the field rather than storing it.
-    ...(patch.autoRetitle === undefined ? {} : patch.autoRetitle ? { autoRetitle: undefined } : { autoRetitle: false }),
+    // X-17: since D-81 **off** is the default, so `false` clears the field and
+    // only an explicit "on" is stored.
+    ...(patch.autoRetitle === undefined ? {} : patch.autoRetitle ? { autoRetitle: true } : { autoRetitle: undefined }),
     ...(compaction ? { compaction } : {}),
     ...(environment ? { environment } : {}),
     ...(commands ? { commands } : {}),

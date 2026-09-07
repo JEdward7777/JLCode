@@ -171,7 +171,7 @@ function titlingDriver(titleText = "Reading the notes file"): { driver: LlmDrive
 describe("auto-title after the first exchange (X-09)", () => {
   it("asks with an ephemeral question that never lands in the tree", async () => {
     const { driver, requests } = titlingDriver();
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
     const titles: string[] = [];
     session.onEvent((e) => {
       if (e.type === "title") titles.push(e.title);
@@ -185,7 +185,11 @@ describe("auto-title after the first exchange (X-09)", () => {
     expect(requests).toHaveLength(2);
     const last = requests[1]!.messages[requests[1]!.messages.length - 1]!;
     expect(String(last.content)).toMatch(/short title/i);
-    expect(requests[1]!.tool_choice).toBe("none"); // it must not call tools
+    // Not `tool_choice:"none"` — that would invalidate the messages cache this
+    // ask exists to ride (D-81). The instruction forbids tool calls in prose,
+    // and an answer with no text simply yields no title.
+    expect(requests[1]!.tool_choice).toBeUndefined();
+    expect(String(last.content)).toMatch(/do not call any tool/i);
     // ...and left no trace: the tree holds the real exchange and nothing else.
     expect(session.conversation.entries.map((e) => e.type)).toEqual(["user", "assistant"]);
     expect(JSON.stringify(session.conversation.entries)).not.toMatch(/short title/i);
@@ -193,7 +197,7 @@ describe("auto-title after the first exchange (X-09)", () => {
 
   it("asks once per session, not once per turn", async () => {
     const { driver, requests } = titlingDriver();
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
     await session.send("first");
     await session.send("second");
     await session.send("third");
@@ -226,7 +230,7 @@ describe("auto-title after the first exchange (X-09)", () => {
         throw new Error("provider exploded");
       },
     };
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
     await expect(session.send("hello")).resolves.toBeUndefined();
     expect(session.conversation.title).toBeUndefined();
     expect(session.status).toBe("idle");
@@ -234,7 +238,7 @@ describe("auto-title after the first exchange (X-09)", () => {
 
   it("a hand-picked name pins — the auto-title never overwrites it", async () => {
     const { driver, requests } = titlingDriver();
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
     session.setTitle("My name for it", "manual");
     await session.send("hello");
     expect(session.conversation.title).toBe("My name for it");
@@ -243,14 +247,14 @@ describe("auto-title after the first exchange (X-09)", () => {
 
   it("cleans up a decorated answer before storing it", async () => {
     const { driver } = titlingDriver('  "Fixing the SSE hang."  ');
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
     await session.send("hello");
     expect(session.conversation.title).toBe("Fixing the SSE hang");
   });
 
   it("refuses an empty rename", () => {
     const { driver } = titlingDriver();
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
     expect(() => session.setTitle("   ")).toThrow(/empty/i);
   });
 });
@@ -395,7 +399,7 @@ describe("auto-re-title on drift (X-17)", () => {
 
   it("re-titles once the thread has grown, and not before", async () => {
     const { driver, titleCalls } = driftDriver(["Reading the notes file", "Rewriting the append log"]);
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
 
     await session.send("what's in notes.txt?");
     expect(session.conversation.title).toBe("Reading the notes file");
@@ -414,7 +418,7 @@ describe("auto-re-title on drift (X-17)", () => {
 
   it("re-asks straight after a compaction — a fold is the topic changing", async () => {
     const { driver, titleCalls } = driftDriver(["First topic", "What it became"]);
-    const session = new Session({ config, driver, autoTitle: true, contextWindow: 200_000 });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true, contextWindow: 200_000 });
 
     await session.send("start");
     expect(titleCalls()).toBe(1);
@@ -427,7 +431,7 @@ describe("auto-re-title on drift (X-17)", () => {
 
   it("writes nothing when the model keeps the name — no index churn, no blinking card", async () => {
     const { driver, titleCalls } = driftDriver(["Reading the notes file"]); // same answer every time
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
     const titles: string[] = [];
     session.onEvent((e) => {
       if (e.type === "title") titles.push(e.title);
@@ -442,7 +446,7 @@ describe("auto-re-title on drift (X-17)", () => {
 
   it("never overwrites a name a person chose — in this session…", async () => {
     const { driver, titleCalls } = driftDriver(["Auto guess", "Auto second guess"]);
-    const session = new Session({ config, driver, autoTitle: true });
+    const session = new Session({ config, driver, autoTitle: true, autoRetitle: true });
 
     await session.send("hello");
     session.setTitle("What I call it", "manual");
@@ -551,7 +555,7 @@ describe("a re-title lands in the history index too (X-17 × X-12b)", () => {
   function makeApp(driver: LlmDriver) {
     return createServer({
       resolveConfig: () => config,
-      newSession: (c, conversation) => new Session({ config: c, driver, conversation, autoTitle: true }),
+      newSession: (c, conversation) => new Session({ config: c, driver, conversation, autoTitle: true, autoRetitle: true }),
       store,
       workingDir: "/work/test",
       version: "0.0.0",
@@ -640,20 +644,20 @@ describe("serve's session factory carries the drift setting (X-17)", () => {
       ...over,
     });
 
-  it("re-titles by default", async () => {
-    const { driver, titleCalls } = driftDriver(["First topic", "What it became"]);
-    const session = build(driver);
-    for (let i = 0; i <= RETITLE_MIN_TURNS; i++) await session.send(`turn ${i}`);
-    expect(titleCalls()).toBe(2);
-    expect(session.conversation.title).toBe("What it became");
-  });
-
-  it("obeys `autoRetitle: false` in the config", async () => {
+  it("titles once and keeps that name by default (D-81)", async () => {
     const { driver, titleCalls } = driftDriver(["First topic", "Would have re-titled"]);
-    const session = build(driver, { autoRetitle: false });
+    const session = build(driver);
     for (let i = 0; i <= RETITLE_MIN_TURNS; i++) await session.send(`turn ${i}`);
     expect(titleCalls()).toBe(1);
     expect(session.conversation.title).toBe("First topic");
+  });
+
+  it("obeys `autoRetitle: true` in the config", async () => {
+    const { driver, titleCalls } = driftDriver(["First topic", "What it became"]);
+    const session = build(driver, { autoRetitle: true });
+    for (let i = 0; i <= RETITLE_MIN_TURNS; i++) await session.send(`turn ${i}`);
+    expect(titleCalls()).toBe(2);
+    expect(session.conversation.title).toBe("What it became");
   });
 });
 
@@ -694,14 +698,14 @@ describe("reaching the opt-out from the CLI (X-17)", () => {
 
   const stored = () => loadConfig(paths).modelConfigs[0]!;
 
-  it("turns drift re-titling off and back on without hand-editing JSON", async () => {
-    expect(await runConfig(["set", "Opus", "--auto-retitle", "off"])).toBe(0);
-    expect(stored().autoRetitle).toBe(false);
+  it("turns drift re-titling on and back off without hand-editing JSON", async () => {
+    expect(await runConfig(["set", "Opus", "--auto-retitle", "on"])).toBe(0);
+    expect(stored().autoRetitle).toBe(true);
     await runConfig(["use", "Opus"]);
     await runConfig(["which", "--offline"]);
-    expect(out.join("")).toContain("auto re-title off");
+    expect(out.join("")).toContain("auto re-title on");
 
-    await runConfig(["set", "Opus", "--auto-retitle", "on"]);
+    await runConfig(["set", "Opus", "--auto-retitle", "off"]);
     expect(stored().autoRetitle).toBeUndefined(); // back to the default, unwritten
   });
 

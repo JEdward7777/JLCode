@@ -141,12 +141,12 @@ a row lets you write one yourself. Saving is the whole commit, and it tells the 
 exactly what changed — added, reworded, struck, removed — so it need not re-read the
 whole list to find out; it never starts a turn on your behalf. The list is per branch and outlives compaction, so it is the one thing a
 long thread cannot forget. Each thread names
-itself after the first exchange and **re-names itself as it wanders** — a thread that
-has roughly doubled in length, or that has just been compacted, gets asked again, so a
-long thread isn't stuck with what it was about in its first two minutes. **Rename it
-yourself with the ✎ on its rail card and it stays put** — your name is never overwritten,
-including after a restart. (`jlcode config set work --auto-retitle off` keeps the opening
-name if you'd rather not pay for the occasional extra call.) The tab title reads
+itself **early in the first exchange** and then keeps that name — naming it early is
+what makes it nearly free, since the question rides a prefix the model has already been
+paid to read. **Rename it yourself with the ✎ on its rail card and it stays put** — your
+name is never overwritten, including after a restart. (`jlcode config set work
+--auto-retitle on` brings back re-naming as a thread wanders, at one extra model call
+each time the thread roughly doubles or gets compacted.) The tab title reads
 `<thread> — <project folder>`, so two instances in two projects stay tellable apart.
 
 When a session hands the turn back — a finished answer, an approval, a question,

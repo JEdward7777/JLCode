@@ -1,0 +1,1 @@
+{"text":"PASS The candidate correctly states that the codename is BLUEJAY and the datastore is SQLite.","toolCalls":[],"finishReason":"stop","provider":"Amazon Bedrock","usage":{"promptTokens":95,"completionTokens":26,"totalTokens":121,"cachedTokens":0,"costUsd":0.000225}}

@@ -22,6 +22,28 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-09-07 (D-81).** The **ephemeral asks now actually ride the live prefix**.
+> A `402 in_flight_budget_exhausted` sent us into the halp journal for `cv_3281bc4bdbce`, where a
+> `[title]` call had cost **$2.47 for a 14-token answer**: the title ask and the same-model
+> compaction summary hand-built their requests without `tools`/`provider`/`reasoning`, and tool
+> definitions render at position 0 — so the whole ~197k cached prefix was invalidated at byte zero.
+> Across every journal on this box, **25 title calls cost $25.42 and only 2 ever read cache**. One
+> `ephemeralRequest` helper now copies everything the cache keys on and deliberately leaves
+> `tool_choice` unset (setting it invalidates the messages cache — the obvious fix would have
+> recovered 4,885 tokens and nothing else); the asks forbid tool calls in prose instead, and the
+> cross-model compactor keeps `tool_choice:"none"` since it has no prefix to ride. Joshua's second
+> half: threads are titled **once** and **early** — `maybeAutoTitle` also fires at the turn-loop
+> boundary rather than only at the settle (first titles were landing at message 192), and
+> `autoRetitle` now defaults **off**. **873 Tier-0/1 green, 72 files**, including a new
+> `test/ephemeral-cache-contract.test.ts` that gives a session real tools and asserts the ephemeral
+> request against a live one — the shape no previous test had, which is why the bug survived.
+>
+> ⚠ **One Tier-3 fixture is stale and the suite is red on it.** `test/fable-live.test.ts`'s
+> safe-harbor compaction case replays a recorded request keyed on `messages`+`tools`+`reasoning`
+> (D-24), and this change alters all three by design, so the fixture can never match again. It
+> needs one re-record — `JLCODE_LIVE=1` + a key — which is paid Tier 3 and awaits Joshua's go-ahead.
+> Nothing else is outstanding.
+
 > **Resume block — 2026-08-11 (second pass).** Phases 0–7 are done, and **X-31 — the agent's
 > shared todo list — is built and pushed (D-74)**, which empties Joshua's observed-items list
 > entirely: all five are now filed *and* fixed. **752 Tier-0/1 green, 64 files.** X-31 is state

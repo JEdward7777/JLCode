@@ -137,7 +137,7 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
       // …and re-name it as it drifts (X-17), unless this config opted out. A
       // long thread keeps the label it earned on turn one otherwise, which is
       // exactly when a label matters most.
-      autoRetitle: config.autoRetitle !== false,
+      autoRetitle: config.autoRetitle === true,
       // The same one answer the native tools were built with, carried down to
       // the bridged MCP tools, which are built once per instance and so cannot
       // be told at construction (P8e).
