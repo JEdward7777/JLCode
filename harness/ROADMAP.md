@@ -9,7 +9,8 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 (D-40). **Milestone M4 reached (O-02 resolved by design, D-38).** The post-v1 phases are done too:
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item + the untriaged rows on
-`observed_items_needing_filed_in_harness.txt`).
+`observed_items_needing_filed_in_harness.txt`). **X-40 — `config model`, switching a folder's
+model without moving its key — is designed in full (D-82/D-82a, SPEC §4) and awaiting a build.**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
@@ -21,6 +22,26 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-09-10 (X-40 designed, nothing built).** A question round with Joshua, no
+> code. Joshua's report: putting a project on a different model takes two commands *and* a hand-copy
+> of the key out of `config.json`, because `config add` cannot know the key you want is the one that
+> folder already uses. The answer is **`jlcode config model [<slug>]`** — a *derive* operation that
+> takes the key from the config this directory resolves to and finds-or-creates a sibling keyed on
+> **(key, model)**, so switching back and forth converges instead of accumulating. The whole design
+> is written down: **D-82** (the command, what carries and what is re-derived, pickers everywhere
+> ambiguity appears, a flag for every prompt, walk-up bindings) and **D-82a** (the server notices the
+> switch, at the top of a user turn — *not* per LLM call, which would hand one model another's signed
+> thinking mid-cycle). Build steps and the Tier-0 test list are sized in **ROADMAP X-40**; the
+> user-visible surface is in **SPEC §4**. Two of Joshua's own calls shaped it more than anything I
+> proposed: the numbered picker as the universal disambiguation idiom, and *"wouldn't it be the
+> server's job to notice the config switched?"* — which deleted a pidfile, a liveness check and the
+> CLI's knowledge of the server. **X-41** is split out and deferred: recovering a thread that no
+> longer fits its window by summarizing what fits and replaying the rest as a user message. X-40
+> ships the error; X-41 ships the way out. Nothing is committed against either yet.
+>
+> ⚠ **Still outstanding from D-81:** `test/fable-live.test.ts`'s safe-harbor fixture is stale and
+> needs one paid Tier-3 re-record (`JLCODE_LIVE=1` + a key), awaiting Joshua's go-ahead.
 
 > **Resume block — 2026-09-07 (D-81).** The **ephemeral asks now actually ride the live prefix**.
 > A `402 in_flight_budget_exhausted` sent us into the halp journal for `cv_3281bc4bdbce`, where a
@@ -2040,6 +2061,71 @@ file you can `rm` — and the conversation stops being one self-contained file. 
   - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
+## X-40 — switch model, keep the key (designed 2026-09-10 · **not built**)
+
+Sized from Joshua's question round; the decisions and their rationale are **D-82 / D-82a**, the
+user-visible surface is **SPEC §4**. Nothing here is implemented — this section is the build plan,
+so a fresh session can pick it up without re-deriving the design.
+
+**The problem.** Putting a folder on a different model takes `config add` (which prompts for a key
+it has no way to know is the one this folder already uses) plus `config use`, with the key copied
+out of `config.json` by hand. The key is the one thing that must not move, and it was the one thing
+the old path made you move.
+
+**The command.** `jlcode config model [<slug>] [flags]` — under the existing `config` namespace, not
+promoted to top level.
+
+- **Derive, don't create from nothing.** Take the key from the config this directory resolves to;
+  find-or-create a sibling for the target model. Identity is the pair **(key, model)**.
+- **Three outcomes, named distinctly:** created a new config · switched back to an existing one ·
+  already on that model, no change.
+- **Name:** directory basename + model minus vendor prefix → `JLCode — claude-sonnet-5`.
+- **Carried:** effort, mode, approval, system addendum, sampling, watchdog, toolRounds, environment
+  — and **every non-default one is printed**, so what you are now running under is stated.
+- **Re-derived, never carried:** `pricing`, `compaction.contextLength`, `compaction.thresholdTokens`,
+  `acceptsImages`. Catalog-known mismatches (effort on a non-reasoning model, `max_tokens` above the
+  output cap) are **warned about by name, not clamped**.
+- **Also printed:** price per Mtok, against what the outgoing model cost.
+- **Slug resolution:** OpenRouter catalog, exact match wins, else substring. Offline → accept the
+  literal string with a warning, as `config set` already does.
+- **Bindings walk up** to the nearest bound ancestor and rewrite *that* binding. `resolveForCwd` is
+  exact-path today (`src/config/operations.ts:233`); the walk-up belongs to this command, **not** to
+  `resolveForCwd` itself — changing that would silently rebind folders that currently resolve to
+  nothing across `which`, `serve` and `chat`.
+- **Unbound folder → prompt for name and key inline**, through a create-and-bind helper shared with
+  `config add`, which gains **`--use`** so the same thing is one scriptable line.
+
+**Pickers.** Every ambiguity is a numbered list you answer with a number — never an error you retype
+past. Four sites: a short name matching several models · a key+model tie between two configs · an
+argument that matches both a model and a config name · and the bare `config model`, which lists the
+models already set up under this folder's key, **most-recently-used first** (so the back-and-forth
+round trip is always `1`) with a final **`other…`** entry that searches the whole catalog and
+presents the matches as a second picker.
+
+**Every prompt has a flag**, `--key` included — bad form, and it exists anyway. A non-interactive
+run (no TTY) refuses and **names the flag that would have answered the prompt**, so an agent driving
+JLCode learns the invocation iteratively by being told rather than by reading source. This is also
+how the Tier-0 tests drive the real code path instead of a branch around it.
+
+**New state.** A per-folder recently-used list of config ids, reordered on each switch (it is what
+makes the picker's ordering possible). Prune entries whose config was removed by `config remove`.
+
+**The server side (D-82a).** The server notices — the CLI knows nothing about it. It already
+re-reads config per new thread (`src/server/serve-command.ts:58-63`); add a re-resolve **at the top
+of each user turn**. Explicitly *not* per LLM call: an `ask_user` or approval pause lands mid-cycle,
+where the assistant message above it carries signed reasoning from the outgoing model, and switching
+there hands model B model A's signed thinking — the shape D-28/D-38 forbid. A thread that no longer
+fits the new model's window gets the **ordinary over-window error**; no compact-on-switch, no
+per-thread refusal, no provenance-marker machinery. A server started with `--config <name>` is
+pinned and says so itself rather than being warned about from outside.
+
+**Tests (Tier 0, free).** Find-or-create returns the same config twice for one (key, model) · the
+three outcomes are distinguishable · the four model-specific fields do not survive a switch while
+the carried ones do · walk-up binds the ancestor, not the cwd · a non-TTY run refuses naming the
+missing flag · the recently-used list orders the picker and survives a `config remove`. Tier 1 is
+not obviously needed — nothing here talks to a model — beyond the existing catalog fixture for slug
+resolution.
+
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
 
 > **Convention (Joshua's call, 2026-08-09): nothing leaves this list.** A row that
@@ -2049,6 +2135,8 @@ file you can `rm` — and the conversation stops being one self-contained file. 
 > question starts. The filed-and-fixed entries above carry the reasoning.
 
 **Still open:**
+**switch model in a folder and keep its key — `config model` (X-40, designed D-82, not built)** ·
+recovering a thread that no longer fits its window: summarize what fits, replay the rest as a user message (X-41) ·
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
 **reasoning notes default-open, a browser-side UI preference (X-16)** ·

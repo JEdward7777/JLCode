@@ -93,6 +93,27 @@ prefix stays byte-identical turn to turn and the cached prefix (§22/D-26) survi
 system message would invalidate that prefix every turn — the defect D-58 fixed at a measured 12.3x.
 A compaction summary carries the span it replaces, so a compacted thread keeps its history of time.
 
+**Switching model without moving the key (X-40, D-82 — designed, not built).** A model
+configuration binds a key *and* a model, so trying a different model under the same client key used
+to mean `config add` (which prompts for a key it cannot know you already have) plus `config use` —
+with the key copied out of `config.json` by hand. **`jlcode config model [<slug>]`** replaces that:
+it takes the key from the config this directory resolves to and **finds-or-creates a sibling for the
+target model**, keyed on the pair **(key, model)** so switching back and forth reuses rows instead of
+accumulating them. The derived name is the directory's basename plus the model minus its vendor
+prefix (`JLCode — claude-sonnet-5`). Effort, mode, approval, addendum, sampling, watchdog and
+environment settings carry over and are **printed** — every non-default one — while the four fields
+that describe the *old* model (`pricing`, `compaction.contextLength`, `compaction.thresholdTokens`,
+`acceptsImages`) are re-derived from the catalog rather than inherited wrong. Ambiguity anywhere —
+a short name matching several models, two configs sharing key+model, an argument that is both a
+model and a config name — is a **numbered picker**, and the bare `config model` is that picker over
+the models already set up under this key, **most-recently-used first**, with an `other…` entry that
+searches the whole catalog. Every prompt also has a flag (`--key` included), and a non-interactive
+refusal names the flag that would have answered it. Bindings **walk up to the nearest bound
+ancestor**, so the switch lands on the project rather than on whichever subdirectory you were
+standing in. A running server picks the change up **at the top of a user turn** (§15 explains why
+not per call); a thread that no longer fits the new model's window gets the ordinary over-window
+error, and X-41 holds the eventual recovery path.
+
 Configuration UX:
 
 - **Filter-search** the config list by typing (KiloCode-style): type `Opus` to narrow,
