@@ -229,6 +229,18 @@ describe("reduceEvent folds live events", () => {
     expect(s.live).toBeNull();
   });
 
+  it("follows a live model switch, so the pane's chip cannot lie (X-40, D-82a)", () => {
+    // The server adopted a new config at the top of a user turn; the slice was
+    // built from a roster descriptor naming the model the thread *started* on.
+    const s = reduceEvent(newSlice("s1", "anthropic/claude-opus-5"), {
+      type: "config",
+      configName: "JLCode — claude-sonnet-5",
+      model: "anthropic/claude-sonnet-5",
+      from: { name: "JLCode — opus", model: "anthropic/claude-opus-5" },
+    } as unknown as WireEvent);
+    expect(s.model).toBe("anthropic/claude-sonnet-5");
+  });
+
   it("keeps unrelated slices untouched (pure fold)", () => {
     const s = newSlice("s1");
     const next = reduceEvent(s, { type: "spend", totalUsd: 3 } as WireEvent);

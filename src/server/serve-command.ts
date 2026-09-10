@@ -15,7 +15,7 @@ import type { ModelConfig } from "../config/types.js";
 import { ModelCatalog, describeWindowSource } from "../llm/models.js";
 import { fakeAgentDriver } from "../session/fake.js";
 import { applyCompactorFit, computeBudget, describeThresholdSource } from "../session/compaction.js";
-import { createSessionFactory, resolveWindows } from "./session-factory.js";
+import { createSessionFactory, createSessionRetarget, resolveWindows } from "./session-factory.js";
 import { McpManager, mcpSettingsFiles } from "../mcp/client.js";
 import { ConversationStore } from "../persist/conversation-store.js";
 import { DebugJournal } from "../persist/debug-journal.js";
@@ -89,13 +89,14 @@ export async function runServe(args: string[]): Promise<number> {
   // the defect. Skipped under the fake driver so offline tests never touch the
   // network (they get the fallback, which is a real window).
   const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
-  const newSession = createSessionFactory({
-    paths,
-    cwd,
-    makeDriver,
-    mcpTools: () => mcp.tools(),
-    catalog,
-  });
+  const factoryDeps = { paths, cwd, makeDriver, mcpTools: () => mcp.tools(), catalog };
+  const newSession = createSessionFactory(factoryDeps);
+  // How a `jlcode config model` switch reaches a thread that is already open
+  // (X-40, D-82a): the server re-resolves at the top of each user turn and hands
+  // the session the new config through this. Pinned with `--config`, the pin is
+  // what `resolveConfig` returns, so a switch simply doesn't apply — the server
+  // says so itself on the banner rather than being warned about from outside.
+  const retargetSession = createSessionRetarget(factoryDeps);
 
   const store = new ConversationStore(paths.conversationsDir);
   const debugJournal = new DebugJournal(paths.logsDir);
@@ -193,6 +194,7 @@ export async function runServe(args: string[]): Promise<number> {
   const { app } = createServer({
     resolveConfig,
     newSession,
+    retargetSession,
     store,
     debugJournal,
     workingDir: cwd,
@@ -278,7 +280,10 @@ export async function runServe(args: string[]): Promise<number> {
     : [];
   process.stderr.write(
     [
-      `JLCode dev server — ${config.name} (${config.model})${fake ? " [fake]" : ""}`,
+      `JLCode dev server — ${config.name} (${config.model})${fake ? " [fake]" : ""}` +
+        (pinned
+          ? `\n  pinned with --config ${pinned} — \`jlcode config model\` will not move this server`
+          : `\n  follows this folder's config — \`jlcode config model\` applies at the next user turn`),
       // Name the window and where it came from. `fallback` is a guess and says
       // so — H-06 survived a month precisely because nothing ever stated this.
       `context window ${windows.window.toLocaleString()} tokens (${describeWindowSource(windows.source)})`,

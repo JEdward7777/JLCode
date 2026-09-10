@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item + the untriaged rows on
 `observed_items_needing_filed_in_harness.txt`). **X-40 — `config model`, switching a folder's
-model without moving its key — is designed in full (D-82/D-82a, SPEC §4) and awaiting a build.**
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
@@ -22,6 +22,31 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-09-10 (X-40 built).** `jlcode config model [<slug>]` ships: switching a
+> folder to another model no longer means two commands and a key copied out of `config.json` by
+> hand. It is a **derive** operation keyed on the pair **(key, model)**, so a back-and-forth switch
+> converges on two rows instead of growing one per switch, and the three outcomes — *created* /
+> *switched back* / *already there* — are named as three different sentences. Effort, mode,
+> approval, addendum, sampling, watchdog, toolRounds and environment carry and are **printed**; the
+> four fields that describe the *old* model (`pricing`, `compaction.contextLength`,
+> `compaction.thresholdTokens`, `acceptsImages`) are re-derived, and what the catalog says the new
+> model invalidates is **warned about by name, never clamped**. Every ambiguity is a numbered picker
+> and every prompt has a flag, so a non-interactive run refuses by *naming the flag that would have
+> answered it* — which is also how the Tier-0 tests drive the real picker instead of a branch around
+> it. Bindings **walk up** to the nearest bound ancestor (`resolveForCwd` stays exact-path, on
+> purpose). `config add --use` adds and binds in one line. **The server notices the switch itself**
+> at the top of a user turn (D-82a) — never mid-cycle, where the message above an `ask_user` carries
+> the outgoing model's signed reasoning — and the browser's model chip follows. **909 Tier-0/1
+> green, 74 files**, including `test/config-model-switch.test.ts` and `test/serve-config-switch.test.ts`.
+> Peeked in a real browser: one thread, two models, chip correct (VISUAL-LOG "X-40"). Three build-time
+> calls the design had left open are recorded as **D-82b**. **X-41** (recovering an over-window
+> thread) is still open and untouched.
+>
+> ⚠ **Still outstanding from D-81:** `test/fable-live.test.ts`'s safe-harbor fixture is stale and
+> needs one paid Tier-3 re-record. **Joshua has pre-authorized it — grant G-01 in
+> [`TESTING.md`](TESTING.md)**, one run, the agent picks the moment. Using it means deleting the
+> grant block in the same commit; if the grant is gone from that file, it has already been spent.
 
 > **Resume block — 2026-09-10 (X-40 designed, nothing built).** A question round with Joshua, no
 > code. Joshua's report: putting a project on a different model takes two commands *and* a hand-copy
@@ -2063,11 +2088,20 @@ file you can `rm` — and the conversation stops being one self-contained file. 
   - *Note: the separate `test/append-log.test.ts` **flake** was root-caused earlier to fsync
     latency and fixed with a realistic timeout — unrelated to the defects above.*
 
-## X-40 — switch model, keep the key (designed 2026-09-10 · **not built**)
+## X-40 — switch model, keep the key (designed and **built** 2026-09-10)
 
-Sized from Joshua's question round; the decisions and their rationale are **D-82 / D-82a**, the
-user-visible surface is **SPEC §4**. Nothing here is implemented — this section is the build plan,
-so a fresh session can pick it up without re-deriving the design.
+Sized from Joshua's question round; the decisions and their rationale are **D-82 / D-82a**, three
+build-time calls are **D-82b**, and the user-visible surface is **SPEC §4**. This section is the
+build plan as written *before* the build, kept intact because it is still the shortest description
+of what the command does; **everything in it shipped.** Where it lives:
+`src/config/model-command.ts` (the command, the four pickers, the report),
+`src/config/operations.ts` (the pure derive/find-or-create/walk-up/MRU operations),
+`src/config/describe.ts` (the window + threshold lines, shared with `config which` so the two
+cannot disagree), `src/llm/models.ts` (prices and limits off the same daily fetch),
+`src/server/session-factory.ts` + `src/session/session.ts` (`createSessionRetarget` →
+`Session.adoptConfig`), and `src/server/server.ts` (the re-resolve at the top of a user turn).
+Tests: `test/config-model-switch.test.ts`, `test/serve-config-switch.test.ts`, plus the new catalog
+cases in `test/model-catalog.test.ts`.
 
 **The problem.** Putting a folder on a different model takes `config add` (which prompts for a key
 it has no way to know is the one this folder already uses) plus `config use`, with the key copied
@@ -2137,7 +2171,6 @@ resolution.
 > question starts. The filed-and-fixed entries above carry the reasoning.
 
 **Still open:**
-**switch model in a folder and keep its key — `config model` (X-40, designed D-82, not built)** ·
 recovering a thread that no longer fits its window: summarize what fits, replay the rest as a user message (X-41) ·
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
@@ -2152,6 +2185,7 @@ browser-driven app testing · VS Code webview · response-caching product featur
 file viewer & upload/download chrome.
 
 **Shipped since:**
+~~switch model in a folder and keep its key — `config model` (X-40)~~ ✅ D-82/D-82a/D-82b ·
 ~~a `write_file` preview instead of raw JSON (X-23)~~ ✅ D-63 ·
 ~~a context-usage meter beside the spend chip (X-24)~~ ✅ D-61 ·
 ~~per-user-turn timestamps so the model knows the date (X-25)~~ ✅ D-64 ·

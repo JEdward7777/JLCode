@@ -65,12 +65,21 @@ function normalize(raw: unknown): Config {
   for (const [dir, list] of Object.entries(rootsRaw)) {
     if (Array.isArray(list)) folderRoots[dir] = list.filter((x): x is string => typeof x === "string");
   }
+  // The per-folder MRU model-config list (X-40). Same defensive shape as
+  // `folderRoots` above: anything that isn't a list of strings is dropped rather
+  // than trusted, since this one drives a picker the user answers with a number.
+  const recentsRaw = asRecord(r.folderRecents);
+  const folderRecents: Record<string, string[]> = {};
+  for (const [dir, list] of Object.entries(recentsRaw)) {
+    if (Array.isArray(list)) folderRecents[dir] = list.filter((x): x is string => typeof x === "string");
+  }
   const auth = normalizeAuth(r.auth);
   return {
     version: typeof r.version === "number" ? r.version : CONFIG_VERSION,
     modelConfigs,
     folderBindings,
     folderRoots,
+    folderRecents,
     autoSafeAllowlist: Array.isArray(r.autoSafeAllowlist)
       ? r.autoSafeAllowlist.filter((c): c is string => typeof c === "string")
       : [],

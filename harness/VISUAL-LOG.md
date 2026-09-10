@@ -1641,3 +1641,43 @@ Confirmed with my own eyes:
 **What changed while looking:** the card and the note both read "1 model
 **turns**". Pluralised in both places — a one-round budget only comes up in a
 peek, but the same string renders at every other count too.
+
+## X-40 — the model switched under an open thread · 2026-09-10 · ✅ looked good
+
+**Loaded:** `node harness/peek/peek.mjs up` → `chat "hello from opus-era"`, then
+**from another terminal**, against the peek's own config dir:
+
+```bash
+cd /tmp/jlcode-peek-7801/work
+JLCODE_CONFIG_DIR=/tmp/jlcode-peek-7801/config JLCODE_DATA_DIR=/tmp/jlcode-peek-7801/data \
+  node dist/cli.js config model peek/model-mk2 --offline
+```
+
+…then `chat "and now, after the switch"` into **the same thread**. That is the
+whole point of D-82a: nothing was restarted, nothing was told the server, and the
+CLI does not know a server exists.
+
+**Screenshots:** [`visual/x40-model-switch.png`](visual/x40-model-switch.png)
+(both turns in one thread, chip on the new model) ·
+[`visual/x40-model-chip.png`](visual/x40-model-chip.png) (the chip, cropped)
+
+Confirmed with my own eyes:
+
+- **One thread, two models.** Both exchanges are in the same conversation, the
+  session stayed live (rail: one LIVE session, `idle`), and the second turn ran
+  on `peek/model-mk2`. Nothing was restarted and no second session appeared.
+- **The chip followed.** The pane header reads `peek/model-mk2`, not the model
+  the thread opened on. Before the `config` event was folded into the browser
+  slice this said `peek/model` until a reload — a pane labelled with the model
+  the thread *started* on is the kind of quiet lie that costs an hour of
+  debugging the wrong model.
+- **The banner says which kind of server this is.** `follows this folder's config
+  — `jlcode config model` applies at the next user turn`. Started with
+  `--config <name>` it says it is pinned instead, which is D-82a's "the server
+  says so itself rather than being warned about from outside".
+- **The CLI's own report is the honest one.** It printed `Created  work —
+  model-mk2 … key unchanged — the one "Peek" uses`, warned that the catalog was
+  unavailable so the slug was taken as typed, and reported `images unknown to the
+  catalog` — because the peek config's hand-set `acceptsImages: true` is one of
+  the four fields a switch **re-derives** rather than carries (D-82). Exactly
+  right, and visible rather than silent.

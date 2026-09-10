@@ -253,6 +253,12 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, activeLeaf: (e.leaf as string | null) ?? null };
     case "mode":
       return { ...s, mode: e.mode as Mode, approval: e.approval as ApprovalPolicy };
+    case "config":
+      // `jlcode config model` moved this folder to another model, and the server
+      // adopted it at the top of this user turn (X-40, D-82a). The chip has to
+      // follow: a pane labelled with the model the thread *started* on is the
+      // kind of quiet lie that costs an hour of debugging the wrong model.
+      return { ...s, model: e.model as string };
     case "title":
       // Auto-titled after the first exchange, or renamed by hand (X-09).
       return { ...s, title: e.title as string };

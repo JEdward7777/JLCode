@@ -249,6 +249,11 @@ export type SessionEvent =
   | { type: "awaiting-approval"; request: ApprovalRequest }
   | { type: "awaiting-input"; question: AskUserRequest }
   | { type: "mode"; mode: Mode; approval: ApprovalPolicy } // live mode/approval change (D-07/D-08)
+  // This thread is now running under a different model configuration (X-40,
+  // D-82a). Raised at the top of a user turn, never mid-cycle — see
+  // `Session.adoptConfig`. `from` is what it was, because "you are on Sonnet
+  // now" is only half the sentence a person needs when they did not expect it.
+  | { type: "config"; configName: string; model: string; from: { name: string; model: string } }
   | { type: "title"; title: string; source: "auto" | "manual" } // the thread got a name (X-09)
   | { type: "spend"; totalUsd: number; turnUsd: number; usage?: Usage } // whole-tree spend (D-33)
   // How full the context is, for the meter (X-24). Emitted per LLM round trip of

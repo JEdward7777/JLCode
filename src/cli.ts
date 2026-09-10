@@ -21,7 +21,7 @@ Usage:
 
 Commands:
   info, paths     Resolve and create the config/data dirs, then print them
-  config …        Manage model configurations (list/which/use/clone/add/remove)
+  config …        Manage model configurations (list/which/use/model/clone/add/remove)
   mcp …           MCP servers (list/import/path) — KiloCode mcp_settings format
   chat            Start a terminal conversation with the selected config
   serve           Start the dev HTTP endpoint (curl /chat, retains threads)

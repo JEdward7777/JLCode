@@ -165,6 +165,12 @@ export interface Config {
   folderBindings: Record<string, string>;
   /** Absolute working directory → extra allowed sandbox roots (D-19 "remember"). */
   folderRoots?: Record<string, string[]>;
+  /** Absolute working directory → model-config ids, **most recently used first**
+   *  (X-40, D-82). Written by `config model` each time it switches this folder,
+   *  and read back to order that command's picker — which is what makes the
+   *  back-and-forth round trip always answer `1`. Entries whose config was
+   *  deleted are pruned by `config remove`, so a stale id is never offered. */
+  folderRecents?: Record<string, string[]>;
   /** Commands auto-approved under the Auto-safe policy (D-08). */
   autoSafeAllowlist: string[];
   /** Outward-serve auth (D-40); absent until a password is provisioned. */

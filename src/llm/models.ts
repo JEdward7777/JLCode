@@ -17,6 +17,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { ModelPricing } from "../config/types.js";
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 /** The catalog changes slowly; a day-old answer is a good answer. */
@@ -48,12 +49,41 @@ export type ModelWindows = Record<string, number>;
  */
 export type ModelModalities = Record<string, string[]>;
 
+/** Model id → per-Mtok prices, from the same payload again (X-40, D-82).
+ *
+ *  `config model` re-derives `pricing` on a switch rather than carrying the
+ *  outgoing model's — a price is a fact about a model, and an inherited one
+ *  misreports spend for as long as nobody notices. It is also what lets the
+ *  command print what the new model costs *against what the old one did*. */
+export type ModelPrices = Record<string, ModelPricing>;
+
+/** What the catalog knows about a model's limits and knobs (X-40, D-82) — the
+ *  two facts a switch has to warn about: an effort setting on a model with no
+ *  reasoning support, and a `max_tokens` above the model's output cap. Both are
+ *  **warned about, not clamped**: the config is the user's, and a catalog that
+ *  can lag a model must not silently rewrite one. */
+export interface ModelLimits {
+  /** `top_provider.max_completion_tokens` — the output ceiling, when declared. */
+  maxCompletionTokens?: number;
+  /** `supported_parameters` — e.g. `reasoning`, `max_tokens`, `temperature`. */
+  supportedParameters?: string[];
+}
+
+export type ModelLimitsMap = Record<string, ModelLimits>;
+
 interface CatalogFile {
   fetchedAt: string;
   windows: ModelWindows;
   /** Absent in a cache written before P8b — read as "nothing known", which is
    *  what `ImageSupport` reports as `"unknown"` rather than as `"no"`. */
   modalities?: ModelModalities;
+  /** Absent in a cache written before X-40 — read as "nothing known", which
+   *  costs a printed price line and a warning, never a wrong answer. Unlike
+   *  modalities these are deliberately **not** part of `ensureKnown`'s
+   *  known-check: a model that declares no price is a normal catalog entry, and
+   *  refetching once a day forever to re-learn that is a cost for nothing. */
+  prices?: ModelPrices;
+  limits?: ModelLimitsMap;
 }
 
 /** Where a resolved window actually came from — the honesty half of the fix. */
@@ -110,6 +140,64 @@ export function parseModalities(payload: unknown): ModelModalities {
     modalities[model.id] = named;
   }
   return modalities;
+}
+
+/** Pull `id → pricing` out of a `GET /models` payload. OpenRouter quotes USD
+ *  **per token** as strings; JLCode's `ModelPricing` is per *million*, which is
+ *  the unit a person reads, so the conversion happens once, here. An entry
+ *  whose prompt/completion prices don't both parse is skipped rather than
+ *  half-recorded — a half-known price silently under-reports spend. */
+export function parsePrices(payload: unknown): ModelPrices {
+  const data = (payload as { data?: unknown })?.data;
+  if (!Array.isArray(data)) return {};
+  const prices: ModelPrices = {};
+  for (const entry of data) {
+    const model = entry as { id?: unknown; pricing?: Record<string, unknown> };
+    if (typeof model.id !== "string" || !model.pricing) continue;
+    const prompt = perMTok(model.pricing.prompt);
+    const completion = perMTok(model.pricing.completion);
+    if (prompt === undefined || completion === undefined) continue;
+    const cached = perMTok(model.pricing.input_cache_read);
+    prices[model.id] = {
+      promptPerMTok: prompt,
+      completionPerMTok: completion,
+      ...(cached !== undefined ? { cachedPromptPerMTok: cached } : {}),
+    };
+  }
+  return prices;
+}
+
+/** A per-token price string ("0.000003") as dollars per million tokens. */
+function perMTok(value: unknown): number | undefined {
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n * 1_000_000 : undefined;
+}
+
+/** Pull `id → {maxCompletionTokens, supportedParameters}` out of a `GET /models`
+ *  payload. Each half is recorded only when it is actually declared, so
+ *  "unknown" stays distinguishable from "none" — the same rule `parseModalities`
+ *  follows, and for the same reason: only a real `no` may be warned about. */
+export function parseLimits(payload: unknown): ModelLimitsMap {
+  const data = (payload as { data?: unknown })?.data;
+  if (!Array.isArray(data)) return {};
+  const limits: ModelLimitsMap = {};
+  for (const entry of data) {
+    const model = entry as {
+      id?: unknown;
+      top_provider?: { max_completion_tokens?: unknown };
+      supported_parameters?: unknown;
+    };
+    if (typeof model.id !== "string") continue;
+    const cap = model.top_provider?.max_completion_tokens;
+    const params = Array.isArray(model.supported_parameters)
+      ? model.supported_parameters.filter((p): p is string => typeof p === "string")
+      : undefined;
+    const row: ModelLimits = {};
+    if (typeof cap === "number" && Number.isFinite(cap) && cap > 0) row.maxCompletionTokens = cap;
+    if (params && params.length > 0) row.supportedParameters = params;
+    if (Object.keys(row).length > 0) limits[model.id] = row;
+  }
+  return limits;
 }
 
 /**
@@ -183,6 +271,8 @@ export interface ModelCatalogOptions {
 export class ModelCatalog {
   private windows: ModelWindows = {};
   private modalities: ModelModalities = {};
+  private prices: ModelPrices = {};
+  private limits: ModelLimitsMap = {};
   private fetchedAt = 0;
   private readonly file: string;
   private readonly doFetch: typeof fetch;
@@ -209,6 +299,8 @@ export class ModelCatalog {
       if (cached && typeof cached.fetchedAt === "string" && cached.windows) {
         this.windows = cached.windows;
         this.modalities = cached.modalities ?? {};
+        this.prices = cached.prices ?? {};
+        this.limits = cached.limits ?? {};
         this.fetchedAt = Date.parse(cached.fetchedAt) || 0;
       }
     } catch {
@@ -221,6 +313,8 @@ export class ModelCatalog {
       fetchedAt: new Date(this.now()).toISOString(),
       windows: this.windows,
       modalities: this.modalities,
+      prices: this.prices,
+      limits: this.limits,
     };
     try {
       mkdirSync(path.dirname(this.file), { recursive: true });
@@ -268,6 +362,11 @@ export class ModelCatalog {
       // means every model answers `"unknown"` — which is the honest answer, and
       // the one the config override exists for.
       this.modalities = parseModalities(payload);
+      // Prices and limits ride the same parse for the same reason modalities do
+      // (X-40): the request is already made, and re-deriving a switched-to
+      // model's price beats inheriting the old one's.
+      this.prices = parsePrices(payload);
+      this.limits = parseLimits(payload);
       this.fetchedAt = this.now();
       this.writeCache();
       return { refreshed: true };
@@ -278,6 +377,32 @@ export class ModelCatalog {
 
   windowFor(modelId: string): number | undefined {
     return lookupWindow(this.windows, modelId);
+  }
+
+  /** Every model id the catalog knows — what `config model <slug>` searches
+   *  (X-40). Empty when the catalog has never been fetched, which is the
+   *  "offline" case the command accepts a literal slug in. */
+  modelIds(): string[] {
+    return Object.keys(this.windows);
+  }
+
+  /** This model's per-Mtok prices, when the catalog said (X-40). Same
+   *  exact-then-base lookup the window uses, so `:online` resolves. */
+  pricingFor(modelId: string): ModelPricing | undefined {
+    return this.prices[modelId] ?? this.prices[baseModelId(modelId)];
+  }
+
+  /** This model's declared output cap and parameter list (X-40). */
+  limitsFor(modelId: string): ModelLimits | undefined {
+    return this.limits[modelId] ?? this.limits[baseModelId(modelId)];
+  }
+
+  /** Does this model take a reasoning-effort setting? `undefined` means the
+   *  catalog never said, which is not a `no` — nothing is warned about on it. */
+  supportsReasoning(modelId: string): boolean | undefined {
+    const params = this.limitsFor(modelId)?.supportedParameters;
+    if (params === undefined) return undefined;
+    return params.includes("reasoning") || params.includes("include_reasoning");
   }
 
   /** What this model accepts as input, when the catalog said (P8b, D-78c). */

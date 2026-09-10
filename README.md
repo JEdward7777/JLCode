@@ -31,10 +31,12 @@ First-time setup — add a model config, bind this directory to it, then serve:
 
 ```bash
 # The OpenRouter key is read from stdin (or $JLCODE_ADD_KEY) — never from argv.
-npx github:JEdward7777/JLCode config add --name work --model anthropic/claude-sonnet-5
-npx github:JEdward7777/JLCode config use work     # binds the current directory
+npx github:JEdward7777/JLCode config add --name work --model anthropic/claude-sonnet-5 --use
 npx github:JEdward7777/JLCode serve               # → http://127.0.0.1:4517
 ```
+
+(`--use` binds the current directory to the config it just made; without it,
+`config use work` is the separate step that does the same thing.)
 
 Then **open <http://127.0.0.1:4517/> in a browser** — that is the interface.
 
@@ -227,6 +229,40 @@ or above the window is refused rather than quietly never firing, and if you
 configure a *smaller* summarizer model the effective threshold tightens to what
 that model can actually read.
 
+### Trying another model without moving the key
+
+A model config binds a key *and* a model, so "run this project on Sonnet
+instead" used to mean adding a second config — which prompts for a key it cannot
+know you already have — and then copying that key out of `config.json` by hand.
+`config model` does it in one line:
+
+```bash
+jlcode config model claude-sonnet-5   # slug: exact wins, else a catalog search
+jlcode config model                   # or pick from the models already on this key
+```
+
+It takes the key from the config this directory resolves to and **finds or
+creates** the sibling holding the new model, so switching back and forth reuses
+the two rows instead of growing a new one each time. It says which of three
+things happened — created one, switched back to one, or you were already there —
+prints every non-default setting it carried over (effort, mode, approval,
+addendum, sampling, watchdog…), and re-derives the four that describe the *old*
+model: price, context window, compaction threshold, and whether it can see
+images. Anything the catalog says the new model invalidates — an effort setting
+on a model with no reasoning, a `max_tokens` above its output cap — is **warned
+about, not silently changed**.
+
+Ambiguity is always a numbered list you answer with a number. Every prompt also
+has a flag (`--model`, `--config`, `--name`, `--key`), and with no terminal to
+ask on it refuses by naming the flag that would have answered it — so a script,
+or an agent driving JLCode, learns the invocation by being told.
+
+The binding it rewrites is the nearest bound **ancestor**, so running it from a
+subdirectory moves the project, not the folder you happened to be standing in.
+And a running `serve` picks the change up **at your next message** — no restart,
+and nothing to tell the server. (A server started with `--config <name>` is
+pinned and says so on its banner.)
+
 ### It knows what day it is
 
 Every message you send arrives stamped with the time you sent it, so the model
@@ -321,7 +357,7 @@ a thin conversation harness — **the tool loop is server-side only**, so use
 
 ```
 info, paths     Resolve and create the config/data dirs, then print them
-config …        Manage model configurations (list/which/use/clone/add/set/remove)
+config …        Manage model configurations (list/which/use/model/clone/add/set/remove)
 mcp …           MCP servers (list/import/path) — reads KiloCode's mcp_settings format
 chat            Terminal conversation with the selected config (no tools)
 serve           Start the HTTP server + browser client

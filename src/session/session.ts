@@ -74,6 +74,30 @@ import type {
   SessionStatus,
 } from "./types.js";
 
+/**
+ * The parts a live config switch replaces on a running session (X-40, D-82a).
+ *
+ * Everything here is **derived** from the new config by the session factory —
+ * the same factory that built the session in the first place — rather than
+ * recomputed by the Session. That is deliberate: the window, the image
+ * capability and the tool descriptions all come from the model catalog, which
+ * the Session has never had and must not grow a second, drifting copy of.
+ */
+export interface SessionRetarget {
+  config: ModelConfig;
+  driver: LlmDriver;
+  /** Rebuilt because `read_file`'s description states whether this model can be
+   *  handed a picture, and `run_command`'s states the watchdog interval — a
+   *  description that disagrees with the behaviour is the X-33 defect. */
+  tools?: ToolRegistry;
+  watchdogMs: number;
+  maxToolIterations: number;
+  contextWindow?: number;
+  contextWindowSource?: WindowSource;
+  compactorWindow?: number;
+  acceptsImages: boolean;
+}
+
 export interface SessionOptions {
   id?: string;
   config: ModelConfig;
@@ -272,7 +296,12 @@ function formatAnswers(payload: string | AskUserAnswer[], questions: AskUserQues
 
 export class Session {
   readonly id: string;
-  readonly config: ModelConfig;
+  /** The config this session runs under. **Not readonly since X-40**: the server
+   *  re-resolves it at the top of each user turn, so a `jlcode config model`
+   *  switch reaches an open thread at the next message (D-82a). Everything
+   *  derived from it is replaced together in {@link adoptConfig} — a half-applied
+   *  switch (new model, old window) is the H-06 shape with a new face. */
+  config: ModelConfig;
   conversation: Conversation;
   status: SessionStatus = "idle";
   /** Live capability mode + approval policy (D-07/D-08), switchable at runtime. */
@@ -301,33 +330,40 @@ export class Session {
    *  it and the server persists it as the config default. */
   triggerMode: CompactionTrigger;
 
-  private readonly driver: LlmDriver;
-  private readonly systemPrompt: string;
+  private driver: LlmDriver;
+  /** Everything ahead of the config's addendum in the system prompt — the base
+   *  prompt, the todo guidance and the **workspace's** instructions — composed
+   *  once and never again (X-15c/d). Held separately so a config switch can swap
+   *  the addendum without re-reading the workspace file, which must stay a
+   *  once-per-session read. */
+  private readonly promptPrefix: string;
+  /** The config's addendum, the one half of the prompt a switch can change. */
+  private promptAddendum: string | undefined;
   /** Stamp each user turn with the time it was sent (X-25). Read from the config
    *  once; every replay this session builds goes through {@link wire} so the
    *  live prefix, the compaction input and the ephemeral title/watchdog asks are
    *  byte-identical — which is what keeps the prompt cache warm (D-29/D-58). */
-  private readonly stamps: boolean;
+  private stamps: boolean;
   private readonly maxFailures: number;
-  private readonly tools: ToolRegistry | undefined;
+  private tools: ToolRegistry | undefined;
   private readonly sandbox: Sandbox | undefined;
   private gate: ToolGate;
   private readonly buildGate: ((mode: Mode, approval: ApprovalPolicy) => ToolGate) | undefined;
-  private readonly maxToolIterations: number;
+  private maxToolIterations: number;
   private readonly onAddRoot: ((dir: string) => void) | undefined;
   private consecutiveFailures = 0;
-  private readonly pricing: ModelConfig["pricing"];
+  private pricing: ModelConfig["pricing"];
   /** Public for the same reason `contextWindowSource` is: it is a setting that
    *  travels from config through a factory, and the H-06 class of defect is a
    *  factory that quietly stops carrying one. Readable = assertable (X-33). */
-  readonly watchdogMs: number;
+  watchdogMs: number;
   /** Injected context window for the compaction budget (D-44); undefined → no
    *  window known → no trigger fires. Falls back to the config override. */
-  private readonly contextWindow: number | undefined;
+  private contextWindow: number | undefined;
   /** Provenance of `contextWindow`, for display (D-44c). */
-  readonly contextWindowSource: WindowSource | undefined;
+  contextWindowSource: WindowSource | undefined;
   /** The compaction model's window for the compactor-fit guard (D-44a). */
-  private readonly compactorWindow: number | undefined;
+  private compactorWindow: number | undefined;
   private readonly listeners = new Set<SessionListener>();
 
   // Resumable-loop state.
@@ -385,7 +421,7 @@ export class Session {
    *  call it cost. */
   private readonly autoRetitle: boolean;
   /** Handed to every tool call's context (P8e) — see `SessionOptions`. */
-  private readonly acceptsImages: boolean;
+  private acceptsImages: boolean;
   /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
   private readonly tasks: TaskRegistry;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
@@ -444,7 +480,8 @@ export class Session {
     // that have no tool registry at all, and telling a model to call a tool it
     // has not been given is how a turn gets spent on an apology.
     const todos = options.tools?.get(TODO_READ) ? TODO_GUIDANCE : undefined;
-    this.systemPrompt = [base, todos, project, addendum].filter((s): s is string => Boolean(s)).join("\n\n");
+    this.promptPrefix = [base, todos, project].filter((s): s is string => Boolean(s)).join("\n\n");
+    this.promptAddendum = addendum || undefined;
     this.stamps = turnTimestampsEnabled(options.config);
     this.conversation = options.conversation ?? newConversation();
     this.pricing = options.config.pricing;
@@ -484,6 +521,75 @@ export class Session {
       (sum, e) => (e.type === "assistant" ? sum + computeCost(e.usage, this.pricing) : sum),
       0,
     );
+  }
+
+  /** The full system prompt: the once-composed prefix plus this config's
+   *  addendum. A getter rather than a field so a config switch (D-82a) changes
+   *  the addendum and nothing else — the workspace instructions above it stay
+   *  the ones read at session construction. */
+  private get systemPrompt(): string {
+    return this.promptAddendum ? `${this.promptPrefix}\n\n${this.promptAddendum}` : this.promptPrefix;
+  }
+
+  /**
+   * Adopt a different model configuration on a **running** session (D-82a).
+   *
+   * The server calls this at the top of a user turn, having noticed that
+   * `jlcode config model` (or `config set`/`use`) changed what this directory
+   * resolves to. The parts arrive pre-derived from the session factory, because
+   * a switch that changed the model but not the window — or not the tool
+   * descriptions — would be exactly H-06 again: a setting that looks applied and
+   * reaches only half of what it governs.
+   *
+   * **Only at a turn boundary.** Explicitly not per LLM call, which was the
+   * literal reading of "whenever the system has paused": an `ask_user` or an
+   * approval pauses *mid-cycle*, where the assistant message above it carries
+   * signed reasoning from the outgoing model, and switching there would hand
+   * model B model A's signed thinking — the shape D-28/D-38 forbid. So a session
+   * that is anything but idle declines, and picks the switch up next message.
+   *
+   * What is deliberately **not** touched: `mode`, `approval` and `triggerMode`.
+   * Those are live runtime state the person set from the header; a config switch
+   * is not a reason to overrule a choice made ten seconds ago.
+   *
+   * An open thread that no longer fits the new model's window gets the ordinary
+   * over-window error on its next request — the notice that already has to
+   * exist, since compaction can be off and a thread can be ground into that
+   * state unaided. No compact-on-switch, no per-thread refusal.
+   */
+  adoptConfig(next: SessionRetarget): boolean {
+    if (this.status !== "idle") return false;
+    if (next.config.id === this.config.id && next.config.updatedAt === this.config.updatedAt) return false;
+    const from = { name: this.config.name, model: this.config.model };
+    this.config = next.config;
+    this.driver = next.driver;
+    if (next.tools) this.tools = next.tools;
+    this.promptAddendum = next.config.systemPromptAddendum?.trim() || undefined;
+    this.stamps = turnTimestampsEnabled(next.config);
+    this.pricing = next.config.pricing;
+    this.watchdogMs = next.watchdogMs;
+    this.maxToolIterations = next.maxToolIterations;
+    this.iterationBudget = next.maxToolIterations;
+    this.contextWindow = next.contextWindow ?? next.config.compaction?.contextLength;
+    this.contextWindowSource =
+      next.contextWindow !== undefined
+        ? next.contextWindowSource
+        : next.config.compaction?.contextLength !== undefined
+          ? "config"
+          : undefined;
+    this.compactorWindow = next.compactorWindow;
+    this.acceptsImages = next.acceptsImages;
+    // The budget is measured against the *new* window, so a thread that was
+    // comfortably inside the old one may already be over this one. Re-evaluate
+    // from what we know rather than waiting for the next usage report.
+    this.needsCompaction = false;
+    this.emit({
+      type: "config",
+      configName: next.config.name,
+      model: next.config.model,
+      from,
+    });
+    return true;
   }
 
   /** Set / raise / clear the spend cap (D-33). Raising above current spend after

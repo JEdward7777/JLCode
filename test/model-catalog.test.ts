@@ -17,6 +17,8 @@ import {
   lookupWindow,
   resolveWindow,
   parseModalities,
+  parsePrices,
+  parseLimits,
   imageSupport,
   FALLBACK_CONTEXT_WINDOW,
 } from "../src/llm/models";
@@ -307,5 +309,99 @@ describe("input modalities — can this model be handed a picture? (P8b, D-78c)"
     expect(imageSupport(modalities, "anthropic/claude-opus-5:online")).toBe("yes");
     // …while a listed variant keeps its own answer rather than being flattened.
     expect(imageSupport(modalities, "anthropic/claude-opus-5:batch")).toBe("yes");
+  });
+});
+
+/**
+ * X-40 / D-82 — prices and limits ride the same daily fetch.
+ *
+ * `config model` re-derives `pricing` on a switch instead of carrying the
+ * outgoing model's, which needs a price to derive *from*; and the two warnings
+ * a switch prints ("this model has no reasoning", "your max_tokens is above its
+ * cap") need the model's declared parameters and output ceiling. All three come
+ * off a request we already make once a day — the same argument P8b made for
+ * modalities, which were also in this payload all along.
+ */
+const priced = {
+  data: [
+    {
+      id: "anthropic/claude-sonnet-5",
+      context_length: 200000,
+      pricing: { prompt: "0.000003", completion: "0.000015", input_cache_read: "0.0000003" },
+      top_provider: { max_completion_tokens: 64000 },
+      supported_parameters: ["reasoning", "max_tokens", "temperature"],
+    },
+    {
+      id: "openai/gpt-4o-mini",
+      context_length: 128000,
+      pricing: { prompt: "0.00000015", completion: "0.0000006" },
+      top_provider: { max_completion_tokens: 16384 },
+      supported_parameters: ["max_tokens", "temperature"],
+    },
+    // Declares neither — every answer about it stays "unknown", never "no".
+    { id: "quiet/model", context_length: 8000 },
+    // A free model: a real zero price, which must survive rather than read as absent.
+    { id: "free/model", context_length: 8000, pricing: { prompt: "0", completion: "0" } },
+  ],
+};
+
+describe("prices (X-40)", () => {
+  it("converts OpenRouter's per-token strings into dollars per million", () => {
+    const prices = parsePrices(priced);
+    expect(prices["anthropic/claude-sonnet-5"]).toEqual({
+      promptPerMTok: 3,
+      completionPerMTok: 15,
+      cachedPromptPerMTok: 0.3,
+    });
+    expect(prices["openai/gpt-4o-mini"]).toEqual({ promptPerMTok: 0.15, completionPerMTok: 0.6 });
+  });
+
+  it("keeps a genuine zero and skips a model that quotes nothing", () => {
+    const prices = parsePrices(priced);
+    expect(prices["free/model"]).toEqual({ promptPerMTok: 0, completionPerMTok: 0 });
+    expect(prices["quiet/model"]).toBeUndefined();
+  });
+
+  it("reaches the catalog, survives a restart, and falls back to the base id", async () => {
+    const fetchPriced = (async () =>
+      new Response(JSON.stringify(priced), { status: 200 })) as unknown as typeof fetch;
+    await new ModelCatalog({ file, fetch: fetchPriced }).refresh();
+    const reopened = new ModelCatalog({ file, fetch: fetchPriced });
+    expect(reopened.pricingFor("anthropic/claude-sonnet-5")?.promptPerMTok).toBe(3);
+    // `:online` is a routing modifier, not a listed model — the same miss the
+    // window lookup had, and the same fix.
+    expect(reopened.pricingFor("anthropic/claude-sonnet-5:online")?.completionPerMTok).toBe(15);
+  });
+});
+
+describe("limits (X-40)", () => {
+  it("records an output cap and a parameter list only when they are declared", () => {
+    const limits = parseLimits(priced);
+    expect(limits["anthropic/claude-sonnet-5"]).toEqual({
+      maxCompletionTokens: 64000,
+      supportedParameters: ["reasoning", "max_tokens", "temperature"],
+    });
+    expect(limits["quiet/model"]).toBeUndefined();
+  });
+
+  it("answers reasoning support as yes, no, or never-said", async () => {
+    const fetchPriced = (async () =>
+      new Response(JSON.stringify(priced), { status: 200 })) as unknown as typeof fetch;
+    const catalog = new ModelCatalog({ file, fetch: fetchPriced });
+    await catalog.refresh();
+    expect(catalog.supportsReasoning("anthropic/claude-sonnet-5")).toBe(true);
+    expect(catalog.supportsReasoning("openai/gpt-4o-mini")).toBe(false);
+    // Undefined, not false: nothing may be warned about on a model that never
+    // said. Only a real "no" earns a warning.
+    expect(catalog.supportsReasoning("quiet/model")).toBeUndefined();
+  });
+
+  it("lists every id it knows, which is what a slug search runs against", async () => {
+    const fetchPriced = (async () =>
+      new Response(JSON.stringify(priced), { status: 200 })) as unknown as typeof fetch;
+    const catalog = new ModelCatalog({ file, fetch: fetchPriced });
+    await catalog.refresh();
+    expect(catalog.modelIds()).toContain("anthropic/claude-sonnet-5");
+    expect(catalog.modelIds()).toHaveLength(4);
   });
 });

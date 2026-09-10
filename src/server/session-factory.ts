@@ -16,7 +16,7 @@ import type { ModelConfig } from "../config/types.js";
 import type { JlcodePaths } from "../paths.js";
 import type { LlmDriver } from "../llm/types.js";
 import type { ImageSupport, ModelCatalog, WindowSource } from "../llm/models.js";
-import { Session } from "../session/session.js";
+import { Session, type SessionRetarget } from "../session/session.js";
 import { ToolRegistry, defaultTools } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { Sandbox } from "../tools/sandbox.js";
@@ -75,6 +75,62 @@ export function resolveWindows(config: ModelConfig, catalog: ModelCatalog): Wind
 }
 
 /**
+ * Everything a Session derives from a model config *plus the catalog* — settled
+ * in one place so construction and a live switch (X-40, D-82a) cannot disagree.
+ *
+ * The three that matter are the three the H-06/X-33 defects were made of: the
+ * context window (no window → compaction never fires), the image capability
+ * (which `read_file` both advertises and enforces), and the watchdog interval
+ * (which `run_command`'s description states to the model). A retarget that
+ * changed the model and left any of them behind would be the same bug wearing
+ * the new feature's clothes.
+ */
+function deriveFromConfig(deps: SessionFactoryDeps, config: ModelConfig) {
+  const windows = resolveWindows(config, deps.catalog);
+  const { acceptsImages } = resolveImages(config, deps.catalog);
+  const watchdogMinutes = commandWatchdogMinutes(config);
+  return {
+    windows,
+    acceptsImages,
+    watchdogMinutes,
+    toolRounds: toolRoundBudget(config),
+    tools: new ToolRegistry([
+      ...defaultTools({ watchdogMinutes, acceptsImages }),
+      askUserTool(),
+      ...deps.mcpTools(),
+    ]),
+  };
+}
+
+/**
+ * Re-point a **running** session at a different config (D-82a) — what the server
+ * calls at the top of a user turn when `jlcode config model` has switched this
+ * directory underneath an open thread.
+ *
+ * The workspace instructions are *not* re-read: X-15 makes that a once-per-
+ * session read (the system prompt is the cached prefix, D-26), so an edited
+ * `AGENTS.md` still applies to the next thread, not this one. The config's own
+ * addendum does change, because that is part of the config being adopted.
+ */
+export function createSessionRetarget(deps: SessionFactoryDeps) {
+  return (session: Session, config: ModelConfig): boolean => {
+    const d = deriveFromConfig(deps, config);
+    const retarget: SessionRetarget = {
+      config,
+      driver: deps.makeDriver(config),
+      tools: d.tools,
+      watchdogMs: d.watchdogMinutes * 60_000,
+      maxToolIterations: d.toolRounds,
+      contextWindow: d.windows.window,
+      contextWindowSource: d.windows.source,
+      compactorWindow: d.windows.compactorWindow,
+      acceptsImages: d.acceptsImages,
+    };
+    return session.adoptConfig(retarget);
+  };
+}
+
+/**
  * Build the `newSession` the server is handed. Reads config fresh on every call
  * so `jlcode config set/use` takes effect on the next thread without a restart.
  */
@@ -82,11 +138,10 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
   return (config: ModelConfig, conversation?: Conversation): Session => {
     const cfg = loadConfig(deps.paths);
     const roots = [deps.cwd, ...(cfg.folderRoots?.[deps.cwd] ?? [])];
-    const windows = resolveWindows(config, deps.catalog);
-    // Can this model see? Settled here, once, and handed to `read_file` — which
-    // uses it twice, for what the description advertises and for what the tool
-    // actually does. Those two must not be able to disagree (X-33's lesson).
-    const { acceptsImages } = resolveImages(config, deps.catalog);
+    // The window, the image capability, the watchdog, the tool-round budget and
+    // the tool registry, all from one place — see `deriveFromConfig`, which a
+    // live config switch runs again against the new config.
+    const { windows, acceptsImages, watchdogMinutes, toolRounds, tools } = deriveFromConfig(deps, config);
     // The workspace's own instructions (X-15), read **here** and exactly once
     // per session — the same reason the module comment gives: the system prompt
     // is the cached prefix, so this read must not be per turn. Doing it per
@@ -97,25 +152,10 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
     const workspaceInstructions = projectInstructionsEnabled(config)
       ? readWorkspaceInstructions(deps.cwd)
       : undefined;
-    // The command watchdog (X-33), read once here and used **twice**: the Session
-    // arms the timer with it, and `run_command`'s description states it to the
-    // model. Both come off this one line deliberately — a description promising a
-    // check at 30 minutes while the timer fires at 5 is the H-06 failure with a
-    // new face, a setting that looks stored and reaches only half of what it
-    // governs.
-    const watchdogMinutes = commandWatchdogMinutes(config);
-    // The tool-round budget (D-79), resolved from the same `commands` group. A
-    // setting that reaches no factory is the H-06 defect; this one governs when
-    // the loop stops to ask whether it is still getting somewhere.
-    const toolRounds = toolRoundBudget(config);
     return new Session({
       config,
       driver: deps.makeDriver(config),
-      tools: new ToolRegistry([
-        ...defaultTools({ watchdogMinutes, acceptsImages }),
-        askUserTool(),
-        ...deps.mcpTools(),
-      ]),
+      tools,
       watchdogMs: watchdogMinutes * 60_000,
       maxToolIterations: toolRounds,
       sandbox: new Sandbox(roots),

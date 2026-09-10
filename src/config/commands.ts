@@ -3,24 +3,17 @@
  * never printed — only whether one is set. Selection is keyed off the current
  * working directory (D-06).
  */
-import { resolvePaths, type JlcodePaths } from "../paths.js";
-import { ModelCatalog, describeWindowSource, type WindowSource } from "../llm/models.js";
-// The same function `serve` uses to settle a session's windows (D-60/H-06) —
-// borrowed rather than re-derived, so `config which` can never disagree with
-// what the session will actually run under.
-import { resolveWindows } from "../server/session-factory.js";
-import {
-  applyCompactorFit,
-  computeBudget,
-  describeThresholdSource,
-  thresholdFitsWindow,
-  type CompactionBudget,
-} from "../session/compaction.js";
+import { resolvePaths } from "../paths.js";
+import { describeWindowSource } from "../llm/models.js";
+import { resolveBudget, shortId, thresholdLines } from "./describe.js";
+import { runConfigModel } from "./model-command.js";
+import { thresholdFitsWindow } from "../session/compaction.js";
 import { parseArgs, flagString } from "../util/args.js";
 import { readSecret } from "../util/prompt.js";
 import { loadConfig, saveConfig } from "./store.js";
 import {
   addModelConfig,
+  bindAndRemember,
   cloneModelConfig,
   filterModelConfigs,
   findModelConfig,
@@ -28,7 +21,6 @@ import {
   commandWatchdogMinutes,
   removeModelConfig,
   resolveForCwd,
-  setBinding,
   turnTimestampsEnabled,
   updateModelConfig,
   type ModelConfigPatch,
@@ -48,8 +40,11 @@ const CONFIG_HELP = `jlcode config — manage model configurations
   config which [--offline]         show the config selected for this directory,
                                    plus its effective context window
   config use <name|id>             bind this directory to a config
+  config model [<slug>]            switch this folder to another model, keeping
+                                   its key (X-40) — "config model help" for flags
   config clone <src> <new-name>    clone an existing config
   config add --name <> --model <>  add a config (key read from stdin or JLCODE_ADD_KEY)
+                                   --use also binds this directory to it
   config set <name|id> [flags]     edit fields of an existing config
   config remove <name|id>          delete a config
 
@@ -186,42 +181,6 @@ function onOff(value: string | boolean, key: string): boolean {
   throw new Error(`--${key} must be "on" or "off"`);
 }
 
-/**
- * Settle the window *and* the compaction threshold a session for this config
- * would run under — D-60's window precedence (config > catalog > fallback) plus
- * X-27's threshold precedence (absolute > `window − buffer`), with the D-44a
- * compactor-fit guard applied last, exactly as `serve` does it. Refreshes the
- * catalog unless `--offline`; a catalog failure is reported, never fatal.
- */
-async function resolveBudget(
-  config: ModelConfig,
-  paths: JlcodePaths,
-  opts: { offline?: boolean } = {},
-): Promise<{ budget: CompactionBudget; source: WindowSource; catalogError?: string }> {
-  const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
-  let catalogError: string | undefined;
-  if (!opts.offline) ({ error: catalogError } = await catalog.ensureKnown(config.model));
-  const windows = resolveWindows(config, catalog);
-  const bufferTokens = config.compaction?.bufferTokens;
-  const budget = applyCompactorFit(
-    computeBudget(windows.window, { bufferTokens, thresholdTokens: config.compaction?.thresholdTokens }),
-    windows.compactorWindow,
-    bufferTokens,
-  );
-  return { budget, source: windows.source, catalogError };
-}
-
-/** The two lines that state where compaction fires and why (X-27). */
-function thresholdLines(budget: CompactionBudget): string {
-  let out = `    compacts above ${budget.threshold.toLocaleString()} tokens — ${describeThresholdSource(budget)}\n`;
-  if (budget.refusedThreshold !== undefined) {
-    out +=
-      `    ⚠ compaction.thresholdTokens ${budget.refusedThreshold.toLocaleString()} is not below the window — ` +
-      `ignored (it could never fire); set a lower --compaction-threshold\n`;
-  }
-  return out;
-}
-
 /** The one line that says whether the model is told when each turn was sent (X-25). */
 function turnTimestampLine(config: ModelConfig): string {
   return turnTimestampsEnabled(config)
@@ -236,10 +195,6 @@ function turnTimestampLine(config: ModelConfig): string {
  *  find out short of reading the request. */
 function projectInstructionsLine(config: ModelConfig, cwd: string): string {
   return `    project instructions: ${summarizeProjectInstructions(projectInstructionsEnabled(config), cwd)}\n`;
-}
-
-function shortId(id: string): string {
-  return id.length > 12 ? id.slice(0, 12) : id;
 }
 
 function line(c: ModelConfig, boundId: string | undefined): string {
@@ -319,6 +274,12 @@ export async function runConfig(args: string[]): Promise<number> {
       return 0;
     }
 
+    // Switch this folder's model and keep its key (X-40, D-82). Its own module:
+    // the command is a derive-and-find-or-create with four pickers, and folding
+    // that into the switch below would bury it.
+    case "model":
+      return runConfigModel(rest, { paths, cwd });
+
     case "use": {
       const { positionals } = parseArgs(rest);
       const ref = positionals[0];
@@ -326,7 +287,10 @@ export async function runConfig(args: string[]): Promise<number> {
       const config = loadConfig(paths);
       const target = findModelConfig(config, ref);
       if (!target) throw new Error(`No model config matching "${ref}"`);
-      saveConfig(setBinding(config, cwd, target.id), paths);
+      // Recorded in the folder's MRU list as well (X-40): `config use` is the
+      // other way to switch this folder, and a switch the list never saw would
+      // leave `config model`'s picker offering a stale order.
+      saveConfig(bindAndRemember(config, cwd, target.id), paths);
       process.stdout.write(`Bound ${cwd}\n   → ${target.name}\n`);
       return 0;
     }
@@ -362,8 +326,13 @@ export async function runConfig(args: string[]): Promise<number> {
         sampling: Object.keys(sampling).length > 0 ? sampling : undefined,
         compaction: { auto: true },
       });
-      saveConfig(next, paths);
+      // `--use` makes "add a config and work under it" one line instead of two
+      // (D-82) — the same create-and-bind act `config model` performs when it
+      // lands in a folder that has no binding yet.
+      const bind = flags["use"] === true;
+      saveConfig(bind ? bindAndRemember(next, cwd, added.id) : next, paths);
       process.stdout.write(`Added → ${added.name}  ${shortId(added.id)}\n`);
+      if (bind) process.stdout.write(`Bound ${cwd}\n   → ${added.name}\n`);
       return 0;
     }
 

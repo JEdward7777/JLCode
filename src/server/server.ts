@@ -32,6 +32,12 @@ export interface ServerDeps {
   /** Build a fully-wired session (driver + tools + sandbox + gate); pass a
    *  loaded conversation to resume it. */
   newSession: (config: ModelConfig, conversation?: Conversation) => Session;
+  /** Re-point an **open** session at a different config (X-40, D-82a). Called at
+   *  the top of a user turn, so `jlcode config model` reaches a thread that is
+   *  already running without a restart and without the CLI knowing this server
+   *  exists. Omitted in tests that don't exercise the switch; without it a
+   *  running thread simply keeps the config it started on. */
+  retargetSession?: (session: Session, config: ModelConfig) => boolean;
   /** Persistence for conversations (resume + history). */
   store: ConversationStore;
   /** Optional verbose per-turn debug journal (D-15). */
@@ -248,6 +254,28 @@ function stateOf(session: Session): Record<string, unknown> {
 export function createServer(deps: ServerDeps): { app: Hono; manager: SessionManager } {
   const app = new Hono();
   const manager = new SessionManager();
+
+  /**
+   * Pick up a model-config switch at **the top of a user turn** (X-40, D-82a).
+   *
+   * The server is the one that notices; the CLI knows nothing about it, which is
+   * what deleted a pidfile, a liveness check and a whole category of state from
+   * this design. `resolveConfig` already re-reads per new thread — this is the
+   * same read at the other boundary where nothing is half-finished.
+   *
+   * **Idle only.** An `ask_user` or an approval pauses *mid-cycle*, with an
+   * assistant message above it carrying signed reasoning from the outgoing
+   * model; adopting a new model there would hand model B model A's signed
+   * thinking, which is the shape D-28/D-38 forbid. `adoptConfig` re-checks this
+   * for itself — it is stated in both places because one of them is the reason
+   * the feature is safe.
+   */
+  const adoptLatestConfig = (session: Session): void => {
+    if (!deps.retargetSession || session.status !== "idle") return;
+    const latest = deps.resolveConfig();
+    if (!latest) return; // nothing selected now → keep running under what we have
+    deps.retargetSession(session, latest);
+  };
 
   // Outward-bind auth (D-40): guard every route + expose /auth/login. Installed
   // first so the middleware wraps all handlers below (localhost bind = no auth).
@@ -675,6 +703,10 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         .filter((m) => m.text.trim() !== "");
       session.setQueue(msgs);
     } else if (typeof body.text === "string" && body.text.trim() !== "") {
+      // An enqueue on an idle session opens a turn immediately, so it is the
+      // same boundary /chat is (D-82a); mid-turn it changes nothing, because
+      // `adoptLatestConfig` declines on anything but idle.
+      adoptLatestConfig(session);
       await session.enqueue(body.text);
     } else {
       return c.json({ error: "body must include a non-empty 'text' or a 'queue' array" }, 400);
@@ -799,6 +831,10 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         return c.json({ error: (err as Error).message }, 400);
       }
     }
+
+    // The config may have been switched under us since this thread's last
+    // message (D-82a). A user turn is the boundary where that is safe.
+    adoptLatestConfig(session);
 
     try {
       await session.send(body.text);

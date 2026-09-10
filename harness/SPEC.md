@@ -93,7 +93,7 @@ prefix stays byte-identical turn to turn and the cached prefix (§22/D-26) survi
 system message would invalidate that prefix every turn — the defect D-58 fixed at a measured 12.3x.
 A compaction summary carries the span it replaces, so a compacted thread keeps its history of time.
 
-**Switching model without moving the key (X-40, D-82 — designed, not built).** A model
+**Switching model without moving the key (X-40, D-82).** A model
 configuration binds a key *and* a model, so trying a different model under the same client key used
 to mean `config add` (which prompts for a key it cannot know you already have) plus `config use` —
 with the key copied out of `config.json` by hand. **`jlcode config model [<slug>]`** replaces that:
@@ -113,6 +113,10 @@ ancestor**, so the switch lands on the project rather than on whichever subdirec
 standing in. A running server picks the change up **at the top of a user turn** (§15 explains why
 not per call); a thread that no longer fits the new model's window gets the ordinary over-window
 error, and X-41 holds the eventual recovery path.
+
+`jlcode config add` gains **`--use`**, which binds the new config to this
+directory in the same command — the same create-and-bind act `config model`
+performs in a folder that has no binding yet.
 
 Configuration UX:
 
