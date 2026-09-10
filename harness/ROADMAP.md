@@ -41,7 +41,9 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > ships the error; X-41 ships the way out. Nothing is committed against either yet.
 >
 > ⚠ **Still outstanding from D-81:** `test/fable-live.test.ts`'s safe-harbor fixture is stale and
-> needs one paid Tier-3 re-record (`JLCODE_LIVE=1` + a key), awaiting Joshua's go-ahead.
+> needs one paid Tier-3 re-record. **Joshua has pre-authorized it — grant G-01 in
+> [`TESTING.md`](TESTING.md)**, one run, the agent picks the moment. Using it means deleting the
+> grant block in the same commit; if the grant is gone from that file, it has already been spent.
 
 > **Resume block — 2026-09-07 (D-81).** The **ephemeral asks now actually ride the live prefix**.
 > A `402 in_flight_budget_exhausted` sent us into the halp journal for `cv_3281bc4bdbce`, where a

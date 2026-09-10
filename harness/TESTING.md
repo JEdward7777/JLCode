@@ -111,6 +111,51 @@ When about to run **anything beyond the free tiers**, **ask Joshua which level t
 paid runs are intentional — **except** when the current task is *specifically* targeting an
 expensive model/feature, in which case run that targeted tier directly (don't ask redundantly).
 
+### One-time paid-run grants (standing authorization, consumed on use)
+
+The rule above is *ask first*. A **grant** is Joshua answering that question in advance for one
+specific run, so the agent does not have to catch him at the right moment — **the agent picks the
+timing, the grant fixes the scope.** Each grant is written here as its own block, and **using it
+means deleting it**: a grant that is still in this file has not been spent, and a grant that is gone
+was. Nothing else in the harness records this, deliberately — one place to read, one place to erase,
+so a grant cannot be accidentally honored twice.
+
+**How to consume one**
+
+1. Decide it is the right time. A grant is permission, not an instruction — leaving it unspent is a
+   valid choice, and so is spending it the moment you read it if the work is ready.
+2. Run exactly what the grant names. Nothing adjacent: a grant for one test does not cover another
+   test, another tier, or a second attempt at the same one.
+3. **The grant is consumed the moment a live call fires** — success or failure, recorded or not.
+   Money left the account; the authorization is gone. A failed run does **not** entitle a retry.
+4. **Delete the grant block in the same commit** as whatever the run produced (the re-recorded
+   fixtures, or, if it failed, the note saying so). Never leave a spent grant in the file, even
+   briefly.
+5. Report to Joshua what ran, what it recorded, and what it cost as far as you can observe it.
+
+---
+
+**G-01 — re-record the stale Fable safe-harbor fixture.** *Granted by Joshua, 2026-09-10. Unspent.*
+
+`test/fable-live.test.ts`'s safe-harbor compaction case (b) can no longer replay: D-81 (`9cfbd16`)
+moved the same-model compaction summary onto `ephemeralRequest`, which changed three of the seven
+fields `requestSignature` hashes — `tools` (absent → the session's defs), `reasoning` (absent → the
+config's effort), and `messages` (the instruction gained the *"Do not call any tool"* line that
+replaced `tool_choice:"none"`). The recorded response sits at an address nothing will ever request
+again, so only a live call can restore it.
+
+- **Run:** `JLCODE_LIVE=1 npx vitest run test/fable-live.test.ts` — the key comes from
+  `OPENROUTER_API_KEY`, else the first stored config's key (`test/helpers/live.ts`).
+- **Expected spend:** the misses are the compaction summary and the post-compaction follow-up on
+  **Fable**, plus one **judge** call on haiku whose prompt embeds the new summary. Case (a), the
+  `reasoning_details` round-trip, goes through the unchanged `buildRequest()` path and replays free.
+  Short transcript, `max_tokens: 512` — small, but unmetered here, so report what you can see.
+- **Covers:** exactly that one file, once. Not Tier 2, not the other Tier-3 targets, not a rerun.
+- **On success:** commit the new fixtures under `test/fixtures/llm-cache/`, delete this block, and
+  drop the ⚠ from the ROADMAP resume block.
+- **On failure:** delete this block anyway, record what happened in the resume block, and ask Joshua
+  before spending again.
+
 ## Related: response caching as a product feature (to evaluate, not committed)
 
 The same request-keyed caching could become a **runtime feature** to cut cost on repeated

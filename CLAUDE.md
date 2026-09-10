@@ -47,7 +47,9 @@ These are automatic — don't wait to be reminded:
    don't shrug it off or commit through it. Leave a note for future-you if the cause is a hunch.
 3. **Tests cost money.** Default runs are the free tiers (0+1). Before any paid tier
    (2/3, live models), **ask Joshua which level** — unless the task specifically targets that
-   model/feature. See [`harness/TESTING.md`](harness/TESTING.md).
+   model/feature, **or a one-time grant in [`harness/TESTING.md`](harness/TESTING.md) already
+   covers exactly that run**. A grant is single-use: spend it when the moment is right, then
+   delete the grant block in the same commit as whatever the run produced.
 4. **Keep the harness current.** Update `ROADMAP.md`'s "Current status — resume here" block at
    each milestone so a lost session resumes cleanly. Record deliberate design changes in
    `DECISIONS.md`; don't let code and spec drift. **In the same breath, check `README.md`** —
