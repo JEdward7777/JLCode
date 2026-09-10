@@ -42,6 +42,32 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > [`TESTING.md`](TESTING.md)**, one run, the agent picks the moment. Using it means deleting the
 > grant block in the same commit; if the grant is gone from that file, it has already been spent.
 
+> **Resume block — 2026-09-10 (X-43 built).** The agent can now **show Joshua a file without the
+> bytes going through the model**. `file_url` takes paths, fences them, and mints
+> `/conversation/<cv>/file/<token>/<index>`; the agent pastes that into its own markdown and the
+> browser fetches it back. Deliberately a **live pointer, not a snapshot** — the entry records where
+> the file was, so nothing new lands base64-inline in the append-only log (P8c's unpaid bill) — and
+> the route therefore re-checks everything at fetch time: realpath back inside the **recorded**
+> `fenceRoot` (a symlink swapped in afterwards is refused), bytes re-classified so a file that turned
+> binary stops being served, `nosniff`, and `private, no-cache` rather than the attachment route's
+> `immutable`. Images serve as themselves, markdown as `text/markdown`, other text as `text/plain`,
+> binaries refused at mint — which puts SVG on the text path for free (D-78b), so it can never come
+> back as active content on JLCode's own origin. **The two mechanisms stay distinct on purpose:** an
+> attachment means the model *looked* at it; a `file_url` link means it is showing you something it
+> has not seen. Joshua's four calls and the rejected alternative (rewriting relative `<img src>` at
+> render time) are in **D-83**; the build plan is **ROADMAP X-43**. `fenceEscapes` learned about
+> **array** path args along the way, so `paths: []` still gets the D-19 escape pause. **927 Tier-0/1
+> green, 76 files**, including `test/file-url.test.ts` and `test/file-url-route.test.ts`. Peeked in a
+> real browser — chart rendered inline, markdown as a link, headers checked against the live server
+> (VISUAL-LOG "X-43"), with one fix made while looking.
+>
+> ⚠ **Still unfiled, and adjacent:** the web client sends **no `Content-Security-Policy` at all**, so
+> agent markdown may already fetch an image from any origin — an exfiltration channel that got
+> sharper the day `browser_snapshot` began pulling untrusted page content into the context.
+> `img-src 'self' data:` closes it, and X-43 is what makes that affordable. Also unfiled: MCP config
+> has no **per-tool block list**, so a tool like Playwright's `browser_run_code_unsafe` (core, and
+> RCE-equivalent by its own description) can only be made to *prompt*, never removed.
+
 > **Resume block — 2026-09-10 (X-40 built).** `jlcode config model [<slug>]` ships: switching a
 > folder to another model no longer means two commands and a key copied out of `config.json` by
 > hand. It is a **derive** operation keyed on the pair **(key, model)**, so a back-and-forth switch
@@ -2276,6 +2302,51 @@ different wire format (system as a top-level field, content blocks end to end,
 the precedent D-78a already cites: `anthropic-messages.ts` and `openai-chat.ts` are two
 implementations, not one parameterized one. A `provider` enum on `ModelConfig` will read like a
 portability promise; it is worth writing down here that it is not one.
+## X-43 — showing Joshua a file the model never read (designed 2026-09-10, **building**)
+
+Decision and rationale: **D-83**. The failure that prompted it: `cv_e794cbe415ca`, where a screenshot
+the model had never seen was announced as one it had captured, over a broken image icon.
+
+**The shape.** `file_url` takes paths, fences them, and mints a token. The tool result hands the agent
+back URLs to paste into its own markdown; the bytes stay on disk and never enter the wire.
+
+```
+agent:  file_url(paths: ["reports/chart.png"])
+tool:   /conversation/cv_ab12/file/fu_9f3c/0   (image/png, 96 KB)
+agent:  ![chart](/conversation/cv_ab12/file/fu_9f3c/0)
+browser: GET that path -> re-resolve under fenceRoot -> 200 image/png
+```
+
+The token is minted by the tool because **the entry id does not exist yet** — ids are assigned at
+append time (`newId("e")`), so a tool cannot address its own result the way `entryView` addresses an
+attachment. One token per call, `<index>` picks the file within it.
+
+**Build steps.**
+
+1. `src/tools/file-url.ts` — the tool. `kind:"read"`, `mutates:false`, `pathArgs:["paths"]` so the
+   fence check happens at the existing enforcement point (D-19). Per path: resolve, stat, classify
+   with `classifyFile` (D-78b — bytes decide, never the extension), hash, refuse binaries by name.
+2. `src/tools/types.ts` — `ToolResult.files?: SharedFile[]`, and `ToolContext.conversationId?` so the
+   tool can write the conversation half of the URL.
+3. `src/conversation/types.ts` — the tool `Entry` carries `files?: SharedFile[]`, beside `attachments`.
+4. `src/session/session.ts` — `appendToolResult` puts `files` on the entry; the context gains the id.
+5. `src/server/server.ts` — `GET /conversation/:id/file/:token/:index`. Live session first, disk
+   second (same as the attachment route). Re-resolve under the **recorded** `fenceRoot`, re-classify
+   the bytes, serve with `nosniff`. Missing, moved or now-binary → 404, per Joshua's call.
+6. `src/tools/registry.ts` — add to `defaultTools`.
+7. Tests (Tier 0): mint + URL shape, fence escape refused, binary refused at mint, the three
+   content types, and a route test for serve / 404-when-gone / traversal.
+
+**Deliberately not in this slice.** No `entryView` change (the URL lives in the tool's own text, so
+the transcript needs nothing new); no rewriting of relative paths in markdown (D-83 rejects it); no
+URL from `write_file`; no stale-content UX beyond the 404.
+
+**Still open, and adjacent.** The web client sends **no `Content-Security-Policy` at all**, so
+markdown may already fetch images from any origin — an exfiltration channel that got sharper the day
+`browser_snapshot` started pulling untrusted page content into the context. `img-src 'self' data:`
+would close it, and `file_url` is what makes that affordable, since the legitimate case then has a
+same-origin path. Unfiled; needs its own row.
+
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
 
 > **Convention (Joshua's call, 2026-08-09): nothing leaves this list.** A row that

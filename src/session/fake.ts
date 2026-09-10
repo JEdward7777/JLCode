@@ -165,6 +165,21 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
       const path = lastUserMessage(req).slice("loop:".length).trim() || "README.md";
       return toolCall("read_file", { path });
     }
+    // A `file_url` result just settled (X-43): put the minted URLs into markdown,
+    // which is the only way to *see* offline that the browser resolves them. Has
+    // to precede the generic wrap-up below, or the picture never gets written.
+    if (last?.role === "tool" && typeof last.content === "string" && last.content.includes("/file/")) {
+      // `- <path> → <url>  (<mime>, <size>)`, which is what `file_url` reports.
+      // Only an image belongs in an `![]()`; a text file embedded that way is a
+      // broken-image icon, which is exactly the mistake the tool's description
+      // warns against — so the offline model must not make it either.
+      const shown = [...last.content.matchAll(/- (\S+) → (\/conversation\/\S+)\s+\((\S+?),/g)].map(
+        ([, name, url, mime]) => (mime!.startsWith("image/") ? `![${name}](${url})` : `[${name}](${url})`),
+      );
+      if (shown.length > 0) {
+        return textReply(`Here ${shown.length === 1 ? "it is" : "they are"}:\n\n${shown.join("\n\n")}`);
+      }
+    }
     // A tool result (or anything non-user) just settled → wrap up the turn.
     if (!last || last.role !== "user") return textReply("Done — the tool ran and reported back.");
 
@@ -237,6 +252,15 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     if (msg.startsWith("delete:")) return toolCall("delete_file", { path: after("delete:") || "note.txt" });
     if (msg.startsWith("run:")) return toolCall("run_command", { command: after("run:") || "echo hi" });
     if (msg.startsWith("read:")) return toolCall("read_file", { path: after("read:") || "README.md" });
+    // `show:` is `read:`'s opposite number (X-43): the file goes to *Joshua*, not
+    // to the model, so the peek can see a picture the fake driver never looked at.
+    if (msg.startsWith("show:")) {
+      const paths = after("show:")
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p !== "");
+      return toolCall("file_url", { paths: paths.length > 0 ? paths : ["README.md"] });
+    }
     // `todo:` reads the shared list; `todo: {"add":["one"]}` writes it, args
     // verbatim. The write is refused until a read has happened (the X-31
     // barrier), so a peek sends the bare form first — which is the barrier

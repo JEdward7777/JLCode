@@ -18,7 +18,8 @@ const TRIGGER_MODES: readonly CompactionTrigger[] = ["auto", "manual", "suggest"
 import type { AskUserAnswer, LearnAnswers, SessionEvent } from "../session/types.js";
 import type { McpServerStatus } from "../mcp/client.js";
 import type { Conversation, Entry } from "../conversation/types.js";
-import { base64Bytes } from "../tools/media.js";
+import { base64Bytes, classifyFile } from "../tools/media.js";
+import { textMimeFor } from "../tools/file-url.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
@@ -857,6 +858,65 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const conv = deps.store.load(c.req.param("id"));
     if (!conv) return c.json({ error: "no such conversation" }, 404);
     return c.json({ id: conv.id, activeLeaf: conv.activeLeaf, entries: conv.entries.map((e) => entryView(e, conv.id)) });
+  });
+
+  // One shared file's bytes (X-43, D-83) — the deliberate opposite of the
+  // attachment route above it. That one serves a **snapshot** the model looked
+  // at, immutable because the tree is append-only. This one serves a **pointer**
+  // to a file that is still on disk and may have moved, changed or grown a new
+  // type since the agent named it, so nothing here may be cached hard and every
+  // check is made again now rather than trusted from mint time.
+  app.get("/conversation/:id/file/:token/:index", async (c) => {
+    const convId = c.req.param("id");
+    const token = c.req.param("token");
+    const live = manager.list().find((sn) => sn.conversation.id === convId);
+    const entries = live ? live.conversation.entries : deps.store.load(convId)?.entries;
+    if (!entries) return c.json({ error: "no such conversation" }, 404);
+    const index = Number(c.req.param("index"));
+    if (!Number.isInteger(index) || index < 0) return c.json({ error: "no such file" }, 404);
+    // A token addresses one `file_url` call; every file it minted carries it.
+    const entry = entries.find((e) => e.type === "tool" && e.files?.some((f) => f.token === token));
+    const file = entry && entry.type === "tool" ? entry.files?.[index] : undefined;
+    if (!file || file.token !== token) return c.json({ error: "no such file" }, 404);
+
+    // **Re-fence.** The mint happened in a session that may be long gone; a URL
+    // must not outlive the workspace that authorized it, and a symlink swapped
+    // in afterwards must not carry it outside either — hence realpath now, not
+    // the string recorded then.
+    let real: string;
+    try {
+      real = fs.realpathSync(file.resolved);
+    } catch {
+      return c.json({ error: "file is gone" }, 404);
+    }
+    const root = file.fenceRoot;
+    if (real !== root && !real.startsWith(root + path.sep)) return c.json({ error: "outside the workspace" }, 404);
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(real);
+    } catch {
+      return c.json({ error: "file is gone" }, 404);
+    }
+    if (!stat.isFile()) return c.json({ error: "not a regular file" }, 404);
+
+    // The bytes decide what this is *now* (D-78b). A file that has become a
+    // binary since it was shared is refused rather than served under the mime it
+    // used to have — which is also what keeps a swapped-in SVG on the text path.
+    const kind = await classifyFile(real);
+    if (kind.kind === "binary") return c.json({ error: "no longer a viewable file" }, 404);
+    const mime = kind.kind === "image" ? kind.mime : textMimeFor(real);
+
+    const bytes = await fs.promises.readFile(real);
+    return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
+      headers: {
+        "content-type": mime,
+        "content-length": String(bytes.byteLength),
+        // Not `immutable`: the file can change under a URL that stays valid.
+        "cache-control": "private, no-cache",
+        "x-content-type-options": "nosniff",
+      },
+    });
   });
 
   // One attachment's bytes (P8e, D-78j) — the door images come through, kept

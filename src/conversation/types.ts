@@ -61,6 +61,33 @@ export interface Attachment {
   name?: string;
 }
 
+/**
+ * A file the agent asked JLCode to make viewable (X-43, D-83) — a **pointer**,
+ * never the bytes. `file_url` mints one per path; the browser fetches it back
+ * through `/conversation/:id/file/:token/:index`, which re-resolves it at fetch
+ * time. That is the deliberate difference from `Attachment`: an attachment is a
+ * snapshot the model *looked at*, and this is a live pointer to something the
+ * model never read.
+ */
+export interface SharedFile {
+  /** Token addressing the whole `file_url` call this file belongs to. */
+  token: string;
+  /** The path as the agent asked for it — the label, and what a 404 names. */
+  path: string;
+  /** Resolved absolute path at mint time. */
+  resolved: string;
+  /** The fence this was validated against, re-checked on every fetch: a URL
+   *  minted in one session must not outlive the workspace that authorized it. */
+  fenceRoot: string;
+  /** What the *bytes* said it was (D-78b), not what the extension claimed. */
+  mime: string;
+  bytes: number;
+  /** Content hash at mint time. Recorded because it is nearly free and settles
+   *  "is this still what was shown?" later; nothing refuses on a mismatch today
+   *  (Joshua's call — a changed or missing file just 404s). */
+  sha256: string;
+}
+
 export interface ToolEntry extends BaseEntry {
   type: "tool";
   toolCallId: string;
@@ -72,6 +99,9 @@ export interface ToolEntry extends BaseEntry {
    *  a following `user` message. Absent on every entry ever written before this,
    *  which is exactly the old shape, so no migration. */
   attachments?: Attachment[];
+  /** Files made viewable in the browser without their bytes going to the
+   *  model (X-43). Absent on every entry written before this. */
+  files?: SharedFile[];
 }
 
 export interface CompactionEntry extends BaseEntry {

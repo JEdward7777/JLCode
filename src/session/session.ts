@@ -18,7 +18,7 @@ import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
 import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages, pinnedProvider } from "../conversation/wire.js";
-import type { Attachment, Conversation, Entry } from "../conversation/types.js";
+import type { Attachment, Conversation, Entry, SharedFile } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolGate, ToolPreview } from "../tools/types.js";
@@ -2002,6 +2002,7 @@ export class Session {
     content: string,
     isError: boolean,
     attachments?: Attachment[],
+    files?: SharedFile[],
   ): void {
     this.pushEntry({
       type: "tool",
@@ -2010,6 +2011,7 @@ export class Session {
       content,
       isError,
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(files && files.length > 0 ? { files } : {}),
     });
     this.emit({ type: "tool-end", name: call.function.name, isError });
   }
@@ -2150,9 +2152,19 @@ export class Session {
     if (!this.sandbox) return [];
     const candidates: { arg: string; value: string }[] = tool.classifyPaths
       ? tool.classifyPaths(args).paths.map((p) => ({ arg: p.field, value: p.value }))
-      : (tool.pathArgs ?? [])
-          .map((argName) => ({ arg: argName, value: args[argName] }))
-          .filter((c): c is { arg: string; value: string } => typeof c.value === "string");
+      : (tool.pathArgs ?? []).flatMap((argName) => {
+          // A declared path arg is a string or, since X-43, an array of them —
+          // `file_url` takes several at once. Anything else is not a path and is
+          // left to the tool's own validation.
+          const value = args[argName];
+          if (typeof value === "string") return [{ arg: argName, value }];
+          if (Array.isArray(value)) {
+            return value
+              .filter((v): v is string => typeof v === "string")
+              .map((v, i) => ({ arg: `${argName}[${i}]`, value: v }));
+          }
+          return [];
+        });
     const escapes: { arg: string; escapedPath: string }[] = [];
     for (const { arg, value } of candidates) {
       const r = this.sandbox.resolve(value);
@@ -2174,9 +2186,10 @@ export class Session {
       tasks: this.tasks,
       todos: this.todoAccess,
       acceptsImages: this.acceptsImages,
+      conversationId: this.conversation.id,
     });
     const note = edited ? "[note: the user edited the arguments before running]\n" : "";
-    this.appendToolResult(call, note + res.content, res.isError ?? false, res.attachments);
+    this.appendToolResult(call, note + res.content, res.isError ?? false, res.attachments, res.files);
     this.emit({
       type: "debug",
       record: {

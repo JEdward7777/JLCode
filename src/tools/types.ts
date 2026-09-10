@@ -7,7 +7,7 @@ import type { ToolDef } from "../llm/types.js";
 import type { Sandbox } from "./sandbox.js";
 import type { TaskRegistry } from "./task-registry.js";
 import type { TodoAccess } from "../conversation/todos.js";
-import type { Attachment } from "../conversation/types.js";
+import type { Attachment, SharedFile } from "../conversation/types.js";
 
 /** Capability class, used by the Ask/Plan/Code mode gate. */
 export type ToolKind = "read" | "write" | "command" | "meta";
@@ -19,6 +19,10 @@ export interface ToolResult {
    *  (P8b). Additive: `content` still says everything a text-only consumer needs,
    *  because the wire forbids non-text in a tool message anyway (D-78a). */
   attachments?: Attachment[];
+  /** Files the tool made viewable in the browser *without* sending their bytes
+   *  to the model (X-43, D-83). Carried onto the entry, where the server's
+   *  `/conversation/:id/file/:token/:index` route resolves them again. */
+  files?: SharedFile[];
 }
 
 export interface ToolContext {
@@ -35,6 +39,11 @@ export interface ToolContext {
    *  is built once per instance and shared by every session, so for those the
    *  answer can only arrive with the call. */
   acceptsImages?: boolean;
+  /** The conversation this call belongs to (X-43). `file_url` needs it because
+   *  a URL is minted *during* execution, before the entry it will live on has an
+   *  id — ids are assigned at append time, so a tool cannot address its own
+   *  result the way `entryView` addresses an attachment. */
+  conversationId?: string;
 }
 
 /** A flattened argument field and its value (jq-style name — D-47d). */

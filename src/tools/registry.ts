@@ -2,6 +2,7 @@
 import type { ToolDef } from "../llm/types.js";
 import type { Tool } from "./types.js";
 import { fileTools, type FileToolsOptions } from "./file-tools.js";
+import { fileUrlTool } from "./file-url.js";
 import { runCommandTool, type ShellToolOptions } from "./shell-tool.js";
 import { todoTools } from "./todo-tools.js";
 
@@ -37,5 +38,5 @@ export class ToolRegistry {
  * the session will not honour is the one outcome worth ruling out.
  */
 export function defaultTools(options: ShellToolOptions & FileToolsOptions = {}): Tool[] {
-  return [...fileTools(options), runCommandTool(options), ...todoTools()];
+  return [...fileTools(options), fileUrlTool(), runCommandTool(options), ...todoTools()];
 }

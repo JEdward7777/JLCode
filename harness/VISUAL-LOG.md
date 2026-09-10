@@ -1681,3 +1681,42 @@ Confirmed with my own eyes:
   catalog` — because the peek config's hand-set `acceptsImages: true` is one of
   the four fields a switch **re-derives** rather than carries (D-82). Exactly
   right, and visible rather than silent.
+
+## X-43 — a file shown to Joshua that the model never read · 2026-09-10 · ✅ looked good (one fix while looking)
+
+**Loaded:** `node harness/peek/peek.mjs up`, then two files dropped into the peek
+workspace (`/tmp/jlcode-peek-7801/work`) — a 220×220 bar-chart PNG written by a
+throwaway script, and a two-line `notes.md` — and
+
+```bash
+node harness/peek/peek.mjs chat "show: chart.png, notes.md"
+node harness/peek/peek.mjs shot x43-file-url
+```
+
+`show:` is new in the offline driver (`src/session/fake.ts`) and is deliberately
+`read:`'s opposite number: the file goes to *Joshua*, not to the model, so the
+peek can see a picture the fake driver never looked at.
+
+**Screenshot:** [`visual/x43-file-url.png`](visual/x43-file-url.png)
+
+Confirmed with my own eyes:
+
+- **The picture is there, in the transcript, rendered from a minted URL.** Not an
+  attachment card — this is the agent's own markdown, `![chart.png](/conversation/
+  cv_…/file/fu_…/0)`, and the browser fetched it back through the route. That is
+  the whole of X-43 working end to end: `cv_e794cbe415ca`'s broken-image icon was
+  this exact shape, failing.
+- **The bytes never went to the model.** The `file_url` card reads `3 lines · 248 B`
+  — three lines of text naming two URLs. A `read_file` of the same PNG would have
+  put the image in the wire.
+- **The markdown file is a link, not a broken image.** Which is the fix I made
+  while looking: the first shot embedded *every* minted URL as `![…]()`, so
+  `notes.md` drew a broken-image icon next to the chart — the driver making
+  precisely the mistake `file_url`'s own description warns against. It now reads
+  the mime out of the tool result and only images get an `![]()`. A test would
+  not have caught this; nothing was *wrong*, it just looked wrong.
+- **The headers are the pointer's, not the snapshot's.** Fetched from the live
+  peek server: `content-type: image/png` / `text/markdown`,
+  `x-content-type-options: nosniff`, and `cache-control: private, no-cache` —
+  deliberately **not** the attachment route's `immutable`, because the file
+  underneath can change while the URL stays valid.
