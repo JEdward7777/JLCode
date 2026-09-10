@@ -23,6 +23,25 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-09-10 (X-42 filed — a sizing, no code).** Joshua asked how big a job it
+> would be to talk to **OpenAI directly instead of only through OpenRouter**. Sized before designing
+> (D-75) and filed to pick from later: **DECISIONS X-42** (the row + two durable findings) and
+> **ROADMAP X-42** (the tier-by-tier breakdown). Answer: **~a day, and the client is only ~2 hours of
+> it** — `LlmDriver` is one method, `OpenRouterClient` is 78 lines, and the wire is already
+> OpenAI-compatible, so it is a sibling class rather than an abstraction layer. **The cost is the
+> catalog:** OpenAI's `GET /models` carries no window, price, modality or parameter list, so five
+> things in `src/llm/models.ts` go dark at once and the naive build reports $0.00 spend while
+> compacting ~3x too early — the D-58/H-06 shape. Two things written down so they are not
+> rediscovered: the effort→`reasoning_effort` mapping **must stay at the wire boundary** or every
+> committed Tier-3 fixture invalidates (D-24 hashes the `ChatRequest`, not the body), and **direct
+> Anthropic would not be similarly cheap** — the Messages API is a different wire format, so a
+> `provider` enum must not be read as a portability promise. **Nothing built, nothing decided.**
+>
+> ⚠ **Still outstanding from D-81:** `test/fable-live.test.ts`'s safe-harbor fixture is stale and
+> needs one paid Tier-3 re-record. **Joshua has pre-authorized it — grant G-01 in
+> [`TESTING.md`](TESTING.md)**, one run, the agent picks the moment. Using it means deleting the
+> grant block in the same commit; if the grant is gone from that file, it has already been spent.
+
 > **Resume block — 2026-09-10 (X-40 built).** `jlcode config model [<slug>]` ships: switching a
 > folder to another model no longer means two commands and a key copied out of `config.json` by
 > hand. It is a **derive** operation keyed on the pair **(key, model)**, so a back-and-forth switch
@@ -2162,6 +2181,101 @@ missing flag · the recently-used list orders the picker and survives a `config 
 not obviously needed — nothing here talks to a model — beyond the existing catalog fixture for slug
 resolution.
 
+## X-42 — talking to OpenAI directly, without OpenRouter (**sized 2026-09-10, not designed, nothing built**)
+
+Answering Joshua's *"how big of an undertaking would it be?"* — sizing before designing, per **D-75**.
+The row and its two durable findings are **DECISIONS X-42**; this section is the breakdown. **Nothing
+here is a commitment**: it is written so that picking the row up later starts from measurement rather
+than from a fresh read of the LLM layer.
+
+**Headline: ~a day for a correct, shippable path — and the client is only ~2 hours of it.**
+
+**Why the client half is small.** `LlmDriver` (`src/llm/types.ts`) is a one-method interface and
+`OpenRouterClient` (`src/llm/client.ts`) is 78 lines behind it. Session, streaming accumulation,
+tools, compaction and spend all talk to the interface, never to OpenRouter. And the wire format is
+already the right one — `src/llm/types.ts` opens by calling itself OpenAI-compatible. **This is a
+sibling class, not an abstraction layer.**
+
+### Tier 1 — the client (~2 hours)
+
+Four wire deltas, and the mapping stays **inside the client** (see the cache trap below):
+
+- Base URL; drop `HTTP-Referer` / `X-Title`.
+- **Drop `usage: {include: true}`** — an OpenRouter extension; OpenAI 400s on unrecognized body args.
+  This is the one guaranteed must-fix, and **worth confirming with a single `curl` before writing
+  anything**, since the whole "same protocol" premise rests on how strict that endpoint actually is.
+- Guard `req.provider` off the body, same reason.
+- Map `reasoning: {effort}` → `reasoning_effort`. `{enabled:false}` has no clean equivalent (nearest
+  is `"minimal"` on gpt-5) — a small honesty question for the `none` effort setting, not a blocker.
+
+**Three things that look like blockers and are already handled by accident:**
+
+| Looks like a problem | Why it isn't |
+|---|---|
+| Prompt caching (D-26/D-58) | `supportsCacheControl()` gates on `anthropic/`\|`claude`, so a `gpt-*` model gets **zero breakpoints — which is correct**: OpenAI caches automatically above 1024 tokens, no markers wanted. And `mapUsage` already reads `prompt_tokens_details.cached_tokens`, which is native OpenAI. **Cache reporting works on day one, for free.** |
+| `reasoning_details` / D-14 | Chat-completions never returns it from OpenAI, so the opaque round-trip no-ops. (Encrypted reasoning lives in the Responses API — a different endpoint, and not part of this row.) |
+| Provider pinning (D-49/H-02) | Pins come from a top-level `provider` field in the stream chunks. OpenAI sends none, so none is ever recorded and none is ever sent. |
+
+### Tier 2 — the catalog (~3–4 hours, and the reason this isn't a two-hour job)
+
+OpenAI's `GET /models` returns `{id, object, created, owned_by}`. **No `context_length`, no
+`pricing`, no `architecture.input_modalities`, no `supported_parameters`.** Five things in
+`src/llm/models.ts` go dark at once:
+
+| What | Consequence |
+|---|---|
+| `resolveWindow` | 128k `FALLBACK_CONTEXT_WINDOW` for everything — gpt-5 is 400k, so it compacts ~3x too early |
+| `parsePrices` | And OpenAI sends no `usage.cost` either, so **both** spend paths go blind → $0.00 |
+| `imageSupport` | Every model answers `"unknown"` |
+| `supportsReasoning` / `maxCompletionTokens` | X-40's switch warnings go quiet |
+| `modelIds()` | `config model <slug>` searches a list of bare ids with nothing behind them |
+
+Every one has a hand-edit override already in the schema (`compaction.contextLength`, `pricing`,
+`acceptsImages`) — **which is why this is a day and not a week**. But shipping on the overrides alone
+gives a first OpenAI config that silently compacts early and reports $0.00 spend, and that is
+**exactly the D-58/H-06 shape** this repo keeps getting bitten by: a run that looks correct, errors
+nowhere, and is merely wrong and expensive. So the honest version bundles a small **static table**
+(~15–20 models: window, price, modalities) merged with the live id list, behind a `ProviderCatalog`
+seam — plus a standing staleness chore, which should be stated out loud rather than discovered.
+
+### Tier 3 — config schema and UX (~2 hours)
+
+`openRouterKey` is the field name, touched in `src/config/store.ts`, `src/config/operations.ts`
+(×3), `src/config/commands.ts`, `src/config/model-command.ts` (×3), `src/server/server.ts`, and both
+command entry points — plus ~40 test files that build fixture configs.
+
+**Cheapest correct move:** add `provider?: "openrouter" | "openai"` (absent = openrouter, so every
+existing config keeps working — **D-68**'s pass-through loader already carries unknown fields), add an
+optional `apiKey`, and have `normalizeModelConfig` coalesce the legacy name. Two lines in the loader,
+**no test churn**, and the misnamed field dies on its own schedule instead of costing a 40-file rename
+up front. Then: the `config add` prompt wording and a provider question, `config model`'s catalog
+search, the `--key` help text, and `hasKey` on `/config`.
+
+### Tier 4 — tests (~1 hour)
+
+`test/helpers/live.ts` resolves the key from `OPENROUTER_API_KEY` or the first stored config; a live
+OpenAI tier needs a provider-aware sibling and its own fixture set. Tier-0/1 coverage of the new
+client is cheap — the `test/llm-client.test.ts` pattern (injected `fetch`, assert the body) transfers
+directly, and asserting **what is *absent* from the body** (`usage`, `provider`) is the test that
+matters most.
+
+⚠ **The cache trap, and it costs real money.** `requestSignature` (`src/llm/cache.ts`) hashes the
+`ChatRequest`, **not** the wire body — so the effort→`reasoning_effort` rename is invisible to the
+D-24 fixture cache **as long as it happens at the wire boundary**, exactly where D-58 put the cache
+breakpoints and for the same reason. Lift it into `buildRequest()` instead and every committed
+Tier-3 fixture invalidates at once and must be re-recorded live. Same trap D-81 sprang.
+
+### The thing to know before adding a `provider` field
+
+The `provider` field on `ChatRequest` and the whole D-49 pinning machine are OpenRouter-shaped
+concepts that become dead weight on one of two drivers. That is fine and not worth refactoring — but
+it is the seam where a **third** provider stops being cheap. **Direct OpenAI is a day precisely
+because it is the same protocol; direct Anthropic would not be** — the Messages API is a genuinely
+different wire format (system as a top-level field, content blocks end to end,
+`tool_use`/`tool_result` rather than `tool_calls`, native `thinking` blocks). KiloCode's own split is
+the precedent D-78a already cites: `anthropic-messages.ts` and `openai-chat.ts` are two
+implementations, not one parameterized one. A `provider` enum on `ModelConfig` will read like a
+portability promise; it is worth writing down here that it is not one.
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
 
 > **Convention (Joshua's call, 2026-08-09): nothing leaves this list.** A row that
@@ -2171,6 +2285,7 @@ resolution.
 > question starts. The filed-and-fixed entries above carry the reasoning.
 
 **Still open:**
+**a direct provider connection — OpenAI without OpenRouter; sized ~a day, catalog is the cost (X-42)** ·
 recovering a thread that no longer fits its window: summarize what fits, replay the rest as a user message (X-41) ·
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
 **multiple live sessions on different forks of one conversation (X-14)** ·
