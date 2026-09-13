@@ -8,8 +8,8 @@ the safe-harbor engine (P6b) + trigger-mode UX, the cross-model summary path, an
 validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-mode surface**
 (D-40). **Milestone M4 reached (O-02 resolved by design, D-38).** The post-v1 phases are done too:
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
-post-v1 backlog** (see "Later" + the H-01 hardening item + the untriaged rows on
-`observed_items_needing_filed_in_harness.txt`). **X-40 — `config model`, switching a folder's
+post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
+is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
 model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).**
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -22,6 +22,55 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-09-13 (Joshua's observed-items list triaged and filed — no code).** Fifteen
+> observations off `observed_items_needing_filed_in_harness.txt`, read against the harness and against
+> the code, filed as **ten rows, X-46 … X-55**, and the file cleared. **Nothing on the list was already
+> filed, and nothing was fully fixed** — which is the useful headline, because two of them *looked*
+> fixed. **X-46**: the model chip cutting its tail is X-29/D-71 verbatim, and that fix is intact — but
+> only on the **pane header**; the rail still tail-cuts an untitled thread's model id with plain CSS, so
+> either that is the surface Joshua saw or the header regressed. **It is filed with the caveat and wants
+> a peek before the fix, not after.** **X-51**: the 🔊 on reasoning blocks shipped with X-38, so the
+> missing one on question cards reads as an oversight — it is, and five more TTS gaps came with it
+> (pause, speed, play-from-here, the reply's control sitting at the *bottom* while reasoning's sits at
+> the *top*, and no trace of what you have already heard). Filed as **one** row: it is one control
+> surface, and six rows would design it six times.
+>
+> **Two of the fifteen are decisions being reversed, not oversights, and that is recorded as such.**
+> **X-47** — the composer's text is swallowed when the pause is an `ask_user` question — is exactly what
+> **D-51** scoped out in its own words (*"Applies to approvals only; `ask_user` already has its own
+> free-text field"*). The reasoning held as far as it went; what it missed is that the composer is where
+> you are already typing, and a box that honours your input on one kind of pause and silently eats it on
+> another is worse than either rule applied consistently. **X-49** — *"safe-auto doesn't seem to actually
+> do anything"* — is **true by construction**: `auto-safe` differs from `manual` only by
+> `autoSafeAllowlist`, which defaults to `[]` and appears in **two** files in the repo, neither of which
+> can write it. No CLI, no `config set` path, no browser editor. It brushes **D-50** (config editing
+> stays manual), but D-50 was about secrets and live reload, and a command allowlist is neither — so the
+> row asks to carve it out rather than overturn it, and names the sharp edge (prefix-matching a *shell
+> string* means `git` admits `git push --force`).
+>
+> **The rest.** **X-48** `run_command` has no field to say *why* — filed with the "it is a model claim,
+> not a verified fact" constraint D-83 just spent a slice establishing. **X-50** is two defects on one
+> path: `?session=` addresses a **live** session id and silently falls back to `sessions[0]` when it
+> misses (an old link opens someone else's thread and looks like it worked), and `promotePeek` focuses a
+> session before its `session-added` frame lands, so the pane has no slice and the rail highlights
+> nothing — which is the "looked like everything was hung". **X-52** is the cache break in
+> `cv_3281bc4bdbce` at 21:18:11Z that **D-81 did not explain** — 13 seconds after the prior turn, 4,885
+> cached tokens out of 201,177 — promoted from a loose end in the 2026-09-07 resume block to a row.
+> **X-53** is the 1-hour cache TTL: `cache-breakpoints.ts` has only ever emitted `{"type":"ephemeral"}`,
+> and a session that shells out to 7-minute verification runs re-uploads ~200k tokens at the 1.25× write
+> rate every time. One field on the wire; the real question is *when to ask for it*, since the 1h TTL
+> is written at 2×. **X-54** how long a command took — and the decision buried in it is that the cheap
+> timestamp-delta version silently includes approval wait, which on an approved command is most of it.
+> **X-55** the Remember button's path chip is near-black on near-black (`.actions button.primary`'s
+> `color: #08111f` over `.actions code`'s `--panel-2`), on the highest-stakes control in the app — and
+> **no, there is no light mode**, one `:root` palette, except that mermaid asks the OS for its theme, so
+> a light-OS user gets a light diagram on a dark panel today.
+>
+> **Nothing is built against any of them.** Suggested order if they get picked up: **X-55** (one line),
+> **X-50(2)** (a handful, and it is the one that reads as a hang), **X-51(e)** (placement), then the ones
+> wanting a design round — **X-49**, **X-47**, **X-53** — with **X-52** worth an hour of journal-diffing
+> on its own, since its failure mode is expensive and completely silent.
 
 > **Resume block — 2026-09-10 (X-42 filed — a sizing, no code).** Joshua asked how big a job it
 > would be to talk to **OpenAI directly instead of only through OpenRouter**. Sized before designing
@@ -2360,6 +2409,21 @@ that would let `browser_run_code_unsafe` be removed rather than merely prompted 
 > question starts. The filed-and-fixed entries above carry the reasoning.
 
 **Still open:**
+*Filed 2026-09-13 off Joshua's observed-items list — ten rows, nothing built:*
+**the Remember button's path chip is dark-on-dark, and there is no light mode (X-55)** ·
+**an old `?session=` link opens the wrong thread, and promoting a peek repaints as a hang (X-50)** ·
+**the TTS control cluster — question-block 🔊, pause, speed, play-from-here, control placement, a heard mark (X-51)** ·
+**auto-safe is manual with extra steps: its allowlist has no editing surface (X-49)** ·
+**a composer note is swallowed when the pause is an `ask_user` question — reverses D-51 (X-47)** ·
+**`run_command` cannot say *why* it is running what it is running (X-48)** ·
+the 5-minute cache TTL is the wrong one for a thread that shells out (X-53) ·
+the unexplained full-prefix cache break in `cv_3281bc4bdbce`, residue of D-81 (X-52) ·
+how long a finished command took (X-54) ·
+the model chip still tail-cuts in the rail — X-29/D-71's surviving surface, **peek before fixing** (X-46) ·
+*Filed 2026-09-13 alongside X-43:*
+**no `Content-Security-Policy`, so assistant prose is an exfiltration beacon (X-44)** ·
+**MCP config can disable a server but not one of its tools (X-45)** ·
+*Older:*
 **a direct provider connection — OpenAI without OpenRouter; sized ~a day, catalog is the cost (X-42)** ·
 recovering a thread that no longer fits its window: summarize what fits, replay the rest as a user message (X-41) ·
 **copy an assistant reply's markdown to the clipboard (X-18)** ·
