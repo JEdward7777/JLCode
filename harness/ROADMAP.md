@@ -61,12 +61,15 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > real browser — chart rendered inline, markdown as a link, headers checked against the live server
 > (VISUAL-LOG "X-43"), with one fix made while looking.
 >
-> ⚠ **Still unfiled, and adjacent:** the web client sends **no `Content-Security-Policy` at all**, so
-> agent markdown may already fetch an image from any origin — an exfiltration channel that got
-> sharper the day `browser_snapshot` began pulling untrusted page content into the context.
-> `img-src 'self' data:` closes it, and X-43 is what makes that affordable. Also unfiled: MCP config
-> has no **per-tool block list**, so a tool like Playwright's `browser_run_code_unsafe` (core, and
-> RCE-equivalent by its own description) can only be made to *prompt*, never removed.
+> ⚠ **Two adjacent gaps, now filed as X-44 and X-45 (2026-09-13).** **X-44:** the web client sends
+> **no `Content-Security-Policy` at all**, so agent markdown may already fetch an image from any
+> origin — an exfiltration channel needing no tool call and no approval, and one that got sharper the
+> day `browser_snapshot` began pulling untrusted page content into the context. `img-src 'self'
+> data:` closes it, and X-43 is what makes that affordable. **X-45:** MCP config has no **per-tool
+> block list**, so a tool like Playwright's `browser_run_code_unsafe` (core, and RCE-equivalent by
+> its own description) can only be made to *prompt*, never removed. Neither is broken today; both are
+> doors that were always open, next to something newly installed that walks through doors. If only
+> one gets done, **X-44 first** — it is the one reachable without Joshua clicking approve.
 
 > **Resume block — 2026-09-10 (X-40 built).** `jlcode config model [<slug>]` ships: switching a
 > folder to another model no longer means two commands and a key copied out of `config.json` by
@@ -2345,7 +2348,8 @@ URL from `write_file`; no stale-content UX beyond the 404.
 markdown may already fetch images from any origin — an exfiltration channel that got sharper the day
 `browser_snapshot` started pulling untrusted page content into the context. `img-src 'self' data:`
 would close it, and `file_url` is what makes that affordable, since the legitimate case then has a
-same-origin path. Unfiled; needs its own row.
+same-origin path. **Filed as X-44** (2026-09-13), alongside **X-45**, the per-tool MCP block list
+that would let `browser_run_code_unsafe` be removed rather than merely prompted for.
 
 ## Later (post-v1; see DECISIONS "Deferred" X-01…X-18)
 
