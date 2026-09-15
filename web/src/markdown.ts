@@ -31,8 +31,12 @@ let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
 async function loadMermaid() {
   if (!mermaidReady) {
     mermaidReady = import("mermaid").then((m) => {
-      const dark = window.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "default" : "dark";
-      m.default.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark });
+      // Pinned dark, not asked of the OS (X-55). The app chrome is one `:root`
+      // palette with no `prefers-color-scheme` anywhere and no light mode, so
+      // asking rendered a *light* diagram onto JLCode's dark panel for anyone on
+      // a light desktop — half of a light mode, which is worse than neither. If
+      // the app ever grows one, this follows it rather than the OS.
+      m.default.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark" });
       return m.default;
     });
   }

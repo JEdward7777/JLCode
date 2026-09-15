@@ -1720,3 +1720,72 @@ Confirmed with my own eyes:
   `x-content-type-options: nosniff`, and `cache-control: private, no-cache` —
   deliberately **not** the attachment route's `immutable`, because the file
   underneath can change while the URL stays valid.
+
+## X-55 + X-50(2) — the unreadable chip, and the promotion that repaints wrong · 2026-09-15 · ✅ looked good (**the peek found a defect the filed row never named, and a bug in my own first fix**)
+
+Two fixes in one commit because both are "the UI lies to you for a moment".
+Also new in the tool: a **`type:<text>` step** for `peek click`, because the
+promotion needed text in a composer and clicks alone cannot put it there — the
+same reason `hover:` exists.
+
+```bash
+node harness/peek/peek.mjs up
+node harness/peek/peek.mjs chat "read: /etc/hostname"       # → the out-of-fence card
+node harness/peek/peek.mjs shot x55-remember-fixed
+# the promotion: one live thread + one in history, then drive the peek composer
+node harness/peek/peek.mjs click ".rail-item.history" "textarea" \
+     "type:carry on from here" "footer.composer button" --settle 600 --shot x50-promoted-fixed
+```
+
+**Screenshots:** [`visual/x55-remember-chip.png`](visual/x55-remember-chip.png)
+(before over after) · [`visual/x55-remember-fixed.png`](visual/x55-remember-fixed.png)
+· [`visual/x50-promoted-pair.png`](visual/x50-promoted-pair.png) (before over
+after) · [`visual/x50-promoted-normal.png`](visual/x50-promoted-normal.png) ·
+[`visual/x50-promoted-before.png`](visual/x50-promoted-before.png).
+
+Confirmed with my own eyes:
+
+- **X-55 — `Remember /etc` is legible, and the number says how much.** Sampling
+  the glyph and the chip fill straight out of the two PNGs: **1.19:1 → 5.82:1**.
+  1.19 is not "hard to read", it is *the same colour*; 5.82 clears AA for body
+  text. The chip now darkens the button it sits on instead of carrying
+  `--panel-2`, so it stays right whatever `--accent` becomes.
+- **X-50(2) — the pane holds the right thread through the handover.** Before, the
+  promoted pane rendered the *live* session as a placeholder: title `session`,
+  `1%` where the meter says `~1%`, `compact: cancelable` where the thread is on
+  `suggest`. After, the pane keeps showing `HISTORY · The archived thread` with
+  its real transcript until the descriptor lands, then swaps to the live pane
+  with its title and `peek/model` chip intact.
+
+**The race does not happen by itself, and that matters.** The first promotion
+peek showed *identical* correct output before and after the fix, because on a
+local server the `session-added` frame is written to the SSE stream before the
+POST that caused it has even returned — the client is essentially never in the
+gap. To see it at all I had to force the window open with a **throwaway** env
+hook in `server.ts` delaying that one frame by 1200ms (written, used, reverted;
+it is not in the commit). So X-50(2) is a **real but narrow** bug: it needs the
+bus to fall behind its own POST, which is what a busy thread, a slow tab or a
+buffering proxy does. It is not the constant the row implies.
+
+**Two things the peek caught that reading did not:**
+
+- **The row named the wrong symptom.** It predicted "the pane has no slice to
+  render". What actually happens is worse and more visible: `reduceEvent`'s map
+  conjures a bare `newSlice` for an id it has never seen, so the turn's own
+  events beat the descriptor and the pane renders a session **with default
+  identity** — and since `SessionState` carries no `model`, that slice kept
+  `model: ""` for the rest of its life once the descriptor folded state only.
+  That is `applyDescriptor`, and it would not have been written from the row.
+- **My first fix released the hold onto that placeholder**, because it waited for
+  `slices[promoting]` — "a slice exists" is true a beat before any *identity* is.
+  Moving the release onto the descriptor frame fixed it, and then the *normal*
+  path hung the peek open forever: the frame had already arrived before
+  `setPromoting` ran, so nothing was left to listen for. Hence `describedRef` —
+  a set of ids whose descriptor has been seen, consulted synchronously. **Both
+  wrong versions were caught by looking, neither by the tests**, which is this
+  discipline earning its keep twice in one slice.
+
+**Left alone deliberately:** the *rail row* still reads `session` for as long as
+the descriptor is late (`session.title || session.model || "session"`). That is
+honest — a live session with no name yet — and it self-corrects. Hiding it would
+mean hiding a running session from the rail, which is worse.

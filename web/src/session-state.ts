@@ -164,7 +164,23 @@ export function newSlice(id: string, model = ""): SessionSlice {
 
 /** Build a slice from a roster/added descriptor (identity + settled state). */
 export function sliceFromDescriptor(d: SessionDescriptor): SessionSlice {
-  return applyState(newSlice(d.id, d.model), d.state);
+  return applyDescriptor(newSlice(d.id), d);
+}
+
+/**
+ * Fold a descriptor into a slice that **already exists** — an `added` or
+ * `roster` frame for a session the client has heard from already.
+ *
+ * Identity comes from the descriptor and only from the descriptor: `SessionState`
+ * has no `model` field, so folding state alone left `model` wherever it was. That
+ * is harmless for a slice built from a descriptor in the first place and wrong
+ * for the other kind — `reduceEvent`'s map conjures a bare `newSlice` for an id
+ * it has never seen, which happens whenever a turn's events outrun its
+ * descriptor, and that slice then carried `model: ""` for the rest of its life
+ * (X-50). An empty descriptor model never clobbers a real one.
+ */
+export function applyDescriptor(s: SessionSlice, d: SessionDescriptor): SessionSlice {
+  return applyState({ ...s, model: d.model || s.model }, d.state);
 }
 
 /** Fold a settled-state snapshot (SSE `ready`/roster/added, or an action
@@ -213,6 +229,33 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
  */
 export function isAwaiting(status: string): boolean {
   return status.startsWith("awaiting-");
+}
+
+/**
+ * Where focus belongs once the slice map changes.
+ *
+ * A `focusedId` naming no slice is **ambiguous**, and the two readings want
+ * opposite answers: the session was *closed* (fall back to another, or none), or
+ * its `session-added` frame has *not landed yet* (wait — it is on its way). Only
+ * the first was ever considered, which is the X-50 defect: promoting a peek
+ * focuses the id the POST returned a beat before the frame arrives, so the gap
+ * read as "closed" and focus jumped to `ids[0]` — a **different thread**, and
+ * permanently, because the frame's own auto-focus only claims an *empty* focus.
+ *
+ * `pending` is a session we know exists because we just created it, so it is
+ * held rather than replaced. Anything that fills the map resolves it — a
+ * `session-added` normally, a `roster` after a reconnect — so there is no
+ * timeout here to get wrong.
+ */
+export function nextFocus(
+  focusedId: string | null,
+  ids: readonly string[],
+  pending: string | null,
+): { t: "keep" } | { t: "move"; id: string | null } {
+  if (!focusedId) return { t: "keep" }; // nothing focused: `session-added` claims it
+  if (ids.includes(focusedId)) return { t: "keep" };
+  if (focusedId === pending) return { t: "keep" }; // not gone — not here yet
+  return { t: "move", id: ids[0] ?? null };
 }
 
 /**

@@ -5,7 +5,7 @@
  * and the events that flip status/spend/prompt state.
  */
 import { describe, it, expect } from "vitest";
-import { newSlice, reduceEvent, sliceFromDescriptor, applyState, isUnresumable, isAwaiting } from "../web/src/session-state";
+import { newSlice, reduceEvent, sliceFromDescriptor, applyState, isUnresumable, isAwaiting, nextFocus, applyDescriptor } from "../web/src/session-state";
 import type { SessionDescriptor, WireEvent } from "../web/src/api";
 
 describe("session slice from a roster descriptor", () => {
@@ -380,5 +380,104 @@ describe("the shared todo list in the slice (X-31)", () => {
     const s = applyState(newSlice("s1"), { todos: [{ id: "td_1", text: "one", done: false }] });
     expect(applyState(s, { status: "idle" }).todos).toHaveLength(1);
     expect(reduceEvent(s, { type: "todos", items: [] } as WireEvent).todos).toEqual([]);
+  });
+});
+
+/**
+ * X-50(2) — promoting a peek focused a session a beat before its `session-added`
+ * frame arrived, so the focused id named no slice. The old rule read that gap as
+ * "the session was closed" and fell back to `ids[0]`, which is how a promotion
+ * landed the reader on *someone else's thread* and the pane repainted empty —
+ * Joshua's "it looked like everything was hung".
+ */
+describe("nextFocus — a missing slice is not the same as a closed one", () => {
+  it("keeps focus where it is while the slice exists", () => {
+    expect(nextFocus("s1", ["s1", "s2"], null)).toEqual({ t: "keep" });
+  });
+
+  it("holds a promotion whose slice has not landed yet", () => {
+    // The whole defect in one line: other sessions are live, so the old rule had
+    // somewhere to fall back *to*, and took it.
+    expect(nextFocus("s_new", ["s1", "s2"], "s_new")).toEqual({ t: "keep" });
+  });
+
+  it("falls back when the focused session really did close", () => {
+    expect(nextFocus("s1", ["s2", "s3"], null)).toEqual({ t: "move", id: "s2" });
+    // A promotion pending on a *different* session does not excuse this one.
+    expect(nextFocus("s1", ["s2"], "s_new")).toEqual({ t: "move", id: "s2" });
+  });
+
+  it("falls back to nothing when the last session closes", () => {
+    expect(nextFocus("s1", [], null)).toEqual({ t: "move", id: null });
+  });
+
+  it("leaves an empty focus alone — `session-added` is what claims it", () => {
+    expect(nextFocus(null, [], "s_new")).toEqual({ t: "keep" });
+    expect(nextFocus(null, ["s1"], null)).toEqual({ t: "keep" });
+  });
+
+  it("releases the hold the moment the slice arrives", () => {
+    // Before the frame: held. After it: an ordinary focus, so the landing effect
+    // can hand the pane over from the peek.
+    expect(nextFocus("s_new", ["s1"], "s_new")).toEqual({ t: "keep" });
+    expect(nextFocus("s_new", ["s1", "s_new"], "s_new")).toEqual({ t: "keep" });
+    expect(nextFocus("s_new", ["s1", "s_new"], null)).toEqual({ t: "keep" });
+  });
+
+  it("the promotion sequence, start to finish, never leaves the right thread", () => {
+    // Exactly the order the client sees: POST returns → pointer moves → the
+    // reducer is still one frame behind → `session-added` lands.
+    const live = ["s1", "s2"];
+    let focused = "s1";
+    let promoting: string | null = null;
+
+    // Promotion: take the pointer on an id the reducer has never seen.
+    promoting = "s_new";
+    focused = "s_new";
+    let step = nextFocus(focused, live, promoting);
+    expect(step).toEqual({ t: "keep" }); // old rule: { t: "move", id: "s1" }
+
+    // The frame lands.
+    step = nextFocus(focused, [...live, "s_new"], promoting);
+    expect(step).toEqual({ t: "keep" });
+    expect(focused).toBe("s_new");
+  });
+});
+
+/**
+ * X-50 — the other half, found by forcing the race open in a real browser rather
+ * than by reading: a turn's events can outrun its `session-added` descriptor, and
+ * `reduceEvent`'s map conjures a bare `newSlice` for an id it has never seen. The
+ * descriptor that follows used to fold *state* only, and `model` lives on the
+ * descriptor alone — so the promoted pane kept the placeholder's empty model.
+ */
+describe("applyDescriptor — a descriptor carries identity, not just state", () => {
+  const descriptor = (model: string): SessionDescriptor => ({
+    id: "s_new",
+    model,
+    state: { status: "idle", mode: "plan", approval: "manual", triggerMode: "suggest", title: "The archived thread" },
+  });
+
+  it("gives a placeholder slice the model it never had", () => {
+    // Exactly the shape the event reducer leaves behind: right id, nothing else.
+    const placeholder = newSlice("s_new");
+    expect(placeholder.model).toBe("");
+    const s = applyDescriptor(placeholder, descriptor("peek/model"));
+    expect(s.model).toBe("peek/model");
+    expect(s.title).toBe("The archived thread");
+    expect(s.mode).toBe("plan");
+    expect(s.triggerMode).toBe("suggest"); // not newSlice's "cancelable"
+  });
+
+  it("never clobbers a real model with an empty one", () => {
+    const known = sliceFromDescriptor(descriptor("peek/model"));
+    expect(applyDescriptor(known, descriptor("")).model).toBe("peek/model");
+  });
+
+  it("keeps everything the slice already accumulated", () => {
+    const placeholder = reduceEvent(newSlice("s_new"), { type: "spend", totalUsd: 0.5 } as WireEvent);
+    const s = applyDescriptor(placeholder, descriptor("peek/model"));
+    expect(s.model).toBe("peek/model");
+    expect(s.spendUsd).toBe(0.5);
   });
 });

@@ -1290,6 +1290,17 @@ body.row-resizing {
   color: #08111f;
   border-color: transparent;
 }
+/* A chip inside a *filled* button cannot keep the panel's fill (X-55). `--panel-2`
+   is doing two jobs — "a surface darker than the panel" and "a chip" — and those
+   contradict each other the moment the chip sits on something that is not the
+   panel: here the button's text is near-black for contrast against `--accent`,
+   so `.actions code`'s near-black fill put near-black on near-black. It bites
+   exactly on `Remember <root>`, the highest-stakes control in the app. Darken
+   the button itself instead, which stays correct whatever `--accent` becomes. */
+.actions button.primary code {
+  background: rgba(8, 17, 31, 0.16);
+  color: inherit;
+}
 .actions button.danger {
   color: var(--danger);
   border-color: var(--danger);

@@ -10,7 +10,8 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).**
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** *Off the backlog since:
+**X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
 testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
@@ -22,6 +23,41 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-09-15 (D-85/D-85a — X-55 + X-50(2), two UI lies).** Joshua picked two
+> rows off the 2026-09-13 backlog. **X-55 was the one-liner it looked like.** `.actions button.primary
+> code` painted `--panel-2` inside a button whose text is near-black for contrast against `--accent`,
+> so `Remember <root>` — the highest-stakes control in the app — printed the path at a measured
+> **1.19:1**. The chip now darkens the button it sits on: **5.82:1**, sampled off the two screenshots
+> rather than computed. The row's parenthetical is answered and acted on in the same breath: **there is
+> no light mode**, so `markdown.ts` stops asking the OS for **mermaid's** theme and pins it dark.
+>
+> **X-50(2) was not the one-liner it looked like, and the peek is what said so** (working-discipline 5,
+> twice over). The row predicted "the pane has no slice to render". **What actually happens is more
+> visible:** a turn's own events beat the `session-added` descriptor, `reduceEvent` conjures a bare
+> `newSlice` for the unknown id, and the promoted pane renders with **default identity** — titled
+> `session`, `compact: cancelable`, the meter's `~` gone. And since `SessionState` carries no `model`,
+> the descriptor folding state alone left that slice at `model: ""` **forever**; `applyDescriptor` now
+> folds identity, and `sliceFromDescriptor` is defined through it so the two cannot drift. **Two wrong
+> versions of my own fix reached a browser and no test caught either:** releasing the hold on
+> `slices[promoting]` landed on the placeholder ("a slice exists" is true a beat before any identity
+> is), and releasing on the *next* descriptor frame hung the peek open forever, because on a local
+> server the frame is written **before the POST that caused it returns**. Hence `describedRef` — a set
+> of ids whose descriptor has been seen, consulted synchronously.
+>
+> **The race does not happen unaided**, which re-ranks the row: the frame normally wins, so the first
+> promotion peek showed *identical correct* output before and after the fix. Forcing it open needed a
+> throwaway `server.ts` env hook delaying that one frame 1200ms — **written, used, reverted, not in the
+> commit**. So X-50(2) is **real but narrow**: it wants the bus to fall behind its own POST (a busy
+> thread, a slow tab, a buffering proxy), not the constant the row implies. **Left alone deliberately:**
+> the *rail row* still reads `session` while the descriptor is late — honest, self-correcting, and
+> hiding it would hide a running session from the rail.
+>
+> **Also new in the tool:** `peek click` grew a **`type:<text>` step** (`Input.insertText`, so React
+> sees a real edit), because the promotion needed text in a composer and clicks cannot put it there —
+> the same reason `hover:` exists. Build + free tiers green (**942**, +11). README checked: nothing
+> here changes how JLCode is run or driven. **G-01 is untouched and still unspent.** **X-50(1)** — the
+> `?session=` link that silently opens a *different* thread — is **still open** and is the larger half.
 
 > **Resume block — 2026-09-15 (D-84 — titles came back).** Joshua: *"we tried to fix title
 > generation because it was missing the cache… now we don't have any titles at all."* He is right,
@@ -2440,8 +2476,7 @@ that would let `browser_run_code_unsafe` be removed rather than merely prompted 
 
 **Still open:**
 *Filed 2026-09-13 off Joshua's observed-items list — ten rows, nothing built:*
-**the Remember button's path chip is dark-on-dark, and there is no light mode (X-55)** ·
-**an old `?session=` link opens the wrong thread, and promoting a peek repaints as a hang (X-50)** ·
+**an old `?session=` link opens the wrong thread (X-50(1) — the other half, X-50(2), shipped)** ·
 **the TTS control cluster — question-block 🔊, pause, speed, play-from-here, control placement, a heard mark (X-51)** ·
 **auto-safe is manual with extra steps: its allowlist has no editing surface (X-49)** ·
 **a composer note is swallowed when the pause is an `ask_user` question — reverses D-51 (X-47)** ·
@@ -2469,6 +2504,8 @@ browser-driven app testing · VS Code webview · response-caching product featur
 file viewer & upload/download chrome.
 
 **Shipped since:**
+~~the Remember button's path chip is dark-on-dark, and mermaid asked the OS for a theme (X-55)~~ ✅ D-85 ·
+~~promoting a peek repaints as a hang — X-50's second half (X-50(2))~~ ✅ D-85a ·
 ~~switch model in a folder and keep its key — `config model` (X-40)~~ ✅ D-82/D-82a/D-82b ·
 ~~a `write_file` preview instead of raw JSON (X-23)~~ ✅ D-63 ·
 ~~a context-usage meter beside the spend chip (X-24)~~ ✅ D-61 ·

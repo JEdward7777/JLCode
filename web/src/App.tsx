@@ -71,8 +71,10 @@ import {
   newSlice,
   reduceEvent,
   sliceFromDescriptor,
+  applyDescriptor,
   applyState,
   isUnresumable,
+  nextFocus,
   type LiveAssistant,
   type SessionSlice,
 } from "./session-state";
@@ -124,12 +126,12 @@ function slicesReducer(state: SliceMap, action: SliceAction): SliceMap {
   switch (action.t) {
     case "roster": {
       const next: SliceMap = {};
-      for (const d of action.sessions) next[d.id] = state[d.id] ? applyState(state[d.id]!, d.state) : sliceFromDescriptor(d);
+      for (const d of action.sessions) next[d.id] = state[d.id] ? applyDescriptor(state[d.id]!, d) : sliceFromDescriptor(d);
       return next;
     }
     case "added":
       return state[action.session.id]
-        ? { ...state, [action.session.id]: applyState(state[action.session.id]!, action.session.state) }
+        ? { ...state, [action.session.id]: applyDescriptor(state[action.session.id]!, action.session) }
         : { ...state, [action.session.id]: sliceFromDescriptor(action.session) };
     case "removed": {
       if (!state[action.id]) return state;
@@ -164,6 +166,9 @@ function slicesReducer(state: SliceMap, action: SliceAction): SliceMap {
 export function App() {
   const [slices, dispatch] = useReducer(slicesReducer, {} as SliceMap);
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  // The session a peek promotion is waiting on: focused, but with no slice yet
+  // (X-50). It is what tells "has not arrived" apart from "was closed".
+  const [promoting, setPromoting] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   // Journal + TTS are viewed only for the focused pane, so they live here and
   // reset on focus change.
@@ -202,16 +207,57 @@ export function App() {
   const speaker = useRef(createSpeaker());
   const autoReadMemory = useRef(newAutoReadMemory());
 
-  const focus = useCallback((id: string) => {
+  // `keepPeek` is for the one caller that focuses a session whose slice has not
+  // arrived yet (X-50): move the pointer now so the rail highlights the right
+  // row, but leave the peek pane up, because it is already showing this exact
+  // conversation and is the only thing that *can* render until the slice lands.
+  const focus = useCallback((id: string, opts: { keepPeek?: boolean } = {}) => {
     setFocusedId(id);
     const url = new URL(window.location.href);
     url.searchParams.set("session", id);
     window.history.replaceState({}, "", url);
     setJournal([]);
     setDrawerOpen(false);
+    if (opts.keepPeek) return;
     setPeek(null); // focusing a live session leaves the peek (X-12)
     speaker.current.cancel(); // one voice, and it belongs to the pane in view (X-13)
   }, []);
+
+  const promotingRef = useRef<string | null>(null);
+  promotingRef.current = promoting;
+  /** Every id whose **descriptor** has been seen — the two frames that carry one
+   *  (`session-added` normally, `roster` after a reconnect) both report here.
+   *
+   *  A *set*, rather than testing the frame in hand against the pending
+   *  promotion, because the frame usually **wins** the race: on a local server
+   *  `session-added` is written before the POST that caused it has returned, so
+   *  a release that listened only for a *later* frame waited for one that had
+   *  already come and held the peek open forever. */
+  const describedRef = useRef(new Set<string>());
+  /**
+   * Note the descriptors that just arrived, and if one of them is the session a
+   * peek promotion is waiting on, hand the pane over to it (X-50).
+   *
+   * Waiting on `slices[id]` instead was the near miss: a turn's events can
+   * outrun its descriptor, and `reduceEvent`'s map conjures a bare `newSlice`
+   * for an id it has never seen — so "a slice exists" goes true a beat before
+   * any *identity* does, and the hold released onto a pane titled "session" with
+   * default mode and trigger chips. The descriptor is what carries identity, so
+   * the descriptor is the signal, and there is no timeout here to get wrong.
+   *
+   * If the reader moved on while waiting, release the hold and leave them where
+   * they are rather than yanking the pointer back.
+   */
+  const described = useCallback(
+    (ids: string[]) => {
+      for (const id of ids) describedRef.current.add(id);
+      const id = promotingRef.current;
+      if (!id || !describedRef.current.has(id)) return;
+      setPromoting(null);
+      if (focusedRef.current === id) focus(id);
+    },
+    [focus],
+  );
 
   // Handle one multiplexed bus frame (D-43): fold session events into their
   // slice, track the roster, and drive initial focus / auto-create.
@@ -221,6 +267,7 @@ export function App() {
         case "roster": {
           dispatch({ t: "roster", sessions: f.sessions });
           setConnected(true);
+          described(f.sessions.map((s) => s.id));
           if (initializedRef.current) return;
           initializedRef.current = true;
           if (f.sessions.length === 0) {
@@ -235,6 +282,7 @@ export function App() {
         case "session-added":
           dispatch({ t: "added", session: f.session });
           if (!focusedRef.current) focus(f.session.id);
+          described([f.session.id]);
           break;
         case "session-removed":
           dispatch({ t: "removed", id: f.sessionId });
@@ -244,7 +292,7 @@ export function App() {
           break;
       }
     },
-    [focus],
+    [focus, described],
   );
 
   // One connection for the whole instance (D-43).
@@ -328,7 +376,18 @@ export function App() {
     setPeek({ ...current, sending: true, error: null });
     try {
       const { sessionId } = await sendChat(null, text, { conversationId: current.row.id, leaf: current.leaf });
-      focus(sessionId); // clears the peek; the slice arrives on the `added` frame
+      // Hand the pane over only when there is something to hand it to (X-50).
+      // Focusing outright named a session whose descriptor had not landed, so
+      // the pane rendered it with default identity, and the fallback effect
+      // below could read the gap as "closed" and move focus to another thread
+      // for good. Take the pointer either way — the rail highlights the right
+      // row — and keep the peek, which is already showing this conversation.
+      if (describedRef.current.has(sessionId)) {
+        focus(sessionId); // the frame already beat us here — nothing to wait for
+      } else {
+        setPromoting(sessionId);
+        focus(sessionId, { keepPeek: true });
+      }
     } catch (err) {
       const message = (err as Error).message;
       // Pre-H-04 logs replay malformed signed reasoning and the provider refuses
@@ -480,13 +539,12 @@ export function App() {
     }
   }, [autoReadOn]);
 
-  // If the focused session vanished (closed), fall back to another (or none).
+  // If the focused session vanished (closed), fall back to another (or none) —
+  // but one we are still promoting has not vanished, it has not arrived (X-50).
   useEffect(() => {
-    if (focusedId && !slices[focusedId]) {
-      const ids = Object.keys(slices);
-      setFocusedId(ids.length > 0 ? ids[0]! : null);
-    }
-  }, [slices, focusedId]);
+    const next = nextFocus(focusedId, Object.keys(slices), promoting);
+    if (next.t === "move") setFocusedId(next.id);
+  }, [slices, focusedId, promoting]);
 
   // Lazily load the focused session's tree on first focus; live events grow it.
   useEffect(() => {

@@ -46,7 +46,12 @@
  *        --shot x12b-deleted --crop rail
  *
  * A step is `[hover:]<css selector>[@n]`, where `@n` picks from that selector's
- * own matches and so goes at the end. A step that matches nothing, matches
+ * own matches and so goes at the end. A `type:<text>` step types into whatever
+ * the step before it focused, which is how a composer gets filled:
+ *
+ *   node harness/peek/peek.mjs click ".peek-composer textarea" "type:go on then" \
+ *        ".peek-composer button" --shot x50-promoted
+ * A step that matches nothing, matches
  * several, isn't rendered, or is covered by something else is an **error**,
  * never a shrug: the failure this must not have is a screenshot of a page that
  * never changed.
@@ -628,12 +633,17 @@ const domFingerprint = (send) =>
       return h + ":" + s.length; })()`,
   );
 
-/** A step is `[hover:]<css selector>[@n]`. Hover is a *step*, not a verb of its
- *  own: peek opens its tab per invocation and closes it after, so a hover in one
- *  process is already gone by the time a second one starts. `@n` is peek's own
- *  index suffix (a CSS selector never contains `@`) — the explicit answer to an
- *  ambiguous match, in the same spirit as `--tab`. */
+/** A step is `[hover:|type:]<css selector>[@n]`, or `type:<text>`. Hover is a
+ *  *step*, not a verb of its own: peek opens its tab per invocation and closes
+ *  it after, so a hover in one process is already gone by the time a second one
+ *  starts — and `type:` is the same, since the thing it types into is whatever
+ *  the click before it focused. `@n` is peek's own index suffix (a CSS selector
+ *  never contains `@`) — the explicit answer to an ambiguous match, in the same
+ *  spirit as `--tab`. */
 function parseStep(raw) {
+  // `type:` carries literal text, not a selector, so it never goes near the
+  // selector grammar below — a message with an `@` in it is a message.
+  if (String(raw).startsWith("type:")) return { type: String(raw).slice(5), raw: String(raw) };
   const hover = String(raw).startsWith("hover:");
   const body = hover ? String(raw).slice(6) : String(raw);
   const m = /^(.*?)@(\d+)$/.exec(body.trim());
@@ -652,6 +662,21 @@ function parseStep(raw) {
 }
 
 async function runStep(send, step, flags) {
+  // Typing goes to whatever has focus, which is what the click before it was
+  // for. `Input.insertText` raises the browser's own `beforeinput`/`input`, so a
+  // React controlled field sees it as a real edit — setting `.value` does not.
+  if (step.type !== undefined) {
+    const focused = await evalJs(send, `(document.activeElement && document.activeElement.tagName) || "none"`);
+    if (focused === "BODY" || focused === "none") {
+      throw new Error(
+        `"${step.raw}" has nothing focused to type into — text would go nowhere.\n` +
+          `  Put a click on the field in front of it: click ".composer textarea" "type:hello".`,
+      );
+    }
+    await send("Input.insertText", { text: step.type });
+    console.log(`peek: type ${JSON.stringify(step.type)}  → <${focused.toLowerCase()}>`);
+    return;
+  }
   const timeout = Number(flags.timeout ?? 3000);
   const deadline = Date.now() + timeout;
   let found;
@@ -712,7 +737,7 @@ async function runStep(send, step, flags) {
 async function cmdClick(steps, flags) {
   if (steps.length === 0) {
     throw new Error(
-      'usage: peek click "[hover:]<selector>[@n]" ["<selector>" …] [--shot <name> [--crop c]] [--wait ms] [--settle ms] [--timeout ms]',
+      'usage: peek click "[hover:]<selector>[@n]" ["type:<text>"] ["<selector>" …] [--shot <name> [--crop c]] [--wait ms] [--settle ms] [--timeout ms]',
     );
   }
   if (flags.shot === true) throw new Error("--shot needs a name: --shot x23-expanded");
