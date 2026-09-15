@@ -61,6 +61,13 @@ hit returns the cached result without throwing); on a miss it calls through and 
 | **2 — Cheap live smoke** | End-to-end loop against a live endpoint. Driver = **minimax 2.5** (configurable). Weak assertions. | cheap | gated |
 | **3 — Expensive model-targeted live** | Sharp edges aimed straight at **Opus 4.8 / Fable**: the Fable×compaction boundary (O-02), redacted-reasoning replay end-to-end. | expensive | gated, rare, **per-model** |
 
+> **The Tier-2 title smoke runs on OpenAI, not the cheap default (D-84, 2026-09-15).** `test/title-live.test.ts`
+> targets **`openai/gpt-4o-mini`** because the defect it guards is *provider strictness*, not model quality: the
+> ephemeral title ask was being built while a tool call was unanswered, which OpenAI rejects outright
+> (`"An assistant message with 'tool_calls' must be followed by tool messages…"`) and a lenient backend might
+> not. It is the cheapest member of the family that rejected it in production (`openai/gpt-6-astra`) — the
+> recording run cost **$0.000346** across three calls. Override with `JLCODE_SMOKE_MODEL`.
+
 > **The Fable Tier-3 fixtures replay with `turnTimestamps: false` — deliberate (Joshua, 2026-08-09).**
 > X-25 stamps each user turn with a wall clock, which changes the D-24 request-cache key on every
 > run, so a *recorded* replay can never match one. Rather than pay a live Fable call on every

@@ -1,0 +1,2 @@
+The build number is 4471.
+The release codename is KESTREL.

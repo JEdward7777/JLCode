@@ -43,9 +43,15 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > **The blind spot was D-81's, one layer on:** every ephemeral-ask test scripted turns finishing `stop`,
 > so none ever put an ask behind a turn that ended in a tool call. The new test does, and was verified
 > by putting the call back where D-81 had it and watching it fail. Build + free tiers green (931).
-> **Unverified against a live model** — the repro and the fix are both offline; the next real thread
-> either comes back named, or the new journal line says why. README checked: it says a thread *"names
-> itself early in the first exchange"*, which is still true.
+> **Verified live** (Joshua asked for it): `test/title-live.test.ts` is a new **Tier-2** smoke on
+> `openai/gpt-4o-mini` — real tools, a prompt that forces a tool call, `autoTitle` on — recorded green
+> for **$0.000346** across three calls (the title ask accepted on an 809-token window that included the
+> tool result, thread named *"Extracting release codename from file"*). It replays free from the
+> committed fixture. And the **old** window shape, fired at the same provider, returned the sentence
+> that was invisible for a week: *"An assistant message with 'tool_calls' must be followed by tool
+> messages responding to each 'tool_call_id'."* A rejected request is not billed — which is exactly why
+> this cost nothing and showed nothing. README checked: it says a thread *"names itself early in the
+> first exchange"*, still true. **G-01 is untouched and still unspent.**
 
 > **Resume block — 2026-09-13 (Joshua's observed-items list triaged and filed — no code).** Fifteen
 > observations off `observed_items_needing_filed_in_harness.txt`, read against the harness and against
