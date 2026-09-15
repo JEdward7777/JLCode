@@ -261,3 +261,21 @@ export function pinnedProvider(conv: Conversation, leafId?: string | null): stri
   }
   return pin;
 }
+
+/**
+ * Does this window end on an assistant turn whose tool calls were never
+ * answered? (D-84.) Every OpenAI-compatible backend requires a `tool_calls`
+ * message to be followed by one `tool` message per call, so a window in that
+ * state can only be continued by *running the tools* — appending anything else
+ * is a 400 before the model ever sees it.
+ *
+ * That matters for the **ephemeral asks** (D-29/D-81), which exist to append one
+ * instruction to the live window: mid-loop, the live window is exactly this
+ * shape between the model asking for a tool and the result landing. Pure and
+ * here rather than in the session, because "is this window sendable?" is a
+ * property of the messages, not of the loop that built them.
+ */
+export function endsWithUnansweredToolCall(messages: ChatMessage[]): boolean {
+  const last = messages[messages.length - 1];
+  return last?.role === "assistant" && (last.tool_calls?.length ?? 0) > 0;
+}

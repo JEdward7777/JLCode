@@ -23,6 +23,30 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-09-15 (D-84 — titles came back).** Joshua: *"we tried to fix title
+> generation because it was missing the cache… now we don't have any titles at all."* He is right,
+> and it is **D-81's second half, not its cache fix**. *Title once, and early* put `maybeAutoTitle`
+> directly behind the model turn — **before the tool results land** — where the live window ends on an
+> assistant message whose `tool_calls` nothing has answered. An ephemeral ask appends a user message
+> there, which every backend on this protocol rejects outright, and an agentic model answers with prose
+> *and* a tool call on most turns, so that boundary is the **first one the trigger ever passes** and it
+> fails every time. The `catch` then swallowed the error **and wrote no journal line**, so the failure
+> left no trace anywhere: three recent threads have *zero* `[title]` records, and the one thread that
+> got named fired behind the single turn that finished `stop` — $0.036 on 30,631 cached tokens, D-81's
+> fix working exactly as designed on the one request that was well-formed. It never self-corrects,
+> because the mark is burned before the call and D-81 also defaulted `autoRetitle` **off**.
+>
+> **Fixed:** the early call moved **down to the drained turn boundary** (after the batch, just before
+> the next live call) — still inside the first exchange, still sendable, and now riding the exact
+> prefix that next turn sends, so the ask writes the cache the turn reads back. `endsWithUnansweredToolCall`
+> (pure, `wire.ts`) guards the paths the loop doesn't, and a thrown ask now journals an `error` line.
+> **The blind spot was D-81's, one layer on:** every ephemeral-ask test scripted turns finishing `stop`,
+> so none ever put an ask behind a turn that ended in a tool call. The new test does, and was verified
+> by putting the call back where D-81 had it and watching it fail. Build + free tiers green (931).
+> **Unverified against a live model** — the repro and the fix are both offline; the next real thread
+> either comes back named, or the new journal line says why. README checked: it says a thread *"names
+> itself early in the first exchange"*, which is still true.
+
 > **Resume block — 2026-09-13 (Joshua's observed-items list triaged and filed — no code).** Fifteen
 > observations off `observed_items_needing_filed_in_harness.txt`, read against the harness and against
 > the code, filed as **ten rows, X-46 … X-55**, and the file cleared. **Nothing on the list was already

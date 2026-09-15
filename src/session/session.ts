@@ -17,7 +17,7 @@ import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
 import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
-import { buildWireMessages, pinnedProvider } from "../conversation/wire.js";
+import { buildWireMessages, endsWithUnansweredToolCall, pinnedProvider } from "../conversation/wire.js";
 import type { Attachment, Conversation, Entry, SharedFile } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -1494,6 +1494,21 @@ export class Session {
         // suggest / manual: proceed uncompacted — compaction is UI-driven out-of-band.
       }
 
+      // Name the thread as soon as there is something to name (X-09), rather
+      // than only when the run settles: an autonomous run's *first* settle can
+      // be 190 messages in, and the ask is billed against whatever the prefix is
+      // by then. Every first title in this repo's history but four landed past
+      // message 30; the one that fired at message 7 cost $0.012 against
+      // $0.51-$2.47 for the rest (D-81). `maybeAutoTitle` is called at the settle
+      // below too; the trigger is idempotent, so this fires once and then no-ops.
+      //
+      // **Here** is the one early place it can fire, and that is not incidental
+      // (D-84): the ask appends a user message to the live window, so it is only
+      // sendable where no tool call is outstanding. That is this boundary — the
+      // batch has drained and the next live call is about to go out with exactly
+      // this prefix, so the ask also writes the cache that turn then reads.
+      await this.maybeAutoTitle();
+
       const result = await this.assistantTurnWithRestart();
       this.toolRounds++; // spent whether or not it answered — a failed round is a round
       if (!result) {
@@ -1508,14 +1523,6 @@ export class Session {
         });
         break;
       }
-      // Name the thread as soon as there is something to name (X-09), rather
-      // than only when the run settles. `maybeAutoTitle` is called at the settle
-      // below too, but an autonomous run's *first* settle can be 190 messages
-      // in — and the ask is billed against whatever the prefix is by then. Every
-      // first title in this repo's history but four landed past message 30; the
-      // one that fired at message 7 cost $0.012 against $0.51-$2.47 for the rest
-      // (D-81). The trigger is idempotent, so this fires once and then no-ops.
-      await this.maybeAutoTitle();
       if (!this.tools || result.toolCalls.length === 0) break; // final answer
       this.pendingToolCalls = [...result.toolCalls];
     }
@@ -1575,6 +1582,12 @@ export class Session {
   private async maybeAutoTitle(): Promise<void> {
     if (!this.shouldTitleNow()) return;
     if (this.stopScope || this.capBlocked()) return; // don't spend past a stop/cap
+    // An ask appends a user message, which an unanswered tool call forbids
+    // (D-84) — the provider rejects the whole request before reading a word of
+    // it. The loop calls this where the batch has drained, so this guard is for
+    // the paths that don't: a `length` cut-off mid-tool-call settling to idle.
+    const messages = this.wire();
+    if (endsWithUnansweredToolCall(messages)) return;
     // Mark *before* the call: the spend has happened either way, so a failure
     // (or a "keep the name" answer) backs off on the same schedule instead of
     // re-asking at every settle.
@@ -1582,7 +1595,7 @@ export class Session {
 
     const req = this.ephemeralRequest({
       model: this.config.model,
-      messages: this.wire(),
+      messages,
       instruction: buildTitleInstruction(this.conversation.title),
       maxTokens: TITLE_MAX_TOKENS,
     });
@@ -1590,7 +1603,22 @@ export class Session {
     const events: StreamEvent[] = [];
     try {
       for await (const ev of this.driver.streamChat(req)) events.push(ev);
-    } catch {
+    } catch (err) {
+      // A failed title costs the thread nothing but its name — and it used to
+      // cost that *silently*: a thrown ask wrote no journal line at all, which
+      // is how D-84 went a week with every title rejected and no trace of it
+      // anywhere. The line below is the trace.
+      this.emit({
+        type: "debug",
+        record: {
+          kind: "llm",
+          ms: Date.now() - startedAt,
+          model: req.model,
+          messages: req.messages.length,
+          tools: (req.tools ?? []).map((t) => t.function.name),
+          error: `[title] ${err instanceof Error ? err.message : String(err)}`,
+        },
+      });
       return; // no title this time; the thread just stays unnamed
     }
     const result = accumulate(events);

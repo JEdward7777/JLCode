@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { newConversation, appendEntry } from "../src/conversation/tree";
-import { buildWireMessages, pinnedProvider, stripEnvironmentDetails } from "../src/conversation/wire";
+import { buildWireMessages, endsWithUnansweredToolCall, pinnedProvider, stripEnvironmentDetails } from "../src/conversation/wire";
+import type { ChatMessage } from "../src/llm/types";
 
 describe("buildWireMessages", () => {
   it("maps user/assistant/tool entries and round-trips reasoning verbatim", () => {
@@ -103,5 +104,30 @@ describe("pinnedProvider", () => {
     conv = b.conv;
     expect(pinnedProvider(conv, a.entry.id)).toBe("Anthropic");
     expect(pinnedProvider(conv, b.entry.id)).toBe("Amazon Bedrock");
+  });
+});
+
+describe("endsWithUnansweredToolCall (D-84)", () => {
+  const asst = (calls?: number): ChatMessage => ({
+    role: "assistant",
+    content: "on it",
+    ...(calls
+      ? { tool_calls: Array.from({ length: calls }, (_, i) => ({ id: `c${i}`, type: "function" as const, function: { name: "list_dir", arguments: "{}" } })) }
+      : {}),
+  });
+  const result: ChatMessage = { role: "tool", tool_call_id: "c0", name: "list_dir", content: "ok" };
+
+  it("is true between the model asking for a tool and the result landing", () => {
+    expect(endsWithUnansweredToolCall([{ role: "user", content: "q" }, asst(1)])).toBe(true);
+  });
+
+  it("is false once the result is on the window — the ask's boundary", () => {
+    expect(endsWithUnansweredToolCall([{ role: "user", content: "q" }, asst(1), result])).toBe(false);
+  });
+
+  it("is false for a plain answer, an empty window, and a trailing user turn", () => {
+    expect(endsWithUnansweredToolCall([asst()])).toBe(false);
+    expect(endsWithUnansweredToolCall([])).toBe(false);
+    expect(endsWithUnansweredToolCall([asst(1), result, { role: "user", content: "next" }])).toBe(false);
   });
 });
