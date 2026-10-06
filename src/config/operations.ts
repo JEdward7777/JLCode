@@ -313,11 +313,13 @@ export function configsWithKeyAndModel(config: Config, key: string, model: strin
 }
 
 /**
- * The four fields that describe the **outgoing** model and must never ride along
- * to the new one (D-82). Each can only be silently wrong: a carried `pricing`
+ * The fields that describe the **outgoing** model and must never ride along to
+ * the new one (D-82). Each can only be silently wrong: a carried `pricing`
  * misreports spend, a carried `contextLength` or `thresholdTokens` can make
- * compaction fire far too early or (the H-06 shape) never at all, and a carried
- * `acceptsImages` breaks a turn mid-task or hides a capability. Everything else
+ * compaction fire far too early or (the H-06 shape) never at all, a carried
+ * `acceptsImages` breaks a turn mid-task or hides a capability, and a carried
+ * `provider` (D-86) pins the new model to an endpoint that may not serve it —
+ * `openai/flex` means nothing to a Claude model. Everything else
  * — effort, mode, approval, addendum, sampling, watchdog, toolRounds,
  * environment, the cross-model compactor — is a choice *about how you work* and
  * carries over untouched.
@@ -325,6 +327,7 @@ export function configsWithKeyAndModel(config: Config, key: string, model: strin
 export const MODEL_SPECIFIC_FIELDS = [
   "pricing",
   "acceptsImages",
+  "provider",
   "compaction.contextLength",
   "compaction.thresholdTokens",
 ] as const;
@@ -357,6 +360,7 @@ export function deriveModelConfig(
     ...(compaction ? { compaction } : {}),
   };
   delete derived.acceptsImages;
+  delete derived.provider;
   if (opts.pricing) derived.pricing = opts.pricing;
   else delete derived.pricing;
   return derived;

@@ -87,9 +87,10 @@ function seed(overrides: Partial<ModelConfig> = {}): ModelConfig {
     commands: { watchdogMinutes: 45, toolRounds: 80 },
     environment: { turnTimestamps: false },
     autoRetitle: true,
-    // The model-specific four, all set to values that describe *Opus*.
+    // The model-specific fields, all set to values that describe *Opus*.
     pricing: { promptPerMTok: 5, completionPerMTok: 25 },
     acceptsImages: true,
+    provider: { only: ["anthropic"], allow_fallbacks: false },
     compaction: { auto: true, model: "openai/gpt-4o-mini", contextLength: 1_000_000, thresholdTokens: 900_000 },
     ...overrides,
   });
@@ -243,7 +244,7 @@ describe("what carries over and what is re-derived", () => {
     expect(next.compaction?.model).toBe("openai/gpt-4o-mini");
   });
 
-  it("re-derives the four fields that describe the outgoing model", async () => {
+  it("re-derives the fields that describe the outgoing model", async () => {
     seed();
     await model(["anthropic/claude-sonnet-5", "--offline"]);
     const next = boundConfig()!;
@@ -253,6 +254,9 @@ describe("what carries over and what is re-derived", () => {
     expect(next.compaction?.thresholdTokens).toBeUndefined();
     // A wrong modality is invisible until a turn breaks on it (D-78c).
     expect(next.acceptsImages).toBeUndefined();
+    // An endpoint pin names a backend for *Opus*; carried, it routes Sonnet to
+    // an endpoint that may not serve it (D-86).
+    expect(next.provider).toBeUndefined();
     // The price is Sonnet's, from the catalog — never Opus's, carried.
     expect(next.pricing).toEqual({ promptPerMTok: 3, completionPerMTok: 15 });
   });

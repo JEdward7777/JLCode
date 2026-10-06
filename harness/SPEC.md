@@ -63,6 +63,7 @@ Each configuration carries:
 | Reasoning **effort** | First-class setting per config — e.g. `low` / `medium` / `high` or a model's adaptive level — passed through to OpenRouter. Different clients/models want different effort↔cost trade-offs. |
 | Thinking round-trip | **Correct verbatim round-trip of reasoning blocks** across turns (D-14) — including preserving redacted / Fable reasoning as OpenRouter requires. (Distinct from the effort *setting* above.) |
 | Sampling params | temperature, top_p, max_tokens. |
+| Provider routing (D-86) | `provider` — OpenRouter's `provider` object, **hand-edited and sent verbatim**, e.g. `{"only":["openai/flex"],"allow_fallbacks":false}` to pin one endpoint as a model card suggests. When set it **replaces** the automatic signature pin (D-49) on every request to the working model; a backend that then rejects replayed reasoning is the cost of switching. Never applied to a cross-model compactor, and never carried by `config model`. |
 | Default mode + approval policy | The mode (Ask/Plan/Code) and approval policy this config starts in. |
 | System-prompt addendum | Text **appended** to the base system prompt (not a full override), e.g. "use `python3` instead of `python`". |
 | Per-turn environment details (X-25) | `environment.turnTimestamps` — whether each **user turn** is rendered with the time it was sent. **Default on**; off means the model is never told what day it is. |
@@ -101,9 +102,9 @@ it takes the key from the config this directory resolves to and **finds-or-creat
 target model**, keyed on the pair **(key, model)** so switching back and forth reuses rows instead of
 accumulating them. The derived name is the directory's basename plus the model minus its vendor
 prefix (`JLCode — claude-sonnet-5`). Effort, mode, approval, addendum, sampling, watchdog and
-environment settings carry over and are **printed** — every non-default one — while the four fields
+environment settings carry over and are **printed** — every non-default one — while the fields
 that describe the *old* model (`pricing`, `compaction.contextLength`, `compaction.thresholdTokens`,
-`acceptsImages`) are re-derived from the catalog rather than inherited wrong. Ambiguity anywhere —
+`acceptsImages`, and `provider` — D-86) are re-derived from the catalog, or dropped, rather than inherited wrong. Ambiguity anywhere —
 a short name matching several models, two configs sharing key+model, an argument that is both a
 model and a config name — is a **numbered picker**, and the bare `config model` is that picker over
 the models already set up under this key, **most-recently-used first**, with an `other…` entry that

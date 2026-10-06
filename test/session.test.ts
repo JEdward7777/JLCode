@@ -160,6 +160,47 @@ describe("Session provider pinning", () => {
     expect(seen[2]).toEqual({ order: ["Anthropic"], allow_fallbacks: false });
   });
 
+  it("a configured provider replaces the pin on every call — D-86", async () => {
+    // The user named an endpoint (an OpenRouter card's `only` + no fallbacks);
+    // that wins outright, first call included, and is sent exactly as written.
+    const routing = { only: ["openai/flex"], allow_fallbacks: false };
+    const seen: (ChatRequest["provider"] | undefined)[] = [];
+    const driver = scriptedDriver((req) => {
+      seen.push(req.provider);
+      return [
+        { type: "provider", name: "OpenAI" },
+        { type: "text", delta: "ok" },
+        { type: "finish", reason: "stop" },
+      ];
+    });
+    const session = new Session({ config: { ...config, provider: routing }, driver });
+    await session.send("q1");
+    await session.send("q2");
+    expect(seen).toEqual([routing, routing]);
+    // The pin is still recorded underneath — only the send-time choice changed.
+    const entry = session.conversation.entries.find((e) => e.type === "assistant") as AssistantEntry;
+    expect(entry.provider).toBe("OpenAI");
+  });
+
+  it("dropping the configured provider falls back to the recorded pin", async () => {
+    const seen: (ChatRequest["provider"] | undefined)[] = [];
+    const driver = scriptedDriver((req) => {
+      seen.push(req.provider);
+      return [
+        { type: "provider", name: "OpenAI" },
+        { type: "text", delta: "ok" },
+        { type: "finish", reason: "stop" },
+      ];
+    });
+    const pinned = { ...config, provider: { only: ["openai/flex"] }, updatedAt: "a" };
+    const session = new Session({ config: pinned, driver });
+    await session.send("q1");
+    const { provider: _p, ...unpinned } = pinned;
+    expect(session.adoptConfig({ config: { ...unpinned, updatedAt: "b" }, driver, watchdogMs: 0, maxToolIterations: 25, acceptsImages: false })).toBe(true);
+    await session.send("q2");
+    expect(seen[1]).toEqual({ order: ["OpenAI"], allow_fallbacks: false });
+  });
+
   it("does not pin when the provider is never reported", async () => {
     const seen: (ChatRequest["provider"] | undefined)[] = [];
     const driver = scriptedDriver((req) => {

@@ -5,6 +5,8 @@
  * never in the project.
  */
 
+import type { ProviderRouting } from "../llm/types.js";
+
 export const CONFIG_VERSION = 1;
 
 export type Mode = "ask" | "plan" | "code";
@@ -135,6 +137,13 @@ export interface ModelConfig {
    *  `compaction.contextLength` does — a catalog can lag a model, and a
    *  capability that can only be wrong in one direction needs a way back. */
   acceptsImages?: boolean;
+  /** OpenRouter provider routing for the working model (D-86), sent verbatim as
+   *  the request's `provider` — e.g. `{"only":["openai/flex"],"allow_fallbacks":false}`
+   *  to pin an endpoint. When set it **replaces** the automatic signature pin
+   *  (D-49) on every request to this config's model; the pin is still recorded,
+   *  just not sent. Switching backends mid-thread is then the user's call, and
+   *  a replay the new backend rejects is the price of it. Hand-edited. */
+  provider?: ProviderRouting;
   compaction?: CompactionSettings;
   /** Per-turn environment details (X-25). Absent = defaults, i.e. stamped. */
   environment?: EnvironmentSettings;

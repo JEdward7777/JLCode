@@ -17,7 +17,7 @@
  *  - find-or-create the sibling holding the target model, where identity is the
  *    pair **(key, model)**, so switching back and forth converges on two rows
  *    instead of growing one per switch;
- *  - carry the settings that describe *how you work* and re-derive the four that
+ *  - carry the settings that describe *how you work* and re-derive the ones that
  *    describe the *old model* (see `MODEL_SPECIFIC_FIELDS`);
  *  - name the outcome distinctly — **created** / **switched back** / **already
  *    there** — because "nothing happened" and "a new config now holds your key"
@@ -488,7 +488,7 @@ async function report(ctx: {
   const settings = nonDefaultSettings(target);
   row(created && source ? "carried" : "settings", settings.length > 0 ? settings.join("  ") : "all defaults");
 
-  // The four re-derived fields, shown as the numbers they produce (D-82). The
+  // The re-derived fields, shown as the numbers they produce (D-82). The
   // window and threshold come from the same code `config which` and `serve`
   // use, so this can never claim a budget the session won't run under.
   const { budget, source: windowSource } = await resolveBudget(target, paths, { offline, catalog });
@@ -496,6 +496,9 @@ async function report(ctx: {
   process.stdout.write(thresholdLines(budget, " ".repeat(3 + LABEL_WIDTH)));
   const images = catalog.imageSupport(target.model);
   row("images", images === "yes" ? "yes" : images === "no" ? "no — text only" : "unknown to the catalog");
+  // Never carried (D-86), so it only shows when switching *back* to a config
+  // that already pins an endpoint — exactly when you'd want to be told.
+  if (target.provider) row("routing", JSON.stringify(target.provider));
 
   for (const warning of catalogWarnings(catalog, target)) process.stderr.write(`  ⚠ ${warning}\n`);
 }

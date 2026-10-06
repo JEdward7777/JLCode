@@ -12,7 +12,7 @@ import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
 import { DEFAULT_TOOL_ROUNDS, DEFAULT_WATCHDOG_MINUTES, turnTimestampsEnabled } from "../config/operations.js";
-import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage } from "../llm/types.js";
+import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage, ProviderRouting } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
@@ -1188,13 +1188,28 @@ export class Session {
     if (s?.maxTokens !== undefined) req.max_tokens = s.maxTokens;
     const reasoning = this.reasoningParam();
     if (reasoning) req.reasoning = reasoning;
-    // Stick to the backend that minted the reasoning signatures we're about to
-    // replay (D-49/H-02). `allow_fallbacks:false` makes it binding: a failover
-    // to another provider would 400 on the signatures anyway, so surfacing "that
-    // provider is unavailable" beats an opaque `Invalid signature` error.
-    const pin = pinnedProvider(this.conversation, this.workingLeaf);
-    if (pin) req.provider = { order: [pin], allow_fallbacks: false };
+    const provider = this.routing();
+    if (provider) req.provider = provider;
     return req;
+  }
+
+  /**
+   * The `provider` block for a request to the **working** model. A config's own
+   * routing (D-86) wins outright; otherwise stick to the backend that minted the
+   * reasoning signatures we're about to replay (D-49/H-02). `allow_fallbacks:
+   * false` makes that pin binding: a failover would 400 on the signatures anyway,
+   * so "that provider is unavailable" beats an opaque `Invalid signature`.
+   *
+   * Decided here, at send time, and nowhere else: the journal keeps recording
+   * which backend served each turn whatever is configured, so dropping the
+   * override later falls straight back to the pin. One helper for both request
+   * builders, so a title ask can never route differently from the turn whose
+   * cache it means to ride (D-81).
+   */
+  private routing(): ProviderRouting | undefined {
+    if (this.config.provider) return { ...this.config.provider };
+    const pin = pinnedProvider(this.conversation, this.workingLeaf);
+    return pin ? { order: [pin], allow_fallbacks: false } : undefined;
   }
 
   /**
@@ -1232,9 +1247,10 @@ export class Session {
       max_tokens: opts.maxTokens,
     };
     // Caches are model-scoped, so a cross-model compactor has no prefix to ride
-    // and must not inherit a pin meant for the working model's backend. With no
-    // cache to lose, `tool_choice:"none"` is free here — so take the hard
-    // guarantee of prose rather than relying on the instruction.
+    // and must not inherit a pin — or configured routing (D-86) — meant for the
+    // working model's backend. With no cache to lose, `tool_choice:"none"` is
+    // free here — so take the hard guarantee of prose rather than relying on
+    // the instruction.
     if (opts.model !== this.config.model) {
       req.tool_choice = "none";
       return req;
@@ -1242,8 +1258,8 @@ export class Session {
     if (this.tools) req.tools = this.tools.defs();
     const reasoning = this.reasoningParam();
     if (reasoning) req.reasoning = reasoning;
-    const pin = pinnedProvider(this.conversation, this.workingLeaf);
-    if (pin) req.provider = { order: [pin], allow_fallbacks: false };
+    const provider = this.routing();
+    if (provider) req.provider = provider;
     return req;
   }
 
@@ -1996,7 +2012,7 @@ export class Session {
         messages: req.messages.length,
         tools: toolNames,
         provider: result.provider,
-        pinnedTo: req.provider?.order[0],
+        pinnedTo: req.provider?.only?.[0] ?? req.provider?.order?.[0],
         finishReason: result.finishReason,
         truncated: result.finishReason === "length",
         usage: result.usage,

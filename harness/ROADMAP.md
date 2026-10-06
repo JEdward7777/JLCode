@@ -24,6 +24,16 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-10-06 (D-86 — a config can name its OpenRouter endpoint).** Joshua wanted
+> `openai/gpt-5.6-sol` on the **`openai/flex`** endpoint, and nothing could say so: the only routing
+> JLCode sent was the automatic signature pin (D-49), which pins by provider *name* (`OpenAI`) and
+> so cannot name an endpoint. `ModelConfig.provider` is now OpenRouter's `provider` object, hand-edited
+> and sent verbatim (`{"only":["openai/flex"],"allow_fallbacks":false}`), and it **replaces** the
+> pin at send time in `Session.routing()`, the one helper both request builders use. The pin keeps
+> recording underneath; a cross-model compactor gets neither; `config model` never carries the field.
+> **Not yet seen against a live endpoint** — the free tiers prove the request shape only. Build + free
+> tiers green (**945**, +3). README checked: no change to how JLCode is run or driven.
+>
 > **Resume block — 2026-09-15 (D-85/D-85a — X-55 + X-50(2), two UI lies).** Joshua picked two
 > rows off the 2026-09-13 backlog. **X-55 was the one-liner it looked like.** `.actions button.primary
 > code` painted `--panel-2` inside a button whose text is near-black for contrast against `--accent`,

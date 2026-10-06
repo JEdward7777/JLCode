@@ -158,6 +158,29 @@ describe("ephemeral asks ride the live prefix (D-81)", () => {
     });
   });
 
+  it("configured routing rides along on the title ask, not the cross-model compactor — D-86", async () => {
+    const routing = { only: ["openai/flex"], allow_fallbacks: false };
+    const { driver, requests } = sequenceDriver([turn("first answer"), turn("A Good Name"), turn("## Goal\nShip it.\n")]);
+    const session = new Session({
+      config: { ...config, provider: routing, compaction: { auto: false, model: "cheap-model" } },
+      driver,
+      systemPrompt: SYS,
+      contextWindow: 200_000,
+      tools: new ToolRegistry(fileTools()),
+      sandbox: new Sandbox([process.cwd()]),
+      autoTitle: true,
+    });
+
+    await session.send("original request");
+    expect(requests[0]!.provider).toEqual(routing);
+    // Same routing as the turn whose cache it rides…
+    expect(requests[1]!.provider).toEqual(routing);
+    // …but an endpoint named for the working model means nothing to another one.
+    expect(await session.compact()).toBe(true);
+    expect(requests[2]!.model).toBe("cheap-model");
+    expect(requests[2]!.provider).toBeUndefined();
+  });
+
   it("a cross-model compactor inherits neither the pin nor the tools", async () => {
     // Caches are model-scoped, so there is no prefix to ride — and the working
     // model's pin would point the compactor at the wrong backend entirely.

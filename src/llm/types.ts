@@ -81,8 +81,19 @@ export interface ChatRequest {
   tool_choice?: "none" | "auto" | "required";
   /** OpenRouter provider routing. Set to pin a conversation to the backend that
    *  minted the reasoning signatures already in its history (D-49/H-02):
-   *  `allow_fallbacks:false` makes the pin binding rather than advisory. */
-  provider?: { order: string[]; allow_fallbacks: boolean };
+   *  `allow_fallbacks:false` makes the pin binding rather than advisory. A
+   *  config's own `provider` block (D-86) is sent instead, verbatim. */
+  provider?: ProviderRouting;
+}
+
+/** OpenRouter's `provider` request object — the subset JLCode names. Extra keys
+ *  a hand-edited config carries (`sort`, `ignore`, …) ride along untouched. */
+export interface ProviderRouting {
+  order?: string[];
+  /** Restrict routing to exactly these endpoints, e.g. `["openai/flex"]`. */
+  only?: string[];
+  allow_fallbacks?: boolean;
+  [key: string]: unknown;
 }
 
 export type StreamEvent =
