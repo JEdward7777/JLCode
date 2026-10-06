@@ -142,7 +142,8 @@ export interface ModelConfig {
    *  to pin an endpoint. When set it **replaces** the automatic signature pin
    *  (D-49) on every request to this config's model; the pin is still recorded,
    *  just not sent. Switching backends mid-thread is then the user's call, and
-   *  a replay the new backend rejects is the price of it. Hand-edited. */
+   *  a replay the new backend rejects is the price of it. Set with
+   *  `config set --provider <endpoint>` (D-86a); richer blocks are hand-edited. */
   provider?: ProviderRouting;
   compaction?: CompactionSettings;
   /** Per-turn environment details (X-25). Absent = defaults, i.e. stamped. */

@@ -267,13 +267,18 @@ pinned and says so on its banner.)
 ### Pinning a model to one endpoint
 
 OpenRouter can serve one model from several endpoints (a model card might offer
-`openai/flex` at a lower price, for instance). To pin one, add OpenRouter's
-`provider` object to that config in `config.json` by hand. It is sent exactly as
-written, so the card's suggestion pastes straight in:
+`openai/flex` at a lower price, for instance). To pin one, name the endpoint:
 
-```json
-"provider": { "only": ["openai/flex"], "allow_fallbacks": false }
+```sh
+jlcode config set Sol --provider openai/flex      # comma-separate several
+jlcode config set Sol --provider none             # back to the default
 ```
+
+That writes OpenRouter's `provider` object into the config, with fallbacks off
+— `{"only":["openai/flex"],"allow_fallbacks":false}` — and prints it back. For
+anything beyond a list of endpoints (`sort`, `data_collection`, fallbacks on),
+edit the block in `config.json` by hand: it is sent exactly as written, and a
+later `--provider` changes only `only`, keeping your other keys.
 
 When it is set it replaces JLCode's automatic pin, which otherwise keeps a
 thread on whichever backend answered first so replayed reasoning stays valid.

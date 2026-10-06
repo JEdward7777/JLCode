@@ -20,6 +20,7 @@ import {
   projectInstructionsEnabled,
   commandWatchdogMinutes,
   configuredRouting,
+  routingWithOnly,
   removeModelConfig,
   resolveForCwd,
   turnTimestampsEnabled,
@@ -76,6 +77,12 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
                          model is told what it can rely on. "off" removes the
                          check (only a person or a per-call timeout ends a
                          runaway); "default" clears it back to 30.
+  --provider <endpoint[,endpoint…]|none>
+                         pin this config to OpenRouter endpoint(s) (D-86), e.g.
+                         openai/flex — the slug a model card names. Writes
+                         {"only":[…],"allow_fallbacks":false}; other keys can be
+                         hand-edited in config.json and are kept. Replaces the
+                         automatic pin. "none" removes it.
   --offline              (set/which) don't refresh the model catalog
 `;
 
@@ -170,7 +177,28 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
       patch.watchdogMinutes = n;
     }
   }
+  const provider = providerFlag(flags);
+  if (provider !== undefined) patch.providerOnly = provider;
   return patch;
+}
+
+/** `--provider <endpoint[,endpoint…]|none>` (D-86a) → the slugs for `only`, or
+ *  `null` to remove routing. Slugs, never JSON: a shell-quoted object is easy
+ *  to get wrong and impossible to read back at a glance, and anything richer
+ *  than "these endpoints" is a hand edit in `config.json` the flag preserves. */
+function providerFlag(flags: Record<string, string | boolean>): string[] | null | undefined {
+  const raw = flags["provider"];
+  if (raw === undefined) return undefined;
+  const usage = `--provider takes endpoint slugs, e.g. --provider openai/flex (comma-separate several), or "none"`;
+  if (typeof raw !== "string") throw new Error(usage);
+  const v = raw.trim();
+  if (v.toLowerCase() === "none") return null;
+  if (/[{}\[\]"]/.test(v)) {
+    throw new Error(`${usage} — not JSON; edit config.json by hand for anything beyond endpoints`);
+  }
+  const slugs = v.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  if (slugs.length === 0 || slugs.some((s) => /\s/.test(s))) throw new Error(usage);
+  return slugs;
 }
 
 /** Parse an on/off flag; `--flag` with no value means on. */
@@ -328,6 +356,7 @@ export async function runConfig(args: string[]): Promise<number> {
       if (!openRouterKey) throw new Error("No key provided.");
       const config = loadConfig(paths);
       const sampling = samplingFromFlags(flags);
+      const addProvider = providerFlag(flags) ?? undefined; // "none" on a new config is just absent
       const { config: next, added } = addModelConfig(config, {
         name,
         model,
@@ -338,6 +367,7 @@ export async function runConfig(args: string[]): Promise<number> {
         defaultApproval: oneOf(flagString(flags, "approval"), APPROVAL_POLICIES, "approval") ?? "manual",
         sampling: Object.keys(sampling).length > 0 ? sampling : undefined,
         compaction: { auto: true },
+        ...(addProvider ? { provider: routingWithOnly({}, addProvider) } : {}),
       });
       // `--use` makes "add a config and work under it" one line instead of two
       // (D-82) — the same create-and-bind act `config model` performs when it
@@ -345,6 +375,7 @@ export async function runConfig(args: string[]): Promise<number> {
       const bind = flags["use"] === true;
       saveConfig(bind ? bindAndRemember(next, cwd, added.id) : next, paths);
       process.stdout.write(`Added → ${added.name}  ${shortId(added.id)}\n`);
+      process.stdout.write(routingLine(added));
       if (bind) process.stdout.write(`Bound ${cwd}\n   → ${added.name}\n`);
       return 0;
     }
@@ -400,11 +431,12 @@ export async function runConfig(args: string[]): Promise<number> {
       // endpoint pin that names a backend for the *old* model (D-86). `config
       // model` drops it; here it can only be pointed out. A malformed block is
       // ignored by the session either way, so there is nothing to warn about.
+      // Setting `--provider` in the same command *is* the answer, so no warning.
       const kept = configuredRouting(updated).routing;
-      if (before && updated.model !== before.model && kept) {
+      if (before && updated.model !== before.model && kept && patch.providerOnly === undefined) {
         process.stderr.write(
           `  ⚠ provider routing ${JSON.stringify(kept)} was set for ${before.model} ` +
-            `and still applies to ${updated.model} — edit or remove it in config.json if it no longer fits\n`,
+            `and still applies to ${updated.model} — change it with --provider, or --provider none\n`,
         );
       }
       const mt = updated.sampling?.maxTokens;
@@ -435,6 +467,11 @@ export async function runConfig(args: string[]): Promise<number> {
       // flag *and* names the file that will be loaded (or says there is none).
       if (patch.projectInstructions !== undefined) {
         process.stdout.write(projectInstructionsLine(updated, cwd));
+      }
+      // And the routing (D-86a), written out in full: the flag wrote JSON the
+      // user never typed, so they see exactly what will be sent.
+      if (patch.providerOnly !== undefined) {
+        process.stdout.write(routingLine(updated) || `    provider routing: none — the automatic pin applies\n`);
       }
       return 0;
     }

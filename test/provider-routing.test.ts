@@ -161,3 +161,117 @@ describe("config CLI surfaces (D-86)", () => {
     expect(err.join("")).not.toContain("provider routing");
   });
 });
+
+describe("config set/add --provider (D-86a)", () => {
+  let dir: string;
+  let paths: JlcodePaths;
+  let out: string[];
+  let err: string[];
+  let restore: () => void;
+  const savedEnv = { config: process.env.JLCODE_CONFIG_DIR, data: process.env.JLCODE_DATA_DIR, key: process.env.JLCODE_ADD_KEY };
+
+  /** One config carrying `provider` as given (absent when undefined). */
+  function seed(provider?: unknown): void {
+    const { config, added } = addModelConfig(loadConfig(paths), {
+      name: "Sol",
+      model: "openai/gpt-5.6-sol",
+      openRouterKey: "sk",
+      defaultMode: "code",
+      defaultApproval: "manual",
+    });
+    const withRouting = config.modelConfigs.map((c) =>
+      c.id === added.id && provider !== undefined ? ({ ...c, provider } as ModelConfig) : c,
+    );
+    saveConfig({ ...config, modelConfigs: withRouting }, paths);
+  }
+  const stored = () => loadConfig(paths).modelConfigs[0]!;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-d86a-"));
+    process.env.JLCODE_CONFIG_DIR = path.join(dir, "config");
+    process.env.JLCODE_DATA_DIR = path.join(dir, "data");
+    paths = resolvePaths();
+    fs.mkdirSync(paths.configDir, { recursive: true });
+    fs.mkdirSync(paths.dataDir, { recursive: true });
+    fs.writeFileSync(
+      paths.modelsCacheFile,
+      JSON.stringify({ fetchedAt: new Date().toISOString(), windows: { "openai/gpt-5.6-sol": 400_000 } }),
+    );
+    out = [];
+    err = [];
+    const realOut = process.stdout.write.bind(process.stdout);
+    const realErr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((s: string) => (out.push(String(s)), true)) as typeof process.stdout.write;
+    process.stderr.write = ((s: string) => (err.push(String(s)), true)) as typeof process.stderr.write;
+    restore = () => {
+      process.stdout.write = realOut;
+      process.stderr.write = realErr;
+    };
+  });
+  afterEach(() => {
+    restore();
+    process.env.JLCODE_CONFIG_DIR = savedEnv.config;
+    process.env.JLCODE_DATA_DIR = savedEnv.data;
+    if (savedEnv.key === undefined) delete process.env.JLCODE_ADD_KEY;
+    else process.env.JLCODE_ADD_KEY = savedEnv.key;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a slug becomes `only`, with fallbacks off by default — and is read back in full", async () => {
+    seed();
+    expect(await runConfig(["set", "Sol", "--provider", "openai/flex", "--offline"])).toBe(0);
+    expect(stored().provider).toEqual(FLEX);
+    expect(out.join("")).toContain(`provider routing: ${JSON.stringify(FLEX)}`);
+  });
+
+  it("comma-separates several endpoints", async () => {
+    seed();
+    await runConfig(["set", "Sol", "--provider", "openai/flex, openai/default", "--offline"]);
+    expect(stored().provider).toEqual({ only: ["openai/flex", "openai/default"], allow_fallbacks: false });
+  });
+
+  it("keeps hand-edited keys, a hand-set allow_fallbacks included — the flag speaks only for `only`", async () => {
+    seed({ only: ["openai/default"], allow_fallbacks: true, data_collection: "deny" });
+    await runConfig(["set", "Sol", "--provider", "openai/flex", "--offline"]);
+    expect(stored().provider).toEqual({ only: ["openai/flex"], allow_fallbacks: true, data_collection: "deny" });
+  });
+
+  it("replaces a malformed hand edit rather than merging into it", async () => {
+    seed("openai/flex");
+    await runConfig(["set", "Sol", "--provider", "openai/flex", "--offline"]);
+    expect(stored().provider).toEqual(FLEX);
+  });
+
+  it("`none` removes the block and says the pin applies again", async () => {
+    seed(FLEX);
+    await runConfig(["set", "Sol", "--provider", "none", "--offline"]);
+    expect(stored().provider).toBeUndefined();
+    expect(out.join("")).toContain("provider routing: none — the automatic pin applies");
+  });
+
+  it.each([
+    ["JSON", `{"only":["openai/flex"]}`, /not JSON/],
+    ["no value", undefined, /endpoint slugs/],
+    ["an empty list", " , ", /endpoint slugs/],
+    ["a slug with a space", "openai flex", /endpoint slugs/],
+  ])("refuses %s, and writes nothing", async (_label, value, message) => {
+    seed();
+    const args = ["set", "Sol", "--provider", ...(value === undefined ? [] : [value]), "--offline"];
+    await expect(runConfig(args)).rejects.toThrow(message);
+    expect(stored().provider).toBeUndefined();
+  });
+
+  it("setting --model and --provider together is the answer, not a warning", async () => {
+    seed(FLEX);
+    await runConfig(["set", "Sol", "--model", "anthropic/claude-opus-5", "--provider", "anthropic", "--offline"]);
+    expect(stored().provider).toEqual({ only: ["anthropic"], allow_fallbacks: false });
+    expect(err.join("")).not.toContain("provider routing");
+  });
+
+  it("`config add --provider` writes the same block, and shows it", async () => {
+    process.env.JLCODE_ADD_KEY = "sk";
+    expect(await runConfig(["add", "--name", "Sol", "--model", "openai/gpt-5.6-sol", "--provider", "openai/flex"])).toBe(0);
+    expect(stored().provider).toEqual(FLEX);
+    expect(out.join("")).toContain(`provider routing: ${JSON.stringify(FLEX)}`);
+  });
+});

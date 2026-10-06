@@ -44,12 +44,16 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > amended; README gained **"Pinning a model to one endpoint"** — this *does* change how a user drives
 > JLCode.
 >
+> **D-86a, same day:** `config set/add --provider <endpoint[,endpoint…]|none>` — slugs, never JSON
+> (Joshua's call), writing `only` with `allow_fallbacks:false` by default and keeping any other
+> hand-edited keys. Seen working through the built CLI against a scratch config dir.
+>
 > **Process:** shipped as `459cc90`, then an independent review loop (a fresh reviewer agent, report
 > only) at Joshua's request — round 1 found the watchdog gap, the missing shape check, and doc drift
 > (`1d40142`); round 2 found three CLI surfaces still reading the raw field (`1581056`); round 3
 > **clean** on code, flagging only this block. No UI slice, so no peek. **Not yet seen against a live
 > endpoint** — the free tiers prove the request shape and the HTTP body only; the first real Sol call
-> settles whether OpenRouter takes `openai/flex` as written. Build + free tiers green (**966**, +24 over
+> settles whether OpenRouter takes `openai/flex` as written. Build + free tiers green (**977**, +35 over
 > D-85's 942). **G-01 is untouched and still unspent.** **X-50(1)** is still open.
 >
 > **Resume block — 2026-09-15 (D-85/D-85a — X-55 + X-50(2), two UI lies).** Joshua picked two

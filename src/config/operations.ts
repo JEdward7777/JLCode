@@ -173,6 +173,22 @@ export interface ModelConfigPatch {
   /** Minutes before the command watchdog asks the model to kill or keep (X-33);
    *  `0` switches the check off, `null` clears the field back to the default. */
   watchdogMinutes?: number | null;
+  /** Endpoint slugs to pin (D-86a) — `--provider openai/flex`. Merged into any
+   *  hand-edited block so its other keys survive; `null` removes the block. */
+  providerOnly?: string[] | null;
+}
+
+/** The routing block `--provider` writes (D-86a): the slugs as `only`, over
+ *  whatever valid block the config already holds. `allow_fallbacks` defaults to
+ *  **false** — a named endpoint you are quietly routed away from is not the one
+ *  you named — but a hand-edited value wins, as does every key the flag does not
+ *  speak for (`sort`, `data_collection`, …), so the flag never undoes a choice
+ *  made in `config.json`. */
+export function routingWithOnly(existing: { provider?: unknown }, only: string[]): ProviderRouting {
+  // `only` is listed first so the block reads back the way a model card writes it.
+  const kept: ProviderRouting = { ...(configuredRouting(existing).routing ?? {}) };
+  delete kept.only;
+  return { only, allow_fallbacks: false, ...kept };
 }
 
 /** Edit an existing config in place (merging sampling), bumping updatedAt. */
@@ -233,6 +249,9 @@ export function updateModelConfig(
     ...(compaction ? { compaction } : {}),
     ...(environment ? { environment } : {}),
     ...(commands ? { commands } : {}),
+    ...(patch.providerOnly === undefined
+      ? {}
+      : { provider: patch.providerOnly === null ? undefined : routingWithOnly(target, patch.providerOnly) }),
     sampling: Object.keys(mergedSampling).length > 0 ? mergedSampling : undefined,
     updatedAt: new Date().toISOString(),
   };
