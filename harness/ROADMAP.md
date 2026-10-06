@@ -28,11 +28,29 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > `openai/gpt-5.6-sol` on the **`openai/flex`** endpoint, and nothing could say so: the only routing
 > JLCode sent was the automatic signature pin (D-49), which pins by provider *name* (`OpenAI`) and
 > so cannot name an endpoint. `ModelConfig.provider` is now OpenRouter's `provider` object, hand-edited
-> and sent verbatim (`{"only":["openai/flex"],"allow_fallbacks":false}`), and it **replaces** the
-> pin at send time in `Session.routing()`, the one helper both request builders use. The pin keeps
-> recording underneath; a cross-model compactor gets neither; `config model` never carries the field.
-> **Not yet seen against a live endpoint** — the free tiers prove the request shape only. Build + free
-> tiers green (**945**, +3). README checked: no change to how JLCode is run or driven.
+> and sent verbatim (`{"only":["openai/flex"],"allow_fallbacks":false}`). Joshua's design call: it
+> **replaces** the pin at send time and touches nothing else — the pin keeps recording underneath, and
+> a backend that rejects replayed reasoning after a switch is the user's to own.
+>
+> **Where it lives:** `Session.routing()` is the one helper every request to the working model goes
+> through — turns, the title ask, same-model compaction, and the **command watchdog** (which, found in
+> review, had been sending *no* `provider` at all — not even the pin — ever since D-49 introduced it). A cross-model compactor
+> gets neither. `configuredRouting()` is the one shape check: only a non-empty plain object counts, so
+> the bare-string typo or `{}` falls back to the pin rather than sending garbage or switching it off.
+> Every CLI surface judges through it (`describeRouting()`): `config which` prints the block or says
+> it is ignored; `config model` never carries it (a model-specific field, D-82) and shows it on the
+> switch-back row and picker; `config set --model` keeps it but warns. The journal logs it whole as
+> `routing` (turn and watchdog records) rather than squeezing a slug into `pinnedTo`. D-49 is marked
+> amended; README gained **"Pinning a model to one endpoint"** — this *does* change how a user drives
+> JLCode.
+>
+> **Process:** shipped as `459cc90`, then an independent review loop (a fresh reviewer agent, report
+> only) at Joshua's request — round 1 found the watchdog gap, the missing shape check, and doc drift
+> (`1d40142`); round 2 found three CLI surfaces still reading the raw field (`1581056`); round 3
+> **clean** on code, flagging only this block. No UI slice, so no peek. **Not yet seen against a live
+> endpoint** — the free tiers prove the request shape and the HTTP body only; the first real Sol call
+> settles whether OpenRouter takes `openai/flex` as written. Build + free tiers green (**966**, +24 over
+> D-85's 942). **G-01 is untouched and still unspent.** **X-50(1)** is still open.
 >
 > **Resume block — 2026-09-15 (D-85/D-85a — X-55 + X-50(2), two UI lies).** Joshua picked two
 > rows off the 2026-09-13 backlog. **X-55 was the one-liner it looked like.** `.actions button.primary
