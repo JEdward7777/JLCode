@@ -255,10 +255,45 @@ describe("config set/add --provider (D-86a)", () => {
     ["an empty list", " , ", /endpoint slugs/],
     ["a slug with a space", "openai flex", /endpoint slugs/],
   ])("refuses %s, and writes nothing", async (_label, value, message) => {
-    seed();
+    // Seeded with a live block, so "wrote nothing" is distinguishable from
+    // "treated it as none" or "saved, then threw".
+    seed(FLEX);
+    const before = stored();
     const args = ["set", "Sol", "--provider", ...(value === undefined ? [] : [value]), "--offline"];
     await expect(runConfig(args)).rejects.toThrow(message);
-    expect(stored().provider).toBeUndefined();
+    expect(stored()).toEqual(before);
+  });
+
+  it("drops duplicate and stray-comma entries", async () => {
+    seed();
+    await runConfig(["set", "Sol", "--provider", "openai/flex,openai/flex,", "--offline"]);
+    expect(stored().provider).toEqual(FLEX);
+  });
+
+  it("replaces an empty hand-edited block too", async () => {
+    seed({});
+    await runConfig(["set", "Sol", "--provider", "openai/flex", "--offline"]);
+    expect(stored().provider).toEqual(FLEX);
+  });
+
+  it("the stale-routing warning names the flag that fixes it", async () => {
+    seed(FLEX);
+    await runConfig(["set", "Sol", "--model", "anthropic/claude-opus-5", "--offline"]);
+    expect(err.join("")).toContain("change it with --provider, or --provider none");
+  });
+
+  it("`config add --provider none` writes no block", async () => {
+    process.env.JLCODE_ADD_KEY = "sk";
+    await runConfig(["add", "--name", "Sol", "--model", "openai/gpt-5.6-sol", "--provider", "none"]);
+    expect("provider" in stored()).toBe(false);
+  });
+
+  it("`config add` refuses a bad --provider before asking for the key, and adds nothing", async () => {
+    delete process.env.JLCODE_ADD_KEY; // a prompt here would hang the test, not pass it
+    await expect(
+      runConfig(["add", "--name", "Sol", "--model", "openai/gpt-5.6-sol", "--provider", "{x}"]),
+    ).rejects.toThrow(/not JSON/);
+    expect(loadConfig(paths).modelConfigs).toHaveLength(0);
   });
 
   it("setting --model and --provider together is the answer, not a warning", async () => {

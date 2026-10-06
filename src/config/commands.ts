@@ -196,7 +196,7 @@ function providerFlag(flags: Record<string, string | boolean>): string[] | null 
   if (/[{}\[\]"]/.test(v)) {
     throw new Error(`${usage} — not JSON; edit config.json by hand for anything beyond endpoints`);
   }
-  const slugs = v.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  const slugs = [...new Set(v.split(",").map((s) => s.trim()).filter((s) => s.length > 0))];
   if (slugs.length === 0 || slugs.some((s) => /\s/.test(s))) throw new Error(usage);
   return slugs;
 }
@@ -352,11 +352,12 @@ export async function runConfig(args: string[]): Promise<number> {
       const name = flagString(flags, "name");
       const model = flagString(flags, "model");
       if (!name || !model) throw new Error("Usage: jlcode config add --name <> --model <>");
+      // Judged before the key prompt, so a typo is not reported after the secret is typed.
+      const addProvider = providerFlag(flags) ?? undefined; // "none" on a new config is just absent
       const openRouterKey = process.env.JLCODE_ADD_KEY ?? (await readSecret("OpenRouter API key (input hidden): "));
       if (!openRouterKey) throw new Error("No key provided.");
       const config = loadConfig(paths);
       const sampling = samplingFromFlags(flags);
-      const addProvider = providerFlag(flags) ?? undefined; // "none" on a new config is just absent
       const { config: next, added } = addModelConfig(config, {
         name,
         model,
