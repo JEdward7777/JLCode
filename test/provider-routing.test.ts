@@ -17,7 +17,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { runConfig } from "../src/config/commands";
 import { loadConfig, saveConfig } from "../src/config/store";
-import { addModelConfig, configuredRouting } from "../src/config/operations";
+import { addModelConfig, configuredRouting, describeRouting } from "../src/config/operations";
 import { resolvePaths } from "../src/paths";
 import type { JlcodePaths } from "../src/paths";
 import type { ModelConfig } from "../src/config/types";
@@ -47,6 +47,15 @@ describe("configuredRouting — what counts as routing", () => {
     const { routing, problem } = configuredRouting({ provider: bad });
     expect(routing).toBeUndefined();
     expect(problem).toBeTruthy();
+  });
+});
+
+describe("describeRouting — one phrase, one judgement", () => {
+  it("shows a valid block, names an ignored one, and is silent for none", () => {
+    expect(describeRouting({ provider: FLEX })).toBe(JSON.stringify(FLEX));
+    expect(describeRouting({ provider: "openai/flex" })).toMatch(/^ignored — provider must be an object/);
+    expect(describeRouting({ provider: {} })).toMatch(/^ignored — /);
+    expect(describeRouting({})).toBeUndefined();
   });
 });
 
@@ -136,6 +145,14 @@ describe("config CLI surfaces (D-86)", () => {
     expect(warning).toContain("provider routing");
     expect(warning).toContain("openai/gpt-5.6-sol");
     expect(warning).toContain("anthropic/claude-opus-5");
+  });
+
+  it("`config set --model` does not warn about a block the session ignores", async () => {
+    // The warning says the block "still applies"; for a malformed one that is
+    // false — the pin applies — and `config which` already says so.
+    seed("openai/flex");
+    await runConfig(["set", "Sol", "--model", "anthropic/claude-opus-5", "--offline"]);
+    expect(err.join("")).not.toContain("provider routing");
   });
 
   it("`config set` that leaves the model alone does not warn", async () => {

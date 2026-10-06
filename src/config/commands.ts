@@ -398,10 +398,12 @@ export async function runConfig(args: string[]): Promise<number> {
       saveConfig(next, paths);
       // `set --model` edits in place, so it keeps every field — including an
       // endpoint pin that names a backend for the *old* model (D-86). `config
-      // model` drops it; here it can only be pointed out.
-      if (before && updated.model !== before.model && updated.provider !== undefined) {
+      // model` drops it; here it can only be pointed out. A malformed block is
+      // ignored by the session either way, so there is nothing to warn about.
+      const kept = configuredRouting(updated).routing;
+      if (before && updated.model !== before.model && kept) {
         process.stderr.write(
-          `  ⚠ provider routing ${JSON.stringify(updated.provider)} was set for ${before.model} ` +
+          `  ⚠ provider routing ${JSON.stringify(kept)} was set for ${before.model} ` +
             `and still applies to ${updated.model} — edit or remove it in config.json if it no longer fits\n`,
         );
       }

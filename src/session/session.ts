@@ -1058,6 +1058,10 @@ export class Session {
         model: req.model,
         messages: req.messages.length,
         tools: ["decide_kill"],
+        provider: result.provider,
+        ...(configuredRouting(this.config).routing
+          ? { routing: req.provider }
+          : { pinnedTo: req.provider?.order?.[0] }),
         finishReason: result.finishReason,
         usage: result.usage,
         textPreview: `[watchdog] ${command.slice(0, 60)}`,

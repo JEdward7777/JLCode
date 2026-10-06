@@ -70,6 +70,16 @@ export function configuredRouting(config: { provider?: unknown } | undefined): {
   return { routing: { ...(p as ProviderRouting) } };
 }
 
+/** The config's routing as one short phrase for a CLI surface (D-86), judged
+ *  by `configuredRouting` so no surface can call a block active that the
+ *  session ignores: the block itself, `ignored — <why>`, or `undefined` when
+ *  there is none. */
+export function describeRouting(config: { provider?: unknown } | undefined): string | undefined {
+  const { routing, problem } = configuredRouting(config);
+  if (routing) return JSON.stringify(routing);
+  return problem ? `ignored — ${problem}` : undefined;
+}
+
 /** Minutes before the command watchdog asks the model to kill or keep (X-33),
  *  and `0` when the check is switched off. Absent means the default, for the
  *  same reason the two above default to on: a config nobody has edited — which

@@ -40,6 +40,7 @@ import {
   bindAndRemember,
   configsWithKeyAndModel,
   createAndBind,
+  describeRouting,
   deriveConfigName,
   deriveModelConfig,
   findModelConfig,
@@ -374,9 +375,11 @@ function chooseSibling(
     title: `${siblings.length} configs already hold this key and ${model} — which one should this folder use?`,
     choices: ordered.map((c) => ({
       label: c.name,
-      detail:
-        `${shortId(c.id)}  ${nonDefaultSettings(c).join("  ") || "all defaults"}` +
-        (c.provider !== undefined ? `  routing:${JSON.stringify(c.provider)}` : ""),
+      detail: [
+        shortId(c.id),
+        nonDefaultSettings(c).join("  ") || "all defaults",
+        ...(describeRouting(c) !== undefined ? [`routing:${describeRouting(c)}`] : []),
+      ].join("  "),
       value: c,
     })),
     flag: "--config <name|id>",
@@ -500,7 +503,8 @@ async function report(ctx: {
   row("images", images === "yes" ? "yes" : images === "no" ? "no — text only" : "unknown to the catalog");
   // Never carried (D-86), so it only shows when switching *back* to a config
   // that already pins an endpoint — exactly when you'd want to be told.
-  if (target.provider) row("routing", JSON.stringify(target.provider));
+  const routing = describeRouting(target);
+  if (routing !== undefined) row("routing", routing);
 
   for (const warning of catalogWarnings(catalog, target)) process.stderr.write(`  ⚠ ${warning}\n`);
 }

@@ -283,6 +283,14 @@ describe("what carries over and what is re-derived", () => {
     expect(out.join("")).toMatch(/routing\s+\{"only":\["anthropic"\],"allow_fallbacks":false\}/);
   });
 
+  it("the switch-back row calls a malformed block ignored, not active", async () => {
+    seed({ provider: "anthropic" as never });
+    await model(["anthropic/claude-sonnet-5", "--offline"]);
+    out.length = 0;
+    await model(["anthropic/claude-opus-5", "--offline"]);
+    expect(out.join("")).toMatch(/routing\s+ignored — provider must be an object/);
+  });
+
   it("warns about settings the new model invalidates, and clamps neither", async () => {
     seed();
     await model(["openai/gpt-4o-mini", "--offline"]);
