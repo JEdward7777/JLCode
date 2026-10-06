@@ -5,6 +5,7 @@
  */
 import path from "node:path";
 import { newId } from "../util/id.js";
+import type { ProviderRouting } from "../llm/types.js";
 import type {
   ApprovalPolicy,
   CommandSettings,
@@ -47,6 +48,26 @@ export function turnTimestampsEnabled(config: { environment?: EnvironmentSetting
  *  `false` declines. */
 export function projectInstructionsEnabled(config: { environment?: EnvironmentSettings } | undefined): boolean {
   return config?.environment?.projectInstructions !== false;
+}
+
+/** The config's own OpenRouter routing (D-86), or why it is being ignored.
+ *  `provider` is hand-edited and passed through on load (D-68), so this is the
+ *  one place its shape is judged: only a non-empty plain object is routing. A
+ *  string (`"provider": "openai/flex"` — the obvious typo for the object form)
+ *  would spread into `{"0":"o",…}`, and `{}` would quietly switch the signature
+ *  pin off with nothing in its place; both fall back to the pin instead, and
+ *  `config which` names the problem. */
+export function configuredRouting(config: { provider?: unknown } | undefined): {
+  routing?: ProviderRouting;
+  problem?: string;
+} {
+  const p = config?.provider;
+  if (p === undefined || p === null) return {};
+  if (typeof p !== "object" || Array.isArray(p)) {
+    return { problem: `provider must be an object, e.g. {"only":["openai/flex"]} — got ${JSON.stringify(p)}` };
+  }
+  if (Object.keys(p).length === 0) return { problem: "provider is an empty object" };
+  return { routing: { ...(p as ProviderRouting) } };
 }
 
 /** Minutes before the command watchdog asks the model to kill or keep (X-33),

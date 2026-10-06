@@ -176,9 +176,27 @@ describe("ephemeral asks ride the live prefix (D-81)", () => {
     // Same routing as the turn whose cache it rides…
     expect(requests[1]!.provider).toEqual(routing);
     // …but an endpoint named for the working model means nothing to another one.
+    // (Same-model compaction rides like the title does; see the next test.)
     expect(await session.compact()).toBe(true);
     expect(requests[2]!.model).toBe("cheap-model");
     expect(requests[2]!.provider).toBeUndefined();
+  });
+
+  it("same-model compaction carries configured routing too — D-86", async () => {
+    const routing = { only: ["openai/flex"], allow_fallbacks: false };
+    const { driver, requests } = sequenceDriver([turn("first answer"), turn("## Goal\nShip it.\n")]);
+    const session = new Session({
+      config: { ...config, provider: routing },
+      driver,
+      systemPrompt: SYS,
+      contextWindow: 200_000,
+      tools: new ToolRegistry(fileTools()),
+      sandbox: new Sandbox([process.cwd()]),
+    });
+    await session.send("original request");
+    expect(await session.compact()).toBe(true);
+    expect(requests[1]!.model).toBe("work-model");
+    expect(requests[1]!.provider).toEqual(routing);
   });
 
   it("a cross-model compactor inherits neither the pin nor the tools", async () => {

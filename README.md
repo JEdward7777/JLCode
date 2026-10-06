@@ -246,9 +246,10 @@ creates** the sibling holding the new model, so switching back and forth reuses
 the two rows instead of growing a new one each time. It says which of three
 things happened — created one, switched back to one, or you were already there —
 prints every non-default setting it carried over (effort, mode, approval,
-addendum, sampling, watchdog…), and re-derives the four that describe the *old*
+addendum, sampling, watchdog…), and re-derives the ones that describe the *old*
 model: price, context window, compaction threshold, and whether it can see
-images. Anything the catalog says the new model invalidates — an effort setting
+images — and drops any `provider` routing, since an endpoint named for one model
+means nothing to another. Anything the catalog says the new model invalidates — an effort setting
 on a model with no reasoning, a `max_tokens` above its output cap — is **warned
 about, not silently changed**.
 
@@ -262,6 +263,23 @@ subdirectory moves the project, not the folder you happened to be standing in.
 And a running `serve` picks the change up **at your next message** — no restart,
 and nothing to tell the server. (A server started with `--config <name>` is
 pinned and says so on its banner.)
+
+### Pinning a model to one endpoint
+
+OpenRouter can serve one model from several endpoints (a model card might offer
+`openai/flex` at a lower price, for instance). To pin one, add OpenRouter's
+`provider` object to that config in `config.json` by hand. It is sent exactly as
+written, so the card's suggestion pastes straight in:
+
+```json
+"provider": { "only": ["openai/flex"], "allow_fallbacks": false }
+```
+
+When it is set it replaces JLCode's automatic pin, which otherwise keeps a
+thread on whichever backend answered first so replayed reasoning stays valid.
+Change it mid-thread and a backend may reject that replay; that is the cost of
+switching. `jlcode config which` shows the block, or says it is being ignored
+if it isn't a non-empty object.
 
 ### It knows what day it is
 

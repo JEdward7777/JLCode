@@ -374,7 +374,9 @@ function chooseSibling(
     title: `${siblings.length} configs already hold this key and ${model} — which one should this folder use?`,
     choices: ordered.map((c) => ({
       label: c.name,
-      detail: `${shortId(c.id)}  ${nonDefaultSettings(c).join("  ") || "all defaults"}`,
+      detail:
+        `${shortId(c.id)}  ${nonDefaultSettings(c).join("  ") || "all defaults"}` +
+        (c.provider !== undefined ? `  routing:${JSON.stringify(c.provider)}` : ""),
       value: c,
     })),
     flag: "--config <name|id>",

@@ -42,6 +42,18 @@ describe("OpenRouterClient", () => {
     expect(body.messages[0]).toEqual({ role: "user", content: "hi" });
   });
 
+  it("sends a provider block verbatim, keys JLCode does not name included — D-86", async () => {
+    let body: Record<string, unknown> | undefined;
+    const fakeFetch = (async (_url: any, init: any) => {
+      body = JSON.parse(init.body as string);
+      return sseResponse(['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', "data: [DONE]\n\n"]);
+    }) as unknown as typeof fetch;
+    const client = new OpenRouterClient({ apiKey: "sk-test", fetch: fakeFetch });
+    const provider = { only: ["openai/flex"], allow_fallbacks: false, sort: "price" };
+    for await (const _ of client.streamChat({ model: "m", messages: [], provider })) void _;
+    expect(body!.provider).toEqual(provider);
+  });
+
   it("throws on a non-ok response", async () => {
     const fakeFetch = (async () => new Response("nope", { status: 401, statusText: "Unauthorized" })) as unknown as typeof fetch;
     const client = new OpenRouterClient({ apiKey: "bad", fetch: fakeFetch });

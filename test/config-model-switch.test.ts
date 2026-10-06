@@ -10,7 +10,7 @@
  *    convenience command from turning `config.json` into a junk drawer;
  *  - **three outcomes, named distinctly** — "nothing happened" and "a new config
  *    now holds your key" must not read the same;
- *  - **carried vs re-derived** — the four fields that describe the *old* model
+ *  - **carried vs re-derived** — the fields that describe the *old* model
  *    can only ever be silently wrong on the new one (D-78c exists because a wrong
  *    modality is invisible until it breaks), so they are re-derived; everything
  *    about *how you work* carries;
@@ -272,6 +272,15 @@ describe("what carries over and what is re-derived", () => {
     // And what it costs now, against what it cost before.
     expect(printed).toContain("$3.00 in / $15.00 out per Mtok");
     expect(printed).toContain("(was $5.00 in / $25.00 out per Mtok)");
+  });
+
+  it("shows routing on the way back to a config that pins an endpoint — D-86", async () => {
+    seed(); // Opus, with `provider` set
+    await model(["anthropic/claude-sonnet-5", "--offline"]);
+    expect(out.join("")).not.toMatch(/routing\s/); // dropped, so nothing to show
+    out.length = 0;
+    await model(["anthropic/claude-opus-5", "--offline"]);
+    expect(out.join("")).toMatch(/routing\s+\{"only":\["anthropic"\],"allow_fallbacks":false\}/);
   });
 
   it("warns about settings the new model invalidates, and clamps neither", async () => {

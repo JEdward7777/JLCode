@@ -43,10 +43,10 @@ function textEvents(text: string): StreamEvent[] {
   ];
 }
 
-function toolSession(driver: LlmDriver, watchdogMs?: number) {
+function toolSession(driver: LlmDriver, watchdogMs?: number, cfg: ModelConfig = config) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-intr-"));
   const session = new Session({
-    config,
+    config: cfg,
     driver,
     tools: new ToolRegistry([runCommandTool()]),
     sandbox: new Sandbox([tmp]),
@@ -175,6 +175,27 @@ describe("watchdog (D-34)", () => {
     expect(hasWatchdogEntry).toBe(false);
     const assistants = session.conversation.entries.filter((e) => e.type === "assistant") as AssistantEntry[];
     expect(assistants[assistants.length - 1]!.text).toBe("done");
+  });
+
+  it("routes the out-of-band ask like a turn — D-86", async () => {
+    // The ask replays the same history to the same model, so a configured
+    // endpoint (or data policy) must not lapse for it.
+    const routing = { only: ["openai/flex"], allow_fallbacks: false };
+    const asked: unknown[] = [];
+    const driver = scriptedDriver((req) => {
+      const last = req.messages[req.messages.length - 1];
+      const content = typeof last?.content === "string" ? last.content : "";
+      if (content.includes("[watchdog]")) {
+        asked.push(req.provider);
+        return toolCallEvents("decide_kill", { kill: true });
+      }
+      if (last?.role === "tool") return textEvents("done");
+      return toolCallEvents("run_command", { command: "sleep 30" });
+    });
+    const { session } = toolSession(driver, 20, { ...config, provider: routing });
+    await session.send("go");
+    expect(asked.length).toBeGreaterThanOrEqual(1);
+    for (const p of asked) expect(p).toEqual(routing);
   });
 
   it("re-arms on a no and does not kill", async () => {

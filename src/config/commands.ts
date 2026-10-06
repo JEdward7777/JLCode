@@ -19,6 +19,7 @@ import {
   findModelConfig,
   projectInstructionsEnabled,
   commandWatchdogMinutes,
+  configuredRouting,
   removeModelConfig,
   resolveForCwd,
   turnTimestampsEnabled,
@@ -197,6 +198,17 @@ function projectInstructionsLine(config: ModelConfig, cwd: string): string {
   return `    project instructions: ${summarizeProjectInstructions(projectInstructionsEnabled(config), cwd)}\n`;
 }
 
+/** Where this config routes (D-86) — printed only when it says something: the
+ *  default (OpenRouter picks, then the signature pin holds) is noise every time,
+ *  but a block that pins every request to one endpoint, or one ignored as
+ *  malformed, is exactly the kind of setting that is otherwise invisible. */
+function routingLine(config: ModelConfig): string {
+  const { routing, problem } = configuredRouting(config);
+  if (problem) return `    provider routing: IGNORED — ${problem}; the automatic pin applies\n`;
+  if (routing) return `    provider routing: ${JSON.stringify(routing)} — replaces the automatic pin\n`;
+  return "";
+}
+
 function line(c: ModelConfig, boundId: string | undefined): string {
   const mark = c.id === boundId ? "*" : " ";
   const key = c.openRouterKey ? "key:set" : "key:MISSING";
@@ -271,6 +283,7 @@ export async function runConfig(args: string[]): Promise<number> {
       // argument again: a project that shipped an AGENTS.md needs to be able to
       // confirm it was found, and one that has none needs to see that too.
       process.stdout.write(projectInstructionsLine(selected, cwd));
+      process.stdout.write(routingLine(selected));
       return 0;
     }
 
@@ -380,8 +393,18 @@ export async function runConfig(args: string[]): Promise<number> {
           }
         }
       }
+      const before = findModelConfig(config, ref);
       const { config: next, updated } = updateModelConfig(config, ref, patch);
       saveConfig(next, paths);
+      // `set --model` edits in place, so it keeps every field — including an
+      // endpoint pin that names a backend for the *old* model (D-86). `config
+      // model` drops it; here it can only be pointed out.
+      if (before && updated.model !== before.model && updated.provider !== undefined) {
+        process.stderr.write(
+          `  ⚠ provider routing ${JSON.stringify(updated.provider)} was set for ${before.model} ` +
+            `and still applies to ${updated.model} — edit or remove it in config.json if it no longer fits\n`,
+        );
+      }
       const mt = updated.sampling?.maxTokens;
       process.stdout.write(
         `Updated → ${updated.name}  ${updated.model}  effort:${updated.reasoningEffort ?? "-"}` +

@@ -11,7 +11,7 @@
 import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
-import { DEFAULT_TOOL_ROUNDS, DEFAULT_WATCHDOG_MINUTES, turnTimestampsEnabled } from "../config/operations.js";
+import { DEFAULT_TOOL_ROUNDS, DEFAULT_WATCHDOG_MINUTES, configuredRouting, turnTimestampsEnabled } from "../config/operations.js";
 import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage, ProviderRouting } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
@@ -1039,6 +1039,10 @@ export class Session {
         `(you'll be asked again later). This exchange is not added to the conversation.`,
     });
     const req: ChatRequest = { model: this.config.model, messages, tools: [DECIDE_KILL_TOOL] };
+    // Same routing as a turn (D-86): it replays the same signed history, and a
+    // configured endpoint or data policy must not lapse for a side question.
+    const provider = this.routing();
+    if (provider) req.provider = provider;
     const startedAt = Date.now();
     const events: StreamEvent[] = [];
     for await (const ev of this.driver.streamChat(req)) events.push(ev);
@@ -1202,12 +1206,15 @@ export class Session {
    *
    * Decided here, at send time, and nowhere else: the journal keeps recording
    * which backend served each turn whatever is configured, so dropping the
-   * override later falls straight back to the pin. One helper for both request
-   * builders, so a title ask can never route differently from the turn whose
-   * cache it means to ride (D-81).
+   * override later falls straight back to the pin. One helper for **every**
+   * request to the working model — turns, the ephemeral asks, the watchdog — so
+   * a title ask can never route differently from the turn whose cache it means
+   * to ride (D-81). A malformed block is ignored here, not sent
+   * (`configuredRouting`).
    */
   private routing(): ProviderRouting | undefined {
-    if (this.config.provider) return { ...this.config.provider };
+    const { routing } = configuredRouting(this.config);
+    if (routing) return routing;
     const pin = pinnedProvider(this.conversation, this.workingLeaf);
     return pin ? { order: [pin], allow_fallbacks: false } : undefined;
   }
@@ -2012,7 +2019,9 @@ export class Session {
         messages: req.messages.length,
         tools: toolNames,
         provider: result.provider,
-        pinnedTo: req.provider?.only?.[0] ?? req.provider?.order?.[0],
+        ...(configuredRouting(this.config).routing
+          ? { routing: req.provider }
+          : { pinnedTo: req.provider?.order?.[0] }),
         finishReason: result.finishReason,
         truncated: result.finishReason === "length",
         usage: result.usage,

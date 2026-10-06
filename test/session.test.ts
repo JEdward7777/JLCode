@@ -201,6 +201,26 @@ describe("Session provider pinning", () => {
     expect(seen[1]).toEqual({ order: ["OpenAI"], allow_fallbacks: false });
   });
 
+  it.each([
+    ["a bare string", "openai/flex"],
+    ["an empty object", {}],
+    ["an array", ["openai/flex"]],
+  ])("a malformed provider (%s) is ignored, and the pin still holds — D-86", async (_label, bad) => {
+    const seen: (ChatRequest["provider"] | undefined)[] = [];
+    const driver = scriptedDriver((req) => {
+      seen.push(req.provider);
+      return [
+        { type: "provider", name: "OpenAI" },
+        { type: "text", delta: "ok" },
+        { type: "finish", reason: "stop" },
+      ];
+    });
+    const session = new Session({ config: { ...config, provider: bad as never }, driver });
+    await session.send("q1");
+    await session.send("q2");
+    expect(seen).toEqual([undefined, { order: ["OpenAI"], allow_fallbacks: false }]);
+  });
+
   it("does not pin when the provider is never reported", async () => {
     const seen: (ChatRequest["provider"] | undefined)[] = [];
     const driver = scriptedDriver((req) => {

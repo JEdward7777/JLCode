@@ -3,7 +3,7 @@ import type { ToolKind, ToolPreview } from "../tools/types.js";
 import type { TaskView } from "../tools/task-registry.js";
 import type { Entry } from "../conversation/types.js";
 import type { TodoItem } from "../conversation/todos.js";
-import type { Usage } from "../llm/types.js";
+import type { ProviderRouting, Usage } from "../llm/types.js";
 import type { ApprovalPolicy, CompactionTrigger, Mode } from "../config/types.js";
 
 /** A message typed mid-turn, waiting to apply at the next turn boundary (D-34). */
@@ -25,6 +25,10 @@ export type DebugRecord =
        *  instead of only surfacing as a signature rejection two turns later. */
       provider?: string;
       pinnedTo?: string;
+      /** The config's own routing block, when one replaced the pin (D-86) —
+       *  recorded whole, since an endpoint slug (`openai/flex`) is not the
+       *  provider name OpenRouter reports back and must not read as a switch. */
+      routing?: ProviderRouting;
       finishReason?: string;
       truncated?: boolean;
       usage?: Usage;
