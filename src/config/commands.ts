@@ -36,7 +36,7 @@ import {
   type SamplingParams,
 } from "./types.js";
 
-const CONFIG_HELP = `jlcode config — manage model configurations
+const configHelp = (configFile: string): string => `jlcode config — manage model configurations
 
   config list [query]              list configs (filtered by name/model)
   config which [--offline]         show the config selected for this directory,
@@ -84,6 +84,8 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
                          hand-edited in config.json and are kept. Replaces the
                          automatic pin. "none" removes it.
   --offline              (set/which) don't refresh the model catalog
+
+Config file (hand-editable): ${configFile}
 `;
 
 function numberFlag(flags: Record<string, string | boolean>, key: string): number | undefined {
@@ -261,7 +263,7 @@ export async function runConfig(args: string[]): Promise<number> {
   switch (sub) {
     case undefined:
     case "help":
-      process.stdout.write(CONFIG_HELP);
+      process.stdout.write(configHelp(paths.configFile));
       return 0;
 
     case "list": {
@@ -490,7 +492,7 @@ export async function runConfig(args: string[]): Promise<number> {
     }
 
     default:
-      process.stderr.write(`Unknown config command: ${sub}\n\n${CONFIG_HELP}`);
+      process.stderr.write(`Unknown config command: ${sub}\n\n${configHelp(paths.configFile)}`);
       return 2;
   }
 }

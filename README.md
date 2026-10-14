@@ -385,7 +385,7 @@ mcp …           MCP servers (list/import/path) — reads KiloCode's mcp_settin
 chat            Terminal conversation with the selected config (no tools)
 serve           Start the HTTP server + browser client
 version         Print the version
-help            Show this help
+help            Show this help (ends with the path to your config.json)
 ```
 
 ## Requirements

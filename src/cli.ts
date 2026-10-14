@@ -14,7 +14,10 @@ import { runChat } from "./session/chat-command.js";
 import { runServe } from "./server/serve-command.js";
 import { runMcp } from "./mcp/commands.js";
 
-const HELP = `jlcode ${getVersion()} — a from-scratch coding agent
+/** Built at call time so the printed paths honour the current env overrides. */
+function help(): string {
+  const paths = resolvePaths();
+  return `jlcode ${getVersion()} — a from-scratch coding agent
 
 Usage:
   jlcode [command]
@@ -32,7 +35,12 @@ Environment:
   JLCODE_CONFIG_DIR   override the config store location
   JLCODE_DATA_DIR     override the data store location
   JLCODE_LOG_LEVEL    error | warn | info | debug   (default: info)
+
+Files:
+  config file         ${paths.configFile}
+                      model configs + folder bindings; safe to hand-edit
 `;
+}
 
 function printInfo(): void {
   const paths = ensurePaths();
@@ -61,7 +69,7 @@ async function main(argv: string[]): Promise<number> {
     case "help":
     case "-h":
     case "--help":
-      process.stdout.write(HELP);
+      process.stdout.write(help());
       return 0;
     case "version":
     case "-v":
@@ -81,7 +89,7 @@ async function main(argv: string[]): Promise<number> {
     case "serve":
       return runServe(argv.slice(1));
     default: {
-      process.stderr.write(`Unknown command: ${command}\n\n${HELP}`);
+      process.stderr.write(`Unknown command: ${command}\n\n${help()}`);
       return 2;
     }
   }
