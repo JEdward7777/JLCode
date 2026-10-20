@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Next build: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,22 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-10-20 (X-56 designed and phased — next build is Phase 9).** Joshua wants
+> (a) a per-thread **model picker in the browser** that overrides the CLI binding, and (b)
+> **background sub-agents** that talk both ways with their parent and nest under it in the rail —
+> Claude Code / Codex style, possibly on another model, same key only. Designed over a 21-question
+> round (2026-10-13…20, one question at a time); decisions **D-87 / D-88 / D-89**, the full ruling
+> record is DECISIONS **"X-56 — settled design"**, SPEC §4 and §27 carry the user-visible shape, and
+> the build plan is **Phase 9 (P9a…P9g)** below. Nothing is built. **Start at P9a** (the switch
+> entry, headless) — switching ships independently of agents. Joshua delegated the slicing: re-cut
+> if the build shows a better seam, but keep moving. Notable rulings to not relitigate: no "back to
+> default" once a thread is switched; no fit/cost warnings in the picker; D-79's tool-round cap
+> becomes switch-off-able; the root thread's config governs a whole tree's limits.
+>
+> **Still true from 2026-10-06:** D-86/D-86a (`--provider`) shipped and reviewed clean, **not yet
+> seen against a live endpoint**. Build + free tiers green (**982**). **G-01 is untouched and still
+> unspent.** **X-50(1)** is still open.
 
 > **Resume block — 2026-10-06 (D-86 — a config can name its OpenRouter endpoint).** Joshua wanted
 > `openai/gpt-5.6-sol` on the **`openai/flex`** endpoint, and nothing could say so: the only routing
@@ -2018,6 +2034,120 @@ file you can `rm` — and the conversation stops being one self-contained file. 
   a turn that carries a picture still lands on a warm prefix. What that shows is the prefix *above*
   the image caching normally — the image's own turn was written fresh, as expected.
 
+## Phase 9 — Per-thread model switching + background sub-agents (X-56), post-v1
+
+Designed 2026-10-13…20 in Joshua's one-question-at-a-time round. **Decisions: D-87 (switching),
+D-88 (sub-agents), D-89 (brakes).** The question-by-question record — every edge case Joshua ruled
+on — is DECISIONS **"X-56 — settled design"**; read it before building any slice, it is the spec
+these slices implement. Joshua delegated the phasing ("I trust the phases to you"): **re-cut these
+slices if the build shows a better seam**, but never in a way that stalls progress — record the
+re-cut here and keep going.
+
+**Order and why.** 9a/9b (switching) are independent of agents, smaller, and useful the day they
+ship — build them first. 9c is the agent core **with its brakes inside it**: depth, the width cap,
+and the human-only budget reset ship in the same slice as `spawn_agent`, because pushes go straight
+to `npx` and an unbraked tree must never be the runnable build. Until 9e, children appear **flat** in
+the rail as ordinary sessions — usable, just not nested.
+
+### P9a — The switch entry, headless (Tier-0)
+
+- New conversation entry kind **`model-switch`** `{ configId, snapshot: { name, model } }` in
+  `src/conversation/types.ts`; fold rule: the nearest switch above the leaf governs.
+- `Session` resolves its config **per request** from the governing entry's id against the live
+  config store (`src/config/store.ts`); none → today's config. A missing id → refuse to send with a
+  typed error the UI can turn into the inline picker.
+- Wire (`src/conversation/wire.ts`): drop `reasoning_details` above the newest switch, as across a
+  compaction. `pinnedProvider()` stops at a switch entry exactly as it stops at a compaction (D-49).
+- `adoptLatestConfig` (`src/server/server.ts`, D-82a) **skips** a branch that has a switch entry.
+- Server: `GET` configs grouped by key — **fingerprint (last 4) + names + models, never the key**;
+  `POST` a switch for a session (`configId`, plus an explicit cross-key acknowledgement the server
+  requires when the key differs). Busy session → recorded **pending** in memory, written at the next
+  idle point; a second pick replaces the pending one.
+- Tests: fold/fork reverts; binding ignored once switched and followed again on a fork above the
+  first switch; deleted-config refusal; reasoning dropped + pin reset; cross-key POST refused
+  without the acknowledgement; pending applied at idle; no key bytes in the configs response.
+
+### P9b — The picker in the browser (Tier-0 + peek)
+
+- A model chip/picker in the thread pane header: groups by key, current group first, heading =
+  fingerprint + config names; same-group pick is one click; cross-group → **inline** confirm naming
+  both fingerprints, every time. No cost or fit lines.
+- Pending state shown on the chip while busy. Deleted-config state: composer disabled, inline "this
+  thread's model no longer exists — pick one" with the picker open.
+- Transcript marker at the switch entry from its snapshot ("switched to Sol (gpt-5.6-sol)").
+- Overlaps **X-19** (switching only; preset editing stays X-19's). Mind **X-46** (chip tail-cut).
+- **Peek** (VISUAL-LOG): same-key switch, cross-key confirm, pending-while-busy, deleted config.
+
+### P9c — Agent core: tree storage, spawn/message, and the brakes (Tier-0, one Tier-1)
+
+- Storage: entries gain an **agent id**; `ConversationStore` folds several roots per file, each with
+  its own `activeLeaf` records; a session loads only its agent's subtree. One `AppendLog` per file
+  already serializes the writers (D-37).
+- `SessionManager` (`src/session/manager.ts`) gains parent links; spend rolls up (D-33); Stop/Kill
+  reach the subtree (D-34).
+- Tools: **`spawn_agent(task, model?)`** (returns the name at once; parent ends its turn),
+  **`send_message(to, text)`**, **`list_models`** (same-key configs, name + model). Live
+  same-key validation; error lists the allowed names.
+- Inbound message = attributed user-side entry, **written to the receiver's log when sent**
+  (pending) so "owes a reply" survives a crash; starts a turn or rides the queue. Completion notice
+  to the parent when a child goes idle.
+- Permissions: child inherits the parent's mode/approval; its approval prompts go to the human (in
+  the child's view; the parent's "waiting for you" flag lights too).
+- **Brakes in the same slice (D-89):** tool-round reset only on human-typed input
+  (`session.ts` — today `send()` resets unconditionally); `--agent-depth` (default 3); 
+  `--agent-concurrency` (default 4) with a **queued** session state and a FIFO start when a running
+  agent idles. Root's config governs, read live. Config fields + `config set` flags + `config which`
+  readback + `config model` carry (D-82) — mirror how `commands.toolRounds` and
+  `commands.watchdogMinutes` are threaded today.
+- Tests: fake driver (`src/session/fake.ts`) runs parent + children end to end; interleaved writes
+  fold back correctly per agent; depth refusal; the fifth agent queues and starts when one idles;
+  agent messages don't reset the budget, a human one does; cross-key model refused; a message to a
+  busy child lands at its next tool-loop pass. One Tier-1 cached run of a real model spawning and
+  messaging a child, so the tool descriptions are proven legible.
+
+### P9d — Addressed questions, stricter children, the off switch (Tier-0)
+
+- Question tool takes **`to: user|parent`**; default = whoever started the current turn; `parent` on
+  a root refused. An outstanding question is answered only by its addressee or the human; others
+  queue. (Rename `ask_user` → something like `ask` is this slice's call.)
+- `spawn_agent` optional **`mode`**: tighter than the parent only; looser refused.
+- **Tool-rounds off:** `config set --tool-rounds off` (root governs) and the pause card's third
+  button "Continue, don't ask again in this thread" — a logged entry covering the thread's subtree.
+  Reverses D-79's "cannot be disabled"; the spend cap remains.
+- Tests: default-addressee rule; wrong-sender answer queues instead of answering; human always
+  answers; looser `mode` refused; off switch survives restart via the log.
+
+### P9e — The rail and the transcript cards (Tier-0 + peek)
+
+- Sub-agents **nest under their parent in the existing rail** (no new pane): name, model, status
+  dot (running / queued / idle / finished / waiting for you); disclosure arrow; collapsed parent
+  shows its most urgent child.
+- Clicking a sub-agent opens it in the main pane with its own model picker (P9b) and composer —
+  typing there is human input (resets that agent's budget).
+- Parent transcript renders agent traffic as compact linked cards: spawned / → sent / ← received /
+  finished, styled apart from the human's messages.
+- **Peek**: a three-level tree with a child waiting on approval lighting a collapsed parent.
+
+### P9f — Lifecycle: close, `list_agents`, Wake, boot (Tier-0 + peek)
+
+- **Closed** flag (human and agent alike): grey, sinks below open siblings, children fold; click
+  reopens; >~5 closed siblings fold into an "N closed" row. Root threads close into history as
+  today; history shows roots with nested children. Closing unloads the session; a message to a
+  closed agent reopens it.
+- **`list_agents(show_closed?)`** and agent-side close of its own children.
+- Boot: nothing auto-starts. Derived states **interrupted / owes-a-reply / quiescent** from the log.
+  **Wake** on any rail entry resumes interrupted (Retry-like) and owing agents in that subtree,
+  skipping closed and quiescent; the root's **`wake_agents`** does the same for its tree. Woken
+  turns don't reset budgets.
+- Tests: state derivation from crafted logs; Wake scope and skips; reopen-on-message; `list_agents`
+  filtering. **Peek**: closed sinking + the "N closed" fold, Wake after a server restart.
+
+### P9g — Live validation (paid tier — **ask Joshua which level first**)
+
+A real tree on a cheap model: spawn on a same-key sibling config, a mid-task correction landing, a
+child question routed to its parent, a cross-model switch mid-thread and back via fork. Record what
+the models actually did with the tool descriptions.
+
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
 - **H-08 — a poisoned `project_root` on a shared MCP server bypasses the workspace fence entirely.**
@@ -2533,7 +2663,7 @@ agent-facing background commands — start/poll/tail/kill (X-36) ·
 **the model reading images — sized, phased, in build (X-37 → Phase 8, D-78)** ·
 symbol navigation over MCP, route sized, home undecided (X-34) ·
 Notifications (external push, P-02) ·
-agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35)** ·
+agent-directed minimize/expand (X-08) · **agent orchestration / sub-threads (§27, D-35) — designed as X-56, build plan Phase 9 (with per-thread model switching)** ·
 **workspace isolation via git worktrees (§27, D-36)** · remote control / fleet view (§18) ·
 browser-driven app testing · VS Code webview · response-caching product feature (§21) ·
 file viewer & upload/download chrome.

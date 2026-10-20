@@ -119,6 +119,17 @@ error, and X-41 holds the eventual recovery path.
 directory in the same command — the same create-and-bind act `config model`
 performs in a folder that has no binding yet.
 
+**Switching a thread's model from the browser (X-56, D-87 — designed, not built; ROADMAP P9a/P9b).**
+The binding above picks the model for a folder; a **thread** can override it from a picker in its
+pane. The pick is a **model-switch entry in the conversation log** naming a config id (resolved live,
+so later edits to that config reach the thread). The nearest switch above the leaf governs; a thread
+never switched keeps following the binding, and a switched one never does again — there is no "back
+to default", and forking above the switch is how you undo it. The picker lists every config grouped
+by key (fingerprint only — the browser never sees a key); a cross-key pick confirms every time. A
+pick made while the thread is busy waits as **pending** until it is idle. If the named config is
+deleted the thread refuses to send and asks for another. The new model never receives the old one's
+signed reasoning, and the provider pin resets, exactly as across a compaction (§15).
+
 Configuration UX:
 
 - **Filter-search** the config list by typing (KiloCode-style): type `Opus` to narrow,
@@ -673,7 +684,8 @@ scissors" power-user risk**, never a source of internal inconsistency. **Nothing
 "the current session"; no global-current state.**
 
 - Each session holds its **own config** (the folder→config binding, D-06, is only the default for
-  a *new* session); its **own** whole-tree spend (D-33, with a folder/global view summing live
+  a *new* session; since D-82a an unswitched idle thread re-reads it each turn, and a thread's own
+  model-switch entry overrides it for good — D-87); its **own** whole-tree spend (D-33, with a folder/global view summing live
   sessions); its own mode/approval, background tasks, and stop/kill controls (D-34).
 
 ### Deferred (same mechanism, later)
@@ -688,10 +700,27 @@ scissors" power-user risk**, never a source of internal inconsistency. **Nothing
 - **Workspace isolation via git worktrees** — *postponed*. When added, an editing session can take
   its own worktree/branch so concurrent editing is safe (merge after); read-mostly side threads
   still just share the folder.
-- **Agent-initiated orchestration (D-35)** — an agent spawning sub-sessions that report back is the
+- **Agent-initiated orchestration (D-35)** — *designed 2026-10-20, see "Agent-initiated sub-agents" below.* an agent spawning sub-sessions that report back is the
   **same** session mechanism, just agent- rather than user-initiated: sub-sessions are linked to a
   parent, **report results back**, their **spend rolls up** (§25), **kill/stop extends** to them
   (§26), and they appear in the bag + the fleet view (§18).
+
+### Agent-initiated sub-agents (X-56, D-88/D-89 — designed 2026-10-20, not built; ROADMAP Phase 9)
+
+Realizes D-35. An agent calls `spawn_agent(task, model?, mode?)`; the child is a full session linked
+to its parent, running **in the background**, and the parent ends its turn. Either side talks with
+`send_message`; an inbound message is a user-side entry **attributed to its sender**, starting a
+turn or riding the queue (§26), so a correction reaches a busy child at its next tool-loop pass. A
+child going idle sends its parent a completion notice. Children use only configs **sharing the
+parent's key** (`list_models` lists them), at most the parent's permissions, and every approval goes
+to the human; questions are addressed by the model to `user` or `parent`. The whole tree is stored
+in the **root's one conversation file**; nothing auto-starts on boot, and **Wake** resumes only
+agents the log shows as interrupted or owing a reply. Sub-agents **nest under their parent in the
+thread rail** and open in the main pane like any thread; a **closed** agent greys and sinks.
+**Brakes (D-89):** the tool-round budget resets only on human input (and can be switched off),
+`agent-depth` (default 3) caps nesting and `agent-concurrency` (default 4) caps how many run at once
+— extra turns queue, never fail — with the **root's config governing the tree**. The full record
+of every ruling is DECISIONS "X-56 — settled design".
 
 ---
 
