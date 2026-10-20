@@ -27,6 +27,7 @@ for each slice, one at a time:
         spawn a NEW reviewer on the uncommitted diff
         if VERDICT: FIX  → send the must-fix items to the SAME implementer, loop
         if VERDICT: CLEAN → break
+    if a second model is available: one gate review by it on the settled tree (same rules)
     coordinator: harness bookkeeping, stage by explicit path, commit, push
 ```
 
@@ -76,10 +77,14 @@ reviewers will chase stale anchors one per round forever. Tell reviewers up fron
 report an anchor merely because its line number moved; do report one whose target contradicts
 the claim it supports."*
 
-**No second-model gate here.** niceclaude's copy ends each phase with a review by a different
-model; Joshua's plan for this repo has no second model (2026-10-20), so the fresh-reviewer loop is
-the whole gate. If a second model ever becomes available, it runs once the loop is quiet, on a
-settled tree, handed the first model's claims marked *do not trust* — never raced alongside a round.
+**Second-model gate — optional, and off for this repo.** Where a second model is available, end
+each slice with one more adversarial review **by a different model** (the Agent tool's `model`
+override): same blast radius, plus what the first model claimed, marked *do not trust*. It
+reliably catches what the first model's blind spots let through — real defects, and wrong facts
+asserted as evidence. Run it only once the same-model loop is quiet, on a settled tree; raced
+alongside a round it goes stale the moment fixes land and has to be re-run. Same verdict rules;
+fix and re-run until clean. **Here:** Joshua's plan has no second model (2026-10-20), so the
+fresh-reviewer loop is the whole gate — keep this paragraph for copies of this file that do.
 
 **Judgement calls get a second opinion first.** When a call is Joshua's and he is away — is this
 optional item worth taking, is this loop going anywhere — spawn one cheap independent read with
