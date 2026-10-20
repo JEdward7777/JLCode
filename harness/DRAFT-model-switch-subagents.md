@@ -63,12 +63,52 @@ is flushed **at every pass of the tool loop** (D-52, `flushPendingUser`), i.e. b
 calls once a tool batch drains — not only at end of task. So a message to a busy sub-agent lands
 before its next model call.
 
+**Q7 — runaway brake.** No new mechanism: reuse D-79's tool-round budget (`commands.toolRounds`,
+pause + double on Continue). Change: **only a human-typed message resets it** — an agent-sent
+message continues the same count (today `send()` resets at `session.ts:1308`). Per session, so
+parent and each sub-agent pause independently.
+
+**Q8 — the off switch (reverses D-79's "cannot be disabled", deliberately).** Joshua: unattended
+work is the point; a user who knows what they're doing may take the risk. Two levels: (a) config
+`jlcode config set <name> --tool-rounds off`, mirroring `--command-watchdog off`. (b) a third button on the pause card, "Continue, don't ask again in this
+thread" — per thread (and its sub-agents), recorded in the log so it survives restart. The spend
+cap (D-33) remains the only brake when off. *(Amended by Q13: (a) is read from the **root** thread's config, not
+each child's.)*
+
+**Q9 — sub-agent model choice.** `spawn_agent(task, model?)`: omitted `model` = the parent's own
+config. Choices come from a separate **`list_models`** tool (configs sharing the thread's key,
+name + model) — called only when the agent needs it, and keeping a changeable list out of the
+cached tool prefix (D-81). `spawn_agent` validates against the **live** config set server-side; a
+name outside the same-key set errors with the allowed names.
+
+**Q10 — sub-agent permissions.** A sub-agent starts at its parent's current mode + approval policy
+as a **ceiling**; `spawn_agent` may take an optional `mode` to make the child *stricter* (e.g. an
+Ask-mode researcher), never looser — refused. Same workspace fence and remembered roots as the
+parent. **Every approval prompt goes to the human, never to the parent agent** (an agent approving
+its own child's writes would bypass the policy). The prompt shows in the sub-agent's view and the
+"waiting for you" flag also surfaces on the parent. A sub-agent's `ask_user` likewise goes to the
+human; the parent can still talk to it via `send_message`.
+
+**Q11 — GUI.** Sub-agents live in the **existing active-threads list** (the rail) — not a new
+pane — nested folder-style under the thread that spawned them: name, model, status dot (running /
+idle / finished / waiting for you). The parent gets a disclosure arrow; collapsed, it shows its
+most urgent child status (a child waiting on approval lights the parent). Clicking a sub-agent
+opens it in the main pane like any thread: transcript, its own model picker, a composer — a
+message typed there is human input (resets that agent's tool-round count, Q7). In the parent's
+transcript, agent traffic renders as compact linked cards — spawned / → sent / ← received /
+finished — styled distinctly from the human's own messages. No split pane.
+
+**Q12/Q13 — nesting depth.** Sub-agents may spawn sub-agents, up to **N levels below the
+human-started root**; past it `spawn_agent` errors and the agent does the work itself. N is a
+**model-config** setting beside `toolRounds`/`watchdogMinutes`: `jlcode config set <name>
+--agent-depth N`, default **3**, `0` = this config never spawns. A "how you work" field, so
+`config model` carries it (D-82). Because a tree can mix configs, the **root thread's config
+governs the whole tree** (read live, so a change applies at the next spawn) — a child on a laxer
+config cannot nest deeper than the root allows. The Q8 tool-round off switch follows the same
+root-governs rule. At every level: same key as the parent, permissions ≤ parent, nested in the
+rail, Stop/Kill reach the subtree.
+
 ## Open (in order)
 
-- Q7 — runaway brake: agents re-triggering each other's billed turns.
-- Sub-agent model choice: same-key only (Joshua) — default when `model` omitted, how the agent
-  learns the allowed list.
-- Sub-agent permissions: mode/approval inheritance; who answers a sub-agent's approval prompt.
-- GUI: folder-like nesting in the rail, interacting with a sub-agent, attribution rendering.
-- Lifecycle: sub-agents of a sub-agent? Closing/killing; restart/resume of a tree; history list.
+- Lifecycle: closing a tree; restart/resume of a tree; history list; finished sub-agents in the rail.
 - Then: phase the build into ROADMAP.
