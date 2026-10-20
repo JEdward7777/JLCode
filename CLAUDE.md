@@ -12,6 +12,8 @@ connection, and explicit Ask / Plan / Code modes.
 - [`harness/TESTING.md`](harness/TESTING.md) — the tiered/gated test strategy and cost model.
 - [`harness/ROADMAP.md`](harness/ROADMAP.md) — the phased build plan and current milestone.
 - [`harness/VISUAL-LOG.md`](harness/VISUAL-LOG.md) — real-browser peeks per UI slice (mocks can lie).
+- [`harness/pipelines/ratchet.md`](harness/pipelines/ratchet.md) — **opt-in only**: how to run
+  phases "pipeline-style" with subagents when Joshua asks for *the ratchet*. Ignore it otherwise.
 
 The spec is the source of truth. If code and spec disagree, fix one of them
 deliberately and record it in `DECISIONS.md` — don't let them silently drift.

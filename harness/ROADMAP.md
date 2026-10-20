@@ -2043,6 +2043,9 @@ these slices implement. Joshua delegated the phasing ("I trust the phases to you
 slices if the build shows a better seam**, but never in a way that stalls progress — record the
 re-cut here and keep going.
 
+**Suited to the ratchet** ([`pipelines/ratchet.md`](pipelines/ratchet.md)) — settled design,
+ordered slices, expensive defects — **if Joshua asks for it**; P9g is its stop point (paid tier).
+
 **Order and why.** 9a/9b (switching) are independent of agents, smaller, and useful the day they
 ship — build them first. 9c is the agent core **with its brakes inside it**: depth, the width cap,
 and the human-only budget reset ship in the same slice as `spawn_agent`, because pushes go straight
