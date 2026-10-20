@@ -108,7 +108,47 @@ config cannot nest deeper than the root allows. The Q8 tool-round off switch fol
 root-governs rule. At every level: same key as the parent, permissions ≤ parent, nested in the
 rail, Stop/Kill reach the subtree.
 
+**Q14/Q15 — storage + boot.** *Storage:* the whole tree lives in the **root's one JSONL file**.
+Already safe in-process: `ConversationStore` routes every write to a file through one `AppendLog`
+queue, and load folds by `parent` pointers so interleave order is irrelevant. New: entries carry
+their **agent id** → the file holds several roots (one per agent), each with its own `activeLeaf`
+records and forks; a session loads only its agent's subtree. Caveat (already true today): two
+`serve` *processes* on one thread are two writers. *History* shows root threads, sub-agents nested.
+*Boot:* nothing auto-starts. Agent state is derived from the log: **interrupted** (branch ends
+mid-turn — unanswered tool call / turn marked cut off), **owes a reply** (last entry is an inbound
+message it hasn't answered), **quiescent** (ends on its own finished reply). To make "owes a reply"
+survive a crash, an agent message is **written to the receiver's log when sent** (as pending), not
+held only in the in-memory queue. A **Wake** button on any rail entry resumes that thread and its
+subtree — **only interrupted / owes-a-reply agents**; quiescent ones stay asleep. Interrupted turns
+retry like Retry; owing agents start a turn on the pending message. The root agent may call
+`wake_agents` (scoped to its own tree). Woken turns do **not** reset the tool-round budget.
+
+**Q16/Q17 — questions are addressed by the model (amends Q10's "ask_user goes to the human").**
+Every inbound message carries its **sender** (the human, or an agent by name) as part of the
+message, so an agent always knows who it is talking to. The question tool takes a **`to`**:
+`user` or `parent` — the model decides. Omitted `to` defaults to **whoever started the current
+turn** (the spawn task / a parent message → parent; the human typing in that agent's view →
+user), so a model that forgets still does the sensible thing; `parent` on a root is refused with
+"you have no parent — ask the user". An outstanding question is answered only by **its addressee
+or the human** (the human outranks every agent and the question is visible in the agent's view);
+anyone else's messages queue normally. An agent that can't answer a question it received
+escalates by asking its own questioner, up to the human at the root. **Approvals never route
+through agents** — always straight to the human. (Tool rename from `ask_user` to something like
+`ask` is a build-time call.)
+
+**Q18–Q20 — finished vs closed, and who can close.** A **finished** (quiescent) sub-agent keeps its
+place in the rail with a dimmed status dot. A **closed** one turns grey and **sinks below its open
+siblings** within its own parent (its children fold away); clicking it **reopens** it (loads, opens
+in the main pane, rises back). More than ~5 closed siblings fold into one "N closed" row that
+expands in place — a local shift the user triggers, never a global "show closed" toggle. Root
+threads close into the history list as today. **Closed is one flag, shared by human and agents:**
+an agent may close its own children too, and a `list_agents` tool lists an agent's children,
+**omitting closed ones unless `show_closed`** — so a long-running coordinator can tidy its own
+view. Otherwise closing is organizational: a closed agent still receives messages (delivery
+reopens it) and still sends its completion notice. **Exception: Wake skips closed agents**, even
+interrupted / owing ones — reopen one to make it wakeable. Closing unloads the session from memory.
+
 ## Open (in order)
 
-- Lifecycle: closing a tree; restart/resume of a tree; history list; finished sub-agents in the rail.
+- Concurrency: a cap on simultaneously running agents?
 - Then: phase the build into ROADMAP.
