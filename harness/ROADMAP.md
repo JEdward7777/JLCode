@@ -2153,6 +2153,26 @@ the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
+- **H-09 — the config id the CLI prints is not one the CLI accepts.** Found 2026-11-01 by an agent
+  registering a folder on Joshua's behalf; **OPEN, nothing built.**
+  - **Symptom.** `config model openai/gpt-6.1-sol:online --name …` replied
+    `Created  OmegaMusic-Sol-6.1-Flex  cfg_9721feb3`; the very next `config set cfg_9721feb3
+    --provider openai/flex` failed with `No model config matching "cfg_9721feb3"` — via the generic
+    `ERROR cli crashed` path (`cli.ts:102`), stack trace and all. The same call by **name** worked.
+    The help text says `config set <name|id>`, so the id is an advertised handle.
+  - **Cause.** `shortId()` (`src/config/describe.ts:26`) trims every printed id to 12 characters —
+    the real id was `cfg_9721feb3e30e` — while `findModelConfig()` (`src/config/operations.ts:110`)
+    matches ids **exactly**. Every surface that prints an id prints the trimmed one: `config list` /
+    `which` (`commands.ts:246,289`) and every `config model` outcome line and picker row
+    (`model-command.ts:211,286,379,446,477-478`). Hand-written ids of ≤12 chars (`cfg_mm_fable`)
+    survive the trim, which is likely why it went unnoticed. Affects every command taking
+    `<name|id>`: `use`, `set`, `clone`, `remove`, `model --config`.
+  - **Fix options (not chosen).** (a) Accept a **unique id prefix** in `findModelConfig`, refusing
+    an ambiguous one by listing the matches — keeps the compact display and makes any copied id
+    work. (b) Print full ids. (a) looks the better fit. Either way, add a Tier-0 test that feeds a
+    printed id straight back into `config set`. Separately, "no such config" should be a clean
+    one-line error, not a logged crash with a stack.
+
 - **H-08 — a poisoned `project_root` on a shared MCP server bypasses the workspace fence entirely.**
   Found 2026-08-11 by P7c, driving the real `file_utils` server; **FIXED 2026-08-11 (D-73)** —
   an escaping path on a bridged tool is now *remember-this-root or deny*, never allow-once, and a
