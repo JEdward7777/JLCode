@@ -9,7 +9,7 @@
  * at a sibling, without dragging them back.
  */
 import { newId } from "../util/id.js";
-import type { Conversation, Entry } from "./types.js";
+import type { Conversation, Entry, ModelSwitchEntry } from "./types.js";
 
 /** Distributive Omit so union members keep their discriminant fields. */
 type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
@@ -78,4 +78,23 @@ export function leafOf(conv: Conversation, entryId: string): string {
     if (kids.length === 0) return cursor;
     cursor = kids[kids.length - 1]!.id;
   }
+}
+
+/**
+ * The model switch governing a leaf (X-56, D-87): the nearest `model-switch`
+ * entry on the path above it, or undefined when the branch has none — in which
+ * case the folder binding governs, as it always has (D-82a). Folding from the
+ * tree is what makes a fork above a switch revert the model with no state of
+ * its own: the forked branch simply doesn't contain the entry.
+ */
+export function governingSwitch(
+  conv: Conversation,
+  leafId: string | null = conv.activeLeaf,
+): ModelSwitchEntry | undefined {
+  const path = pathToLeaf(conv, leafId);
+  for (let i = path.length - 1; i >= 0; i--) {
+    const entry = path[i]!;
+    if (entry.type === "model-switch") return entry;
+  }
+  return undefined;
 }

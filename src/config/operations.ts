@@ -468,3 +468,45 @@ export function createAndBind(
   const { config: withAdded, added } = addModelConfig(config, input);
   return { config: bindAndRemember(withAdded, dir, added.id), added };
 }
+
+/**
+ * What the browser may know about a key (X-56 Q3, D-87): its last four
+ * characters, and nothing else. A key too short to spare four characters
+ * without giving most of itself away is shown as masked; no key at all is "".
+ */
+export function keyFingerprint(key: string): string {
+  if (key === "") return "";
+  return key.length >= 12 ? key.slice(-4) : "****";
+}
+
+/** One key's worth of configs, as the model picker shows it — the key itself
+ *  never leaves the server; `fingerprint` is all of it that does. */
+export interface ConfigKeyGroup {
+  fingerprint: string;
+  configs: { id: string; name: string; model: string }[];
+}
+
+/**
+ * Every model config **grouped by key** (X-56 Q3), for the per-thread picker.
+ * Groups are formed on the full key server-side, so two keys that happen to
+ * share a last four still land in separate groups. With `currentKey`, that
+ * key's group comes first and is marked — "current" is a fact about the
+ * thread the picker was opened on, which only the caller knows.
+ */
+export function groupConfigsByKey(
+  configs: ModelConfig[],
+  currentKey?: string,
+): (ConfigKeyGroup & { current: boolean })[] {
+  const byKey = new Map<string, ModelConfig[]>();
+  for (const c of configs) {
+    const list = byKey.get(c.openRouterKey);
+    if (list) list.push(c);
+    else byKey.set(c.openRouterKey, [c]);
+  }
+  const groups = [...byKey.entries()].map(([key, list]) => ({
+    fingerprint: keyFingerprint(key),
+    current: currentKey !== undefined && key === currentKey,
+    configs: list.map((c) => ({ id: c.id, name: c.name, model: c.model })),
+  }));
+  return groups.sort((a, b) => Number(b.current) - Number(a.current));
+}

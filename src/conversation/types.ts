@@ -125,7 +125,26 @@ export interface TodoEntry extends BaseEntry {
   by: "agent" | "user";
 }
 
-export type Entry = UserEntry | AssistantEntry | ToolEntry | CompactionEntry | TodoEntry;
+/**
+ * The thread's model changed here (X-56, D-87). The nearest switch above the
+ * leaf governs which config the branch runs under; a branch with none follows
+ * the folder binding exactly as before (D-82a). It names the config by **id**,
+ * resolved live on every request so later edits to that config reach the
+ * thread; the snapshot is only for the transcript marker, and is never used to
+ * substitute for a config that has since been deleted.
+ *
+ * On the wire it carries no message of its own, but it is a boundary: the
+ * assistant `reasoning_details` above it are dropped and the provider pin is
+ * released (D-49), exactly as across a compaction — model B must never be
+ * handed model A's signed thinking.
+ */
+export interface ModelSwitchEntry extends BaseEntry {
+  type: "model-switch";
+  configId: string;
+  snapshot: { name: string; model: string };
+}
+
+export type Entry = UserEntry | AssistantEntry | ToolEntry | CompactionEntry | TodoEntry | ModelSwitchEntry;
 
 export interface Conversation {
   id: string;

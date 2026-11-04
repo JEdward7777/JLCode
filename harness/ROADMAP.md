@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Next build: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), next P9b.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,32 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-04 (Phase 9 running as the ratchet — P9a ✅, next P9b).** Joshua asked
+> for Phase 9 **P9a…P9f run as the ratchet** ([`pipelines/ratchet.md`](pipelines/ratchet.md)):
+> coordinator never implements, a fresh implementer per slice, a new reviewer every round until
+> `VERDICT: CLEAN`, bookkeeping, commit by explicit path, push. **Stop before P9g** (paid tier — ask
+> Joshua which level). No second-model gate on this plan. Baseline before P9a: **982** green.
+> **Next free ids after P9a: D-91, X-57, H-12.**
+>
+> **P9a — the switch entry, headless — shipped (D-90).** Eleven review rounds. R1–3 kept finding one
+> class — the session's in-memory config out of step with the branch being acted on (a cross-key
+> pick landing unacknowledged after a rewind; Retry sending one model's signed reasoning to
+> another) — and R3 turned it into a documented invariant in `Session` with helpers. R4–R10 were
+> stop/resume/settle edges next to each fix: a `turnGen` generation so a stale settle tail can't
+> clobber a newer turn (also closes the old title-ask settle race), hard Stop of a suspended turn
+> doing its own end-of-turn work, resumes marking `running` once their card is consumed. A
+> round-8 throw guard (`settleAfterThrow`) caused two regressions and was **reverted on a second
+> opinion** — the throw hazards are filed as **H-11**, the Stop-from-card dangling call as **H-10**.
+> Build + free tiers green (**1023**, +41 in `test/model-switch.test.ts`). Headless — no UI, no
+> peek, README unchanged (the picker that makes this drivable is P9b).
+>
+> **Resume checklist if interrupted:** P9a committed + pushed → start **P9b** (picker in the
+> browser, Tier-0 + peek; fresh implementer; peek port pairs from 7811/9411 upward, one fresh pair
+> per agent), then P9c, P9d, P9e, P9f in order, each its own commit. P9b consumes P9a's state fields
+> (`configId`, `configName`, `model`, `pendingModelSwitch`, `modelMissing`), the
+> `model-switch-pending` event, `GET /configs`, `POST /session/:id/model` (409 `cross-key` with both
+> fingerprints; 409 `model-config-missing` with `missingView`).
 
 > **Resume block — 2026-10-20 (X-56 designed and phased — next build is Phase 9).** Joshua wants
 > (a) a per-thread **model picker in the browser** that overrides the CLI binding, and (b)
@@ -2052,7 +2078,7 @@ and the human-only budget reset ship in the same slice as `spawn_agent`, because
 to `npx` and an unbraked tree must never be the runnable build. Until 9e, children appear **flat** in
 the rail as ordinary sessions — usable, just not nested.
 
-### P9a — The switch entry, headless (Tier-0)
+### P9a — The switch entry, headless (Tier-0) ✅ *(2026-11-04, D-90 — eleven review rounds)*
 
 - New conversation entry kind **`model-switch`** `{ configId, snapshot: { name, model } }` in
   `src/conversation/types.ts`; fold rule: the nearest switch above the leaf governs.
@@ -2152,6 +2178,32 @@ child question routed to its parent, a cross-model switch mid-thread and back vi
 the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-11 — a resume that throws after marking itself `running` strands the session.** Found
+  2026-11-04 by the P9a review loop (rounds 8–10); **OPEN, nothing built.**
+  - **Symptom.** A throw from `tool.execute` inside `approve()`, or from `compact()` internals
+    inside `resolveCompaction()`, leaves `status: "running"` with no loop behind it; Stop waits for
+    a loop that doesn't exist and send refuses "busy" — stuck until restart. Unreachable with today's
+    tools (native tools return `err(...)`, MCP `call` and `compact` catch their own errors). Related,
+    new with P9a on **switched** threads: `syncGoverningConfig` → `lookupConfig` → `loadConfig` throws
+    on a malformed `config.json` inside `runLoop` (same stuck `running`), and `stateOf` →
+    `modelMissing` → `loadConfig` throws (so `GET /session/:id/state` 500s while the file is bad).
+    `Session.emit` does not isolate listener throws, which is the practical trigger for the
+    concurrency half below.
+  - **Why it isn't a one-liner.** P9a round 8 tried a `settleAfterThrow` (idle + release pin on any
+    throw) and round 9 showed it (a) idled a *newer* concurrent turn — two loops alive — and (b) left
+    an approved tool's call unanswered with status idle, so the next send dropped it and sent
+    unanswered `tool_calls` (D-84's rejected shape). Reverted. A real fix needs the settle inside
+    `advance()` behind a `turnGen` check, `doExecute` turning a thrown `tool.execute` into an
+    `isError` tool result, and `loadConfig` failures in the resolve path mapped to a typed refusal.
+
+- **H-10 — a Stop from a question or approval card leaves the card's tool call unanswered.** Found
+  2026-11-04 by the P9a review loop (round 6); pre-existing, unchanged by P9a; **OPEN.** Soft or
+  hard Stop while `awaiting-input`/`awaiting-approval` settles `idle` with the `tool_use` still on
+  the branch and no result; the next `send` clears `pendingToolCalls` and appends a user message
+  under it — the dropped-call shape D-79 forbids, and the unanswered-`tool_calls` request D-84 found
+  every backend rejecting. Fix shape: a Stop answers each outstanding call with an error tool result
+  ("stopped by the user") before settling.
 
 - **H-09 — the config id the CLI prints is not one the CLI accepts.** Found 2026-11-01 by an agent
   registering a folder on Joshua's behalf; **OPEN, nothing built.**

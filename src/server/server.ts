@@ -21,6 +21,9 @@ import type { Conversation, Entry } from "../conversation/types.js";
 import { base64Bytes, classifyFile } from "../tools/media.js";
 import { textMimeFor } from "../tools/file-url.js";
 import type { ConversationStore } from "../persist/conversation-store.js";
+import { governingSwitch } from "../conversation/tree.js";
+import { groupConfigsByKey, keyFingerprint } from "../config/operations.js";
+import { ModelConfigMissingError } from "../session/types.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
 import type { Session } from "../session/session.js";
@@ -39,6 +42,10 @@ export interface ServerDeps {
    *  exists. Omitted in tests that don't exercise the switch; without it a
    *  running thread simply keeps the config it started on. */
   retargetSession?: (session: Session, config: ModelConfig) => boolean;
+  /** Every model config in the live store (X-56, D-87) — what the per-thread
+   *  picker lists, grouped by key. **Never serialized as-is**: the routes that
+   *  use it send fingerprints, not keys. Omitted → no picker routes. */
+  listConfigs?: () => ModelConfig[];
   /** Persistence for conversations (resume + history). */
   store: ConversationStore;
   /** Optional verbose per-turn debug journal (D-15). */
@@ -175,6 +182,10 @@ function entryView(entry: Entry, convId?: string): Record<string, unknown> {
       // The transcript marks *that* the list changed and who changed it (X-31);
       // the list itself is a panel, not a message, and ships on the state frame.
       return { ...base, type: "todo", by: entry.by };
+    case "model-switch":
+      // The transcript marker's whole content (X-56, P9b): the snapshot, so a
+      // switch to a config deleted since still says what it switched *to*.
+      return { ...base, type: "model-switch", configId: entry.configId, snapshot: entry.snapshot };
   }
 }
 
@@ -210,6 +221,12 @@ function parseLearned(raw: unknown): LearnAnswers | undefined {
   return out.writes === undefined && out.fields === undefined ? undefined : out;
 }
 
+/** A deleted-config refusal as the browser sees it — the typed error's `code`
+ *  is what P9b keys the inline picker off, not the message text. */
+function missingView(err: ModelConfigMissingError | undefined): Record<string, unknown> | null {
+  return err ? { code: err.code, configId: err.configId, snapshot: err.snapshot, message: err.message } : null;
+}
+
 /** Build the response describing the session's current settled state. */
 function stateOf(session: Session): Record<string, unknown> {
   const entries = session.conversation.entries;
@@ -241,6 +258,14 @@ function stateOf(session: Session): Record<string, unknown> {
     contextTokens: session.contextTokens,
     retryable: session.retryable, // the last turn failed and can be re-sent as-is (D-57)
     reply: lastAssistant && lastAssistant.type === "assistant" ? lastAssistant.text : "",
+    // Per-thread model (X-56, D-87): what this thread runs under, a switch
+    // picked while busy, and — when its switch names a deleted config — the
+    // refusal its next send will hit, so the picker can open before then.
+    configId: session.config.id,
+    configName: session.config.name,
+    model: session.config.model,
+    pendingModelSwitch: session.pendingModelSwitch ?? null,
+    modelMissing: missingView(session.modelMissing),
   };
   // `approval` is the policy (above); the pending request rides separately so the
   // two don't collide.
@@ -271,11 +296,36 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
    * for itself — it is stated in both places because one of them is the reason
    * the feature is safe.
    */
-  const adoptLatestConfig = (session: Session): void => {
-    if (!deps.retargetSession || session.status !== "idle") return;
+  const adoptLatestConfig = (session: Session, leaf: string | null = session.conversation.activeLeaf): void => {
+    // `atIdlePoint`, not `status === "idle"`: a cap-blocked turn reads idle
+    // with its branch still pinned, and resumes on a raise (D-33).
+    if (!deps.retargetSession || !session.atIdlePoint) return;
+    // A branch with a model-switch entry is the thread's own choice, and the
+    // binding never moves it again (D-87) — `leaf` is the branch about to be
+    // sent on, which an edit-fork names before it has moved the pointer.
+    if (governingSwitch(session.conversation, leaf)) return;
     const latest = deps.resolveConfig();
     if (!latest) return; // nothing selected now → keep running under what we have
     deps.retargetSession(session, latest);
+  };
+
+  /**
+   * The OpenRouter key a branch runs under (X-56 Q3) — what a cross-key switch
+   * is measured *from*. Computed for the branch the switch would land on, never
+   * from `session.config`, which is only the config of the last turn **run** and
+   * can belong to a sibling branch the reader has since left.
+   *
+   * Switched branch → its config's key, read live. Switched to a config since
+   * deleted → undefined: whatever key the session last held for it may predate
+   * a rotation, and "always confirm" is never wrong. No switch → the binding's
+   * key. Undefined is treated by every caller as "a different key": a
+   * confirmation nobody needed beats a key change nobody confirmed.
+   */
+  const branchKey = (session: Session, leaf: string | null = session.conversation.activeLeaf): string | undefined => {
+    const sw = governingSwitch(session.conversation, leaf);
+    if (!sw) return deps.resolveConfig()?.openRouterKey;
+    const live = deps.listConfigs?.().find((m) => m.id === sw.configId);
+    return live?.openRouterKey;
   };
 
   // Outward-bind auth (D-40): guard every route + expose /auth/login. Installed
@@ -419,6 +469,62 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       maxTokens: config.sampling?.maxTokens ?? null,
       hasKey: Boolean(config.openRouterKey),
     });
+  });
+
+  // Every model config, grouped by key, for the per-thread picker (X-56 Q3,
+  // D-87). **Fingerprints, names and models only — never key bytes**: the full
+  // key stays on this side, and grouping is done here on it so the browser has
+  // no reason to want it. `?session=` marks (and leads with) that thread's group.
+  app.get("/configs", (c) => {
+    if (!deps.listConfigs) return c.json({ error: "config listing not supported" }, 404);
+    const sessionId = c.req.query("session");
+    const session = sessionId ? manager.get(sessionId) : undefined;
+    if (sessionId && !session) return c.json({ error: "no such session" }, 404);
+    return c.json({ groups: groupConfigsByKey(deps.listConfigs(), session ? branchKey(session) : undefined) });
+  });
+
+  // Switch a thread's model (X-56, D-87): `{configId, acknowledgeKeyChange?}`.
+  // A config under a **different key** is refused unless the request says the
+  // person confirmed it — every time, no "don't ask again" (Q3); the refusal
+  // names both fingerprints so the confirm can. Busy → recorded pending and
+  // written at the next idle point (Q4).
+  app.post("/session/:id/model", async (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!deps.listConfigs) return c.json({ error: "model switching not supported" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { configId?: unknown; acknowledgeKeyChange?: unknown };
+    if (typeof body.configId !== "string") return c.json({ error: "body must include 'configId'" }, 400);
+    const target = deps.listConfigs().find((m) => m.id === body.configId);
+    if (!target) return c.json({ error: `no such model config: ${body.configId}` }, 404);
+    const fromKey = branchKey(session);
+    const acknowledged = body.acknowledgeKeyChange === true;
+    if (target.openRouterKey !== fromKey && !acknowledged) {
+      return c.json(
+        {
+          error: "that model config uses a different OpenRouter key; confirm the key change to switch",
+          code: "cross-key",
+          from: fromKey === undefined ? null : keyFingerprint(fromKey),
+          to: keyFingerprint(target.openRouterKey),
+        },
+        409,
+      );
+    }
+    let result: "applied" | "pending";
+    try {
+      // A pick made while busy lands later, on whatever branch is then in view:
+      // it is only written there if that branch's key is still the one this
+      // request was checked against — or is already the target's own.
+      result = await session.switchModel(target.id, {
+        accepts: (leaf) => {
+          const landing = branchKey(session, leaf);
+          return landing === target.openRouterKey || (acknowledged && landing === fromKey);
+        },
+      });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 409);
+    }
+    await flushDurable();
+    return c.json({ ...stateOf(session), switch: result });
   });
 
   app.get("/sessions", (c) =>
@@ -565,7 +671,10 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     }
     if (mode === undefined && approval === undefined) return c.json({ error: "nothing to change" }, 400);
     session.setModeApproval(mode, approval);
-    deps.persistDefaults?.(session.config.name, { mode, approval });
+    // Written to the config governing the branch in view (D-87) — skipped when
+    // that config is gone, rather than landing in an unrelated one.
+    const modeTarget = session.inViewConfig;
+    if (modeTarget) deps.persistDefaults?.(modeTarget.name, { mode, approval });
     return c.json(stateOf(session));
   });
 
@@ -595,7 +704,8 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const mode = body.mode as CompactionTrigger;
     if (!TRIGGER_MODES.includes(mode)) return c.json({ error: `invalid trigger mode: ${String(body.mode)}` }, 400);
     session.setTriggerMode(mode);
-    deps.persistDefaults?.(session.config.name, { triggerMode: mode });
+    const triggerTarget = session.inViewConfig; // the in-view branch's config, as above
+    if (triggerTarget) deps.persistDefaults?.(triggerTarget.name, { triggerMode: mode });
     return c.json(stateOf(session));
   });
 
@@ -610,7 +720,12 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (session.status === "awaiting-compaction") {
       await session.resolveCompaction(skip);
     } else {
-      await session.compactNow();
+      try {
+        await session.compactNow();
+      } catch (err) {
+        if (err instanceof ModelConfigMissingError) return c.json({ error: err.message, ...missingView(err) }, 409);
+        throw err;
+      }
     }
     await flushDurable();
     return c.json(stateOf(session));
@@ -661,9 +776,13 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   app.post("/session/:id/retry", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    // No `adoptLatestConfig` here: a retry resumes a cycle, so a re-bound folder
+    // must not reach it (D-82a). `retry()` itself replaces a config that belongs
+    // to another branch (D-87) — the one case where keeping it would be wrong.
     try {
       await session.retry();
     } catch (err) {
+      if (err instanceof ModelConfigMissingError) return c.json({ error: err.message, ...missingView(err) }, 409);
       return c.json({ error: (err as Error).message }, 409);
     }
     return c.json(stateOf(session));
@@ -754,6 +873,11 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }
+    // Idle, the branch in view is the one the next turn runs on, so the session
+    // reports — and holds — that branch's model (D-87): the binding when it has
+    // no switch, its own switch's config when it does. Mid-turn (or cap-blocked,
+    // with a turn still pinned) nothing moves.
+    session.resyncModel();
     await flushDurable();
     return c.json(stateOf(session));
   });
@@ -766,9 +890,15 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (typeof body.entryId !== "string" || typeof body.text !== "string") {
       return c.json({ error: "body must include 'entryId' and 'text'" }, 400);
     }
+    // An edit opens a user turn too (D-82a), on the edited entry's parent — and
+    // an edit above a thread's first switch is how it goes back to following
+    // the binding (D-87), so the adoption is checked against *that* branch.
+    const edited = session.conversation.entries.find((e) => e.id === body.entryId);
+    if (edited) adoptLatestConfig(session, edited.parent);
     try {
       await session.editFork(body.entryId, body.text);
     } catch (err) {
+      if (err instanceof ModelConfigMissingError) return c.json({ error: err.message, ...missingView(err) }, 409);
       return c.json({ error: (err as Error).message }, 400);
     }
     await flushDurable();
@@ -822,6 +952,10 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     // the leaf is safe under a running turn now (H-05 pins the turn to its own
     // branch), but *sending* is not — `send()` would refuse below, and a refused
     // send must not leave the pointer moved. So check before touching it.
+    // **One deliberate exception (D-87):** a branch whose model config was
+    // deleted is refused by `send()` *after* this move, and the pointer stays on
+    // it. That is the right place: the refusal opens the picker, and the pick is
+    // written on `activeLeaf` — the branch the person asked to continue.
     if (typeof body.leaf === "string" && body.leaf !== session.conversation.activeLeaf) {
       if (!materialized && session.status !== "idle") {
         return c.json({ error: "session is busy; queue the message instead" }, 409);
@@ -841,6 +975,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       await session.send(body.text);
       await flushDurable(); // read-your-writes: entries durable before we respond
     } catch (err) {
+      if (err instanceof ModelConfigMissingError) return c.json({ error: err.message, ...missingView(err) }, 409);
       return c.json({ error: (err as Error).message }, 409);
     }
     return c.json(stateOf(session));

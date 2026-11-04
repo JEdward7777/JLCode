@@ -10,7 +10,7 @@
  * cannot, by construction.
  */
 import { loadConfig, saveConfig } from "../config/store.js";
-import { commandWatchdogMinutes, toolRoundBudget, projectInstructionsEnabled } from "../config/operations.js";
+import { commandWatchdogMinutes, toolRoundBudget, projectInstructionsEnabled, resolveForCwd } from "../config/operations.js";
 import { readWorkspaceInstructions, renderProjectInstructions } from "../workspace/instructions.js";
 import type { ModelConfig } from "../config/types.js";
 import type { JlcodePaths } from "../paths.js";
@@ -33,6 +33,9 @@ export interface SessionFactoryDeps {
   mcpTools: () => Tool[];
   /** Resolved model catalog — supplies the context window (D-44c). */
   catalog: ModelCatalog;
+  /** What a branch with no model switch runs under — the folder binding, or
+   *  `serve --config`'s pin (D-82a/D-87). Defaults to the binding for `cwd`. */
+  resolveBinding?: () => ModelConfig | undefined;
 }
 
 export interface WindowResolution {
@@ -113,20 +116,23 @@ function deriveFromConfig(deps: SessionFactoryDeps, config: ModelConfig) {
  * addendum does change, because that is part of the config being adopted.
  */
 export function createSessionRetarget(deps: SessionFactoryDeps) {
-  return (session: Session, config: ModelConfig): boolean => {
-    const d = deriveFromConfig(deps, config);
-    const retarget: SessionRetarget = {
-      config,
-      driver: deps.makeDriver(config),
-      tools: d.tools,
-      watchdogMs: d.watchdogMinutes * 60_000,
-      maxToolIterations: d.toolRounds,
-      contextWindow: d.windows.window,
-      contextWindowSource: d.windows.source,
-      compactorWindow: d.windows.compactorWindow,
-      acceptsImages: d.acceptsImages,
-    };
-    return session.adoptConfig(retarget);
+  return (session: Session, config: ModelConfig): boolean => session.adoptConfig(retargetFor(deps, config));
+}
+
+/** The pre-derived parts for one config — what both the binding switch (D-82a)
+ *  and a thread's own `model-switch` entry (D-87) hand the session. */
+function retargetFor(deps: SessionFactoryDeps, config: ModelConfig): SessionRetarget {
+  const d = deriveFromConfig(deps, config);
+  return {
+    config,
+    driver: deps.makeDriver(config),
+    tools: d.tools,
+    watchdogMs: d.watchdogMinutes * 60_000,
+    maxToolIterations: d.toolRounds,
+    contextWindow: d.windows.window,
+    contextWindowSource: d.windows.source,
+    compactorWindow: d.windows.compactorWindow,
+    acceptsImages: d.acceptsImages,
   };
 }
 
@@ -182,6 +188,12 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
       // the bridged MCP tools, which are built once per instance and so cannot
       // be told at construction (P8e).
       acceptsImages,
+      // Per-thread model switching (X-56, D-87): a switched branch resolves its
+      // config by id against the **live** store on every request, so an edit to
+      // that config reaches the thread and a deleted one refuses to send.
+      lookupConfig: (id) => loadConfig(deps.paths).modelConfigs.find((c) => c.id === id),
+      deriveRetarget: (next) => retargetFor(deps, next),
+      bindingConfig: deps.resolveBinding ?? (() => resolveForCwd(loadConfig(deps.paths), deps.cwd)),
       onAddRoot: (dir) => {
         const current = loadConfig(deps.paths);
         const existing = current.folderRoots?.[deps.cwd] ?? [];

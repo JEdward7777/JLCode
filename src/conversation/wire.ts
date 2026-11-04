@@ -212,6 +212,16 @@ export function buildWireMessages(conv: Conversation, options: WireOptions = {})
         messages = [{ role: "user", content: span ? withEnvironmentDetails(summary, [span]) : summary }];
         break;
       }
+      case "model-switch":
+        // A model boundary (D-87): the incoming model keeps the text and the tool
+        // calls above, never the outgoing model's signed reasoning — the same
+        // rule a compaction applies (D-28/D-38), without summarizing anything.
+        messages = messages.map((m) => {
+          if (m.role !== "assistant" || m.reasoning_details === undefined) return m;
+          const { reasoning_details: _dropped, ...rest } = m;
+          return rest;
+        });
+        break;
       case "user":
         flush();
         messages.push({
@@ -250,13 +260,15 @@ export function buildWireMessages(conv: Conversation, options: WireOptions = {})
  * walks the same path and honors the same `replayCut` reset as the wire build
  * above. That gives two properties for free — old logs (no `provider` recorded)
  * simply don't pin, and compaction releases the pin, since the summary drops
- * `reasoning_details` and leaves no signature to protect.
+ * `reasoning_details` and leaves no signature to protect. A model switch (D-87)
+ * releases it the same way, and for the same reason: the wire drops the
+ * reasoning above it, and a new model has no business on the old one's backend.
  */
 export function pinnedProvider(conv: Conversation, leafId?: string | null): string | undefined {
   const path = pathToLeaf(conv, leafId ?? conv.activeLeaf);
   let pin: string | undefined;
   for (const entry of path) {
-    if (entry.type === "compaction") pin = undefined; // everything above is gone
+    if (entry.type === "compaction" || entry.type === "model-switch") pin = undefined; // nothing above is replayed signed
     else if (entry.type === "assistant" && pin === undefined) pin = entry.provider;
   }
   return pin;

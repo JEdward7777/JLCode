@@ -16,9 +16,9 @@ import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult,
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
-import { newConversation, appendEntry, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
+import { newConversation, appendEntry, governingSwitch, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
 import { buildWireMessages, endsWithUnansweredToolCall, pinnedProvider } from "../conversation/wire.js";
-import type { Attachment, Conversation, Entry, SharedFile } from "../conversation/types.js";
+import type { Attachment, Conversation, Entry, ModelSwitchEntry, SharedFile } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolGate, ToolPreview } from "../tools/types.js";
@@ -57,7 +57,7 @@ import {
 } from "./compaction.js";
 import { buildTitleInstruction, driftedEnough, sanitizeTitle, TITLE_MAX_TOKENS, type TitleMark } from "./title.js";
 import type { CompactionTrigger } from "../config/types.js";
-import type { QueuedMessage } from "./types.js";
+import { ModelConfigMissingError, type PendingModelSwitch, type QueuedMessage } from "./types.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -170,6 +170,22 @@ export interface SessionOptions {
    *  tools that cannot be told at construction — the bridged MCP ones, which are
    *  built once for the whole instance. */
   acceptsImages?: boolean;
+  /** Look a model config up by id in the **live** config store (X-56, D-87).
+   *  A thread governed by a `model-switch` entry resolves its config through
+   *  this on every request, so later edits to that config (effort, provider, a
+   *  rotated key) reach it; `undefined` means the config was deleted, and the
+   *  thread refuses to send. Absent → this session cannot switch models. */
+  lookupConfig?: (id: string) => ModelConfig | undefined;
+  /** Derive everything a config switch replaces — the same derivation the
+   *  factory built this session with (D-82b), so a per-thread switch cannot
+   *  leave the window or the tool descriptions behind (H-06). Required with
+   *  `lookupConfig`. */
+  deriveRetarget?: (config: ModelConfig) => SessionRetarget;
+  /** What the folder binding (or `serve --config` pin) resolves to **now** —
+   *  the config a branch with no switch runs under (D-82a). Read at the top of
+   *  every user turn the session opens for itself (a drained queue, a retry off
+   *  a switched branch), so a branch never inherits a sibling branch's switch. */
+  bindingConfig?: () => ModelConfig | undefined;
 }
 
 /** Default watchdog interval — 30 minutes (D-34), stated once in the config
@@ -440,11 +456,36 @@ export class Session {
    *  the turn keeps building where it began, instead of re-parenting its reply
    *  onto whatever branch the user wandered to. */
   private turnLeaf: string | null | undefined;
+  /** Which turn owns `turnLeaf` (and the settle work after it). Bumped wherever
+   *  a turn **opens** — `send`, `retry` — and captured by the `advance` /
+   *  `runLoop` that runs it. Status reads `idle` while a finished turn awaits
+   *  its settle-time title ask, so a new turn can open in that window; the old
+   *  turn's tail must then do nothing — not release the new turn's pin, not
+   *  resync, not land a pick, not drain — or it strands a suspended turn's tool
+   *  call on whatever branch the reader moved to (H-05). */
+  private turnGen = 0;
   /** The todo entry the agent has seen (X-31) — the read barrier's whole state.
    *  `undefined` is "never read", which is distinct from `null` ("read it, and
    *  it was empty"), so the very first write on a fresh branch is refused until
    *  the agent has looked. */
   private todoSeen: string | null | undefined;
+  /** Live config lookup + retarget derivation for per-thread switching (D-87). */
+  private readonly lookupConfig: ((id: string) => ModelConfig | undefined) | undefined;
+  private readonly deriveRetarget: ((config: ModelConfig) => SessionRetarget) | undefined;
+  private readonly bindingConfig: (() => ModelConfig | undefined) | undefined;
+  /** Whether `config` came from a `model-switch` entry rather than the binding —
+   *  what tells a retry on a branch with no switch that the config it holds
+   *  belongs to some other branch (D-87). */
+  private configFromSwitch = false;
+  /** A switch picked while busy (X-56 Q4): in memory only, written at the next
+   *  idle point, replaced by a second pick. Never persisted — a pick that a
+   *  restart loses was never applied, so nothing on disk disagrees with it. */
+  private pendingSwitch: PendingModelSwitch | undefined;
+  /** The pending pick's landing check: does the branch it would be written on
+   *  at the idle point still carry the key the pick was confirmed against? The
+   *  reader may have moved to another branch while the turn ran, and a pick that
+   *  needed no confirmation there might need one here (Q3). */
+  private pendingAccepts: ((leaf: string | null) => boolean) | undefined;
 
   constructor(options: SessionOptions) {
     if (options.tools && !options.sandbox) throw new Error("A tool registry requires a sandbox");
@@ -508,6 +549,9 @@ export class Session {
     this.triggerMode = activeTriggerMode(options.config.compaction);
     this.watchdogMs = options.watchdogMs ?? WATCHDOG_MS;
     this.tasks = options.tasks ?? new TaskRegistry();
+    this.lookupConfig = options.lookupConfig;
+    this.deriveRetarget = options.deriveRetarget;
+    this.bindingConfig = options.bindingConfig;
     // Forward task lifecycle to subscribers (UI list) and arm/disarm the
     // per-task watchdog (D-34).
     this.tasks.onEvent((e) => {
@@ -521,6 +565,11 @@ export class Session {
       (sum, e) => (e.type === "assistant" ? sum + computeCost(e.usage, this.pricing) : sum),
       0,
     );
+    // A resumed thread whose branch was switched (D-87) reports — and runs
+    // under — its own model from the start, not the binding's it was built
+    // with. A deleted config is left for `send` to refuse, where the refusal
+    // has somewhere to go; `modelMissing` already says so to anyone asking.
+    if (this.governingSwitch && !this.modelMissing) this.syncGoverningConfig(false);
   }
 
   /** The full system prompt: the once-composed prefix plus this config's
@@ -558,8 +607,20 @@ export class Session {
    * state unaided. No compact-on-switch, no per-thread refusal.
    */
   adoptConfig(next: SessionRetarget): boolean {
-    if (this.status !== "idle") return false;
+    // `atIdlePoint`, not just `idle`: a spend-cap block reads idle while its
+    // turn is pinned and resumes on a raise — retargeting it would hand the
+    // resumed turn another model mid-cycle.
+    if (!this.atIdlePoint) return false;
     if (next.config.id === this.config.id && next.config.updatedAt === this.config.updatedAt) return false;
+    this.applyRetarget(next);
+    this.configFromSwitch = false;
+    return true;
+  }
+
+  /** Install a pre-derived config — the one body behind both the binding switch
+   *  (`adoptConfig`, D-82a) and the per-thread one (`syncGoverningConfig`, D-87).
+   *  Callers own the "is this a safe moment" question; this only assigns. */
+  private applyRetarget(next: SessionRetarget): void {
     const from = { name: this.config.name, model: this.config.model };
     this.config = next.config;
     this.driver = next.driver;
@@ -569,7 +630,9 @@ export class Session {
     this.pricing = next.config.pricing;
     this.watchdogMs = next.watchdogMs;
     this.maxToolIterations = next.maxToolIterations;
-    this.iterationBudget = next.maxToolIterations;
+    // Mid-turn (a per-request re-resolve, D-87) the turn keeps the budget it is
+    // spending, Continue-doublings included (D-79); a new one starts at `send`.
+    if (this.turnLeaf === undefined) this.iterationBudget = next.maxToolIterations;
     this.contextWindow = next.contextWindow ?? next.config.compaction?.contextLength;
     this.contextWindowSource =
       next.contextWindow !== undefined
@@ -589,7 +652,226 @@ export class Session {
       model: next.config.model,
       from,
     });
-    return true;
+  }
+
+  // ---- Per-thread model switching (X-56, D-87).
+
+  /** The `model-switch` entry governing the branch in play, if any. */
+  get governingSwitch(): ModelSwitchEntry | undefined {
+    return governingSwitch(this.conversation, this.workingLeaf);
+  }
+
+  /** The refusal this thread would hit on its next send: its governing switch
+   *  names a config that no longer exists (X-56 Q2). The browser reads this to
+   *  open the picker before anyone types into a composer that cannot send. */
+  get modelMissing(): ModelConfigMissingError | undefined {
+    const sw = this.governingSwitch;
+    if (!sw || !this.lookupConfig) return undefined;
+    return this.lookupConfig(sw.configId) ? undefined : new ModelConfigMissingError(sw.configId, sw.snapshot);
+  }
+
+  /** The config governing the branch **in view**, for writes that name a
+   *  config (the mode/trigger defaults): its switch's config, live, when it has
+   *  one; otherwise the binding's — the held config when that is the binding's,
+   *  else the binding read fresh (the held one may be a sibling's mid-turn).
+   *  Undefined when the switch's config is gone: there is nothing to write to,
+   *  and naming the held config would edit a file the person never looked at. */
+  get inViewConfig(): ModelConfig | undefined {
+    const sw = governingSwitch(this.conversation, this.conversation.activeLeaf);
+    if (sw) return this.lookupConfig?.(sw.configId);
+    return this.configFromSwitch ? this.bindingConfig?.() : this.config;
+  }
+
+  /** A switch picked while busy, waiting for the next idle point. */
+  get pendingModelSwitch(): PendingModelSwitch | undefined {
+    return this.pendingSwitch;
+  }
+
+  /** Idle in the sense a switch needs: no turn in flight *or suspended*. A
+   *  spend-cap block reads `idle` but resumes the same turn on a raise, with its
+   *  branch pin still held, so a switch there waits like any other busy state. */
+  get atIdlePoint(): boolean {
+    return this.status === "idle" && !this.capReached && this.turnLeaf === undefined;
+  }
+
+  /**
+   * Switch this thread to another model config (X-56, D-87).
+   *
+   * Idle → a `model-switch` entry is written on the branch in view and the
+   * session adopts the config at once. Busy (running, or paused for an approval,
+   * a question, a compaction decision or the round budget) → held **pending**
+   * and written at the next idle point; a second pick replaces the first. The
+   * cross-key acknowledgement is the server's to demand — it is a question about
+   * what the person was shown, not about the session — so a pending pick carries
+   * the server's `accepts` check, re-asked of the branch it actually lands on.
+   *
+   * Applied at once, the switch is an idle point like any other, so a message
+   * held in the queue (a thread whose model was gone) is sent now.
+   */
+  async switchModel(
+    configId: string,
+    opts: { accepts?: (leaf: string | null) => boolean } = {},
+  ): Promise<"applied" | "pending"> {
+    if (!this.lookupConfig || !this.deriveRetarget) throw new Error("This session cannot switch models.");
+    const config = this.lookupConfig(configId);
+    if (!config) throw new Error(`No such model config: ${configId}`);
+    if (this.atIdlePoint) {
+      this.clearPendingSwitch();
+      // Only a queue that was *held* for the missing model goes now. Anything
+      // else waiting — X-31's parked todo notices — waits for a turn the
+      // person opens; a model pick is not a reason to spend a call.
+      const held = this.heldForMissingModel;
+      this.writeSwitch(config);
+      if (held) await this.drainQueue();
+      return "applied";
+    }
+    this.pendingSwitch = { configId: config.id, name: config.name, model: config.model };
+    this.pendingAccepts = opts.accepts;
+    this.emit({ type: "model-switch-pending", pending: this.pendingSwitch });
+    return "pending";
+  }
+
+  private clearPendingSwitch(): void {
+    if (!this.pendingSwitch) return;
+    this.pendingSwitch = undefined;
+    this.pendingAccepts = undefined;
+    this.emit({ type: "model-switch-pending", pending: null });
+  }
+
+  /** Is the queue being held because this branch's model is gone (D-87)? */
+  private get heldForMissingModel(): boolean {
+    return this.queue.length > 0 && this.modelMissing !== undefined;
+  }
+
+  /** Write the pending switch, if there is one and this is an idle point;
+   *  true when an entry was written **and it released a queue held for the
+   *  missing model** — the caller's cue to drain. Dropped with an error instead — never
+   *  written — when its config was deleted since the pick (the entry would only
+   *  make the thread refuse to send), or when the branch it would land on no
+   *  longer carries the key the pick was confirmed against. */
+  private applyPendingSwitch(): boolean {
+    const pending = this.pendingSwitch;
+    if (!pending || !this.atIdlePoint) return false;
+    const accepts = this.pendingAccepts;
+    this.clearPendingSwitch();
+    const config = this.lookupConfig?.(pending.configId);
+    const label = `"${pending.name}" (${pending.model})`;
+    if (!config) {
+      this.emit({ type: "error", message: `The model picked while busy, ${label}, no longer exists; the switch was not applied.` });
+      return false;
+    }
+    if (accepts && !accepts(this.conversation.activeLeaf)) {
+      this.emit({
+        type: "error",
+        message: `The model picked while busy, ${label}, was not applied: the branch in view now uses a different OpenRouter key. Pick it again to confirm.`,
+      });
+      return false;
+    }
+    const held = this.heldForMissingModel;
+    this.writeSwitch(config);
+    return held;
+  }
+
+  /*
+   * THE CONFIG INVARIANT (X-56, D-87). Every path that calls the model resolves
+   * its config from the branch it will act on, and an idle session always holds
+   * the in-view branch's config. Concretely:
+   *   - a turn pins its branch and resolves at its top (`send`: full resolve,
+   *     binding included; `retry`: `alignToBranch`), then re-resolves before
+   *     every request (`runLoop`, mid-turn rules);
+   *   - when a turn's pin is released at an idle point, and when the reader
+   *     moves while idle, the session re-aligns to the branch in view
+   *     (`resyncModel`);
+   *   - out-of-turn calls with no pin (`compactNow`, the watchdog ask) align
+   *     for themselves, and refuse a branch whose config is gone.
+   * "Align" replaces only a config that belongs to **another** branch: a config
+   * that is this branch's own is kept, so a re-bound folder still reaches an
+   * unswitched thread only at a user-turn top (D-82a), never mid-cycle.
+   */
+
+  /** Does the config held now belong to the branch in play? A switched branch
+   *  owns its switch's config id; an unswitched one owns any binding config —
+   *  the binding is re-read only at a user-turn top (D-82a). */
+  private configBelongsToBranch(): boolean {
+    const sw = this.governingSwitch;
+    return sw ? sw.configId === this.config.id : !this.configFromSwitch;
+  }
+
+  /** Replace a config that belongs to another branch (see the invariant).
+   *  Throws {@link ModelConfigMissingError} for a switch to a deleted config. */
+  private alignToBranch(): void {
+    if (!this.configBelongsToBranch()) this.syncGoverningConfig(false);
+  }
+
+  /** The in-view half of the invariant: at an idle point, hold the branch in
+   *  view's config — after a rewind, and whenever a turn releases its pin. A
+   *  deleted config is left for `modelMissing` to report and `send` to refuse. */
+  resyncModel(): void {
+    if (!this.atIdlePoint) return;
+    try {
+      this.alignToBranch();
+    } catch (err) {
+      if (!(err instanceof ModelConfigMissingError)) throw err;
+    }
+  }
+
+  /** Out-of-turn model calls (compaction on demand, the watchdog): with no turn
+   *  pinned they act on the branch in view, so align to it — and refuse, typed,
+   *  when its config is gone. Mid-turn they act on the turn's branch, whose
+   *  config the loop already resolves per request. */
+  private alignOutOfTurn(): void {
+    if (this.turnLeaf !== undefined) return;
+    const missing = this.modelMissing;
+    if (missing) throw missing;
+    this.alignToBranch();
+  }
+
+  private writeSwitch(config: ModelConfig): void {
+    this.pushEntry({ type: "model-switch", configId: config.id, snapshot: { name: config.name, model: config.model } });
+    this.syncGoverningConfig(false);
+  }
+
+  /**
+   * Bring `this.config` in line with the branch's governing switch, resolving
+   * its id against the live store (D-87) — called at the top of every turn and
+   * before every model request. No switch → the folder binding governs: at a
+   * clean boundary (`midTurn` false) the live `bindingConfig()` is adopted
+   * here; mid-turn nothing changes, since a re-bind must not reach a cycle in
+   * progress (D-82a).
+   *
+   * Throws {@link ModelConfigMissingError} when the switch names a deleted
+   * config — never a silent substitute.
+   *
+   * `midTurn`: an edit to the governing config is picked up per request, but a
+   * change of its **model** waits for the turn boundary. Mid-cycle the window
+   * still holds the outgoing model's signed reasoning with no switch entry to
+   * drop it at, which is exactly the hand-over D-82a refuses to make.
+   */
+  private syncGoverningConfig(midTurn: boolean): void {
+    if (!this.deriveRetarget) return;
+    const sw = this.governingSwitch;
+    if (!sw) {
+      // No switch: the binding governs, adopted only at a clean boundary —
+      // never per request, which is D-82a's mid-cycle hand-over.
+      if (midTurn || !this.bindingConfig) return;
+      const binding = this.bindingConfig();
+      if (!binding) return; // nothing selected now → keep running under what we have
+      if (binding.id !== this.config.id || binding.updatedAt !== this.config.updatedAt) {
+        this.applyRetarget(this.deriveRetarget(binding));
+      }
+      this.configFromSwitch = false;
+      return;
+    }
+    if (!this.lookupConfig) return;
+    const config = this.lookupConfig(sw.configId);
+    if (!config) throw new ModelConfigMissingError(sw.configId, sw.snapshot);
+    if (config.id === this.config.id && config.updatedAt === this.config.updatedAt) {
+      this.configFromSwitch = true;
+      return;
+    }
+    if (midTurn && config.model !== this.config.model) return;
+    this.applyRetarget(this.deriveRetarget(config));
+    this.configFromSwitch = true;
   }
 
   /** Set / raise / clear the spend cap (D-33). Raising above current spend after
@@ -813,13 +1095,17 @@ export class Session {
     const pending = this.pendingCompaction;
     if (!pending) throw new Error("No pending compaction");
     this.pendingCompaction = undefined;
+    // Running from here, as in `approve`: a Stop during the summary call takes
+    // the running path, and `advance` below settles the stop with the pin.
+    this.status = "running";
     if (skip && pending.cancelable) {
       this.needsCompaction = false; // proceed uncompacted this turn (accepted overshoot)
     } else {
       const ok = await this.compact();
-      if (this.stopScope) return this.settleStopped();
       if (!ok) this.needsCompaction = false;
     }
+    // A stop that landed during the compaction is honored by the loop's first
+    // check, and `advance`'s tail releases the pin — no model call is made.
     await this.advance();
   }
 
@@ -868,6 +1154,7 @@ export class Session {
    *  can't race a live turn). compact() clears needsCompaction on success. */
   async compactNow(): Promise<boolean> {
     if (this.status !== "idle") return false;
+    this.alignOutOfTurn(); // the config invariant: summarize with this branch's model
     return this.compact();
   }
 
@@ -908,7 +1195,25 @@ export class Session {
       this.emit({ type: "queue", queue: [] });
     }
     this.emit({ type: "stopped", scope });
-    if (this.status !== "running") this.settleStopped();
+    if (this.status !== "running") {
+      this.settleStopped();
+      // A hard stop of a turn that was *suspended* — a card, the round budget,
+      // or parked on the spend cap — ends it here, and no `advance` tail will
+      // ever run for it. So do that tail's work now: release its pin (and the
+      // cap park, or a later raise would resume a turn the person stopped),
+      // bump the generation so a settle tail still awaiting its title ask
+      // (status idle, pin held) doesn't redo this work after us, and treat
+      // this as the idle point it is — the in-view branch's config, then any
+      // pick made while it was busy. The hard stop has already emptied the
+      // queue, so there is nothing held to drain.
+      if (scope === "hard") {
+        this.turnLeaf = undefined;
+        this.capReached = false;
+        this.turnGen++;
+        this.resyncModel();
+        this.applyPendingSwitch();
+      }
+    }
     // else: the running advance() loop notices stopScope and settles at a safe point.
   }
 
@@ -1025,6 +1330,9 @@ export class Session {
    *  elapsed time and output, decide kill/keep. Counts toward whole-tree spend
    *  (D-33) but never touches the conversation tree. */
   private async askWatchdogKill(taskId: string, command: string): Promise<boolean> {
+    // The config invariant: idle, this asks about the branch in view; a gone
+    // config throws, which the caller treats as "keep it, ask again later".
+    this.alignOutOfTurn();
     const elapsedMin = Math.round(this.tasks.elapsedMs(taskId) / 60000);
     const output = this.tasks.output(taskId);
     const tail = output.length > 4000 ? "…" + output.slice(-4000) : output;
@@ -1115,6 +1423,12 @@ export class Session {
     // Refuse *before* touching the pointer (H-05): `send()` rejects a busy
     // session, and a rejected edit used to leave the leaf moved anyway.
     this.assertCanSend();
+    // …and the same for a branch whose model is gone (D-87): `send()` would
+    // refuse it after the pointer had moved.
+    const sw = governingSwitch(this.conversation, entry.parent);
+    if (sw && this.lookupConfig && !this.lookupConfig(sw.configId)) {
+      throw new ModelConfigMissingError(sw.configId, sw.snapshot);
+    }
     // Point at the edited entry's parent so send() appends a sibling. Routed
     // through setActiveLeaf so the move is announced and persisted like any
     // other — a silent mutation is what made the reply look lost.
@@ -1296,12 +1610,33 @@ export class Session {
   /** Send a user message and run until the session settles or needs the user. */
   async send(text: string): Promise<void> {
     this.assertCanSend();
+    // A send always opens a **new** turn on the reader's branch. A pin still
+    // held here belongs to a turn that is not coming back as such — one parked
+    // on the spend cap, or settling through its title ask — and resolving the
+    // config against it would run this branch on that one's model. Released
+    // only for as long as the resolve below takes, though: a **refused** send
+    // opens no turn, so it must leave a parked turn exactly as it found it —
+    // pin and all — or the cap raise that resumes it runs unpinned on
+    // whatever the reader is looking at.
+    const parked = this.turnLeaf;
+    this.turnLeaf = undefined;
+    try {
+      // A user turn is an idle point (X-56 Q4): a switch picked while busy lands
+      // first, and the branch's model is resolved live before anything is
+      // appended — a deleted config refuses here, leaving no unanswered message.
+      this.applyPendingSwitch();
+      this.syncGoverningConfig(false);
+    } catch (err) {
+      this.turnLeaf = parked;
+      throw err;
+    }
     this.stopScope = null; // a fresh message clears any prior stop flag
     this.retryable = false; // ...and supersedes any failed turn waiting on a Retry
     // Pin the turn to the branch in view (H-05) before the first append, so
     // everything this turn produces chains off here no matter where the reader
     // navigates while it runs.
     this.turnLeaf = this.conversation.activeLeaf;
+    this.turnGen++; // this turn now owns the pin and its settle
     // A fresh message is a fresh turn, so the tool-round budget starts over
     // (D-79) — and it starts over *here only*: approval, ask_user and compaction
     // all resume the same turn and must keep spending the same budget.
@@ -1371,6 +1706,14 @@ export class Session {
           }
         }
       }
+      // The approved tool is about to run: from here this is a running turn. A
+      // Stop must see it as running — the loop then settles it with its pin,
+      // rather than the stop ending a "suspended" turn that is in fact live (and
+      // landing its tool result elsewhere). Set here, not when the card is
+      // consumed: nothing above awaits, so no Stop can land earlier, and a throw
+      // above (a failing `onAddRoot`) leaves the card's status, which a hard
+      // Stop recovers. Deny and refuse paths reach running through `advance()`.
+      this.status = "running";
       await this.doExecute(pending.call, pending.tool, runArgs, edited);
       this.sandbox?.clearOnce();
     } else {
@@ -1437,20 +1780,31 @@ export class Session {
    *  `setSpendCap` — all continue the *same* turn, so the pin has to outlive
    *  them; anything else has ended the turn. */
   private async advance(): Promise<void> {
+    const gen = this.turnGen;
     try {
       await this.runLoop();
     } finally {
+      // A newer turn opened while this one ran its tail: the pin, the status
+      // and the settle are that turn's now (see `turnGen`).
+      const stale = gen !== this.turnGen;
       const suspended =
         this.status === "awaiting-approval" ||
         this.status === "awaiting-input" ||
         this.status === "awaiting-compaction" ||
         this.status === "awaiting-continue" ||
         this.capReached;
-      if (!suspended) this.turnLeaf = undefined;
+      if (!suspended && !stale) {
+        this.turnLeaf = undefined;
+        this.resyncModel(); // the reader may have moved while the turn ran
+        // The turn is over — the other idle point a pending switch waits for —
+        // and a queue held for a missing model can go once one is written.
+        if (this.applyPendingSwitch()) await this.drainQueue();
+      }
     }
   }
 
   private async runLoop(): Promise<void> {
+    const gen = this.turnGen;
     this.status = "running";
     if (this.pendingToolCalls.length === 0) this.flushPendingUser();
     // Unbounded by construction (D-79). What used to end the turn here was a
@@ -1521,6 +1875,20 @@ export class Session {
         // suggest / manual: proceed uncompacted — compaction is UI-driven out-of-band.
       }
 
+      // Resolve the branch's model live before the next request (D-87). A config
+      // deleted mid-turn ends the turn here, with the reason, rather than
+      // sending under a substitute.
+      try {
+        this.syncGoverningConfig(true);
+      } catch (err) {
+        if (!(err instanceof ModelConfigMissingError)) throw err;
+        // Nothing was sent, so after a pick the same prefix can simply go (D-57).
+        this.retryable = true;
+        this.emit({ type: "error", message: err.message, retryable: true });
+        this.status = "idle";
+        return;
+      }
+
       // Name the thread as soon as there is something to name (X-09), rather
       // than only when the run settles: an autonomous run's *first* settle can
       // be 190 messages in, and the ask is billed against whatever the prefix is
@@ -1556,6 +1924,15 @@ export class Session {
     this.stopScope = null; // settled normally; a soft stop on the last turn is spent
     this.status = "idle";
     await this.maybeAutoTitle();
+    // Status read `idle` through that await, so a new turn may have opened in
+    // it; if so, everything below is that turn's to do (see `turnGen`).
+    if (gen !== this.turnGen) return;
+    // The turn is over: release its branch pin here rather than in `advance`,
+    // so the queued turn below starts from a true idle point — a switch picked
+    // while busy lands *before* it, not after it (X-56 Q4).
+    this.turnLeaf = undefined;
+    this.resyncModel(); // the reader may have moved while the turn ran
+    this.applyPendingSwitch();
     await this.drainQueue();
   }
 
@@ -1717,6 +2094,9 @@ export class Session {
    *  first LLM call, so the whole backlog lands together. */
   private async drainQueue(): Promise<void> {
     if (this.status !== "idle" || this.stopScope || this.capReached) return;
+    // A thread whose model is gone keeps its queue rather than drop the head
+    // into a send that refuses it (D-87); picking a model is what unblocks it.
+    if (this.modelMissing) return;
     const next = this.queue.shift();
     if (!next) return;
     this.emit({ type: "queue", queue: [...this.queue] });
@@ -1897,10 +2277,28 @@ export class Session {
       throw new Error(`Cannot retry while ${this.status}.`);
     }
     if (!this.retryable) throw new Error("Nothing to retry — the last turn did not fail.");
+    // The retried branch may not be the one that failed — the reader can
+    // rewind after a failure — so a config that belongs to **another** branch
+    // is replaced first (D-87): a retry must never replay one model's signed
+    // reasoning to another. A config that does belong here is kept exactly as
+    // before this slice: a retry resumes a cycle, and handing it a re-bound
+    // model there is D-82a's forbidden mid-cycle switch. Pinned first, so a
+    // re-resolve keeps the turn's round budget (D-79). A branch whose config is
+    // gone refuses here, typed, so the picker opens; the turn stays retryable.
+    const missing = this.modelMissing;
+    if (missing) throw missing;
+    const prior = this.turnLeaf;
+    this.turnLeaf = this.conversation.activeLeaf;
+    try {
+      this.alignToBranch();
+    } catch (err) {
+      this.turnLeaf = prior; // a refused retry opens no turn
+      throw err;
+    }
+    this.turnGen++; // the retried turn owns the pin from here
     this.retryable = false;
     this.consecutiveFailures = 0;
     this.stopScope = null;
-    this.turnLeaf = this.conversation.activeLeaf;
     await this.advance();
   }
 

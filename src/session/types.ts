@@ -258,6 +258,10 @@ export type SessionEvent =
   // `Session.adoptConfig`. `from` is what it was, because "you are on Sonnet
   // now" is only half the sentence a person needs when they did not expect it.
   | { type: "config"; configName: string; model: string; from: { name: string; model: string } }
+  // A model switch picked while the session was busy (X-56, D-87): held in
+  // memory and written at the next idle point; a second pick replaces it.
+  // `null` clears it — written, or superseded by nothing.
+  | { type: "model-switch-pending"; pending: PendingModelSwitch | null }
   | { type: "title"; title: string; source: "auto" | "manual" } // the thread got a name (X-09)
   | { type: "spend"; totalUsd: number; turnUsd: number; usage?: Usage } // whole-tree spend (D-33)
   // How full the context is, for the meter (X-24). Emitted per LLM round trip of
@@ -323,3 +327,30 @@ export type SessionEvent =
   | { type: "halted"; reason: string; retryable?: boolean };
 
 export type SessionListener = (event: SessionEvent) => void;
+
+/** A model switch waiting for the session to go idle (X-56, D-87). */
+export interface PendingModelSwitch {
+  configId: string;
+  name: string;
+  model: string;
+}
+
+/**
+ * This branch is governed by a model switch whose config no longer exists
+ * (X-56 Q2, D-87). The thread **refuses to send** rather than substitute
+ * anything — the snapshot is what the picker shows as "the model that is gone".
+ * A typed error, with a stable `code`, so the browser can turn it into the
+ * inline picker instead of a toast (P9b).
+ */
+export class ModelConfigMissingError extends Error {
+  readonly code = "model-config-missing";
+  constructor(
+    readonly configId: string,
+    readonly snapshot: { name: string; model: string },
+  ) {
+    super(
+      `This thread's model config "${snapshot.name}" (${snapshot.model}) no longer exists — pick another model for the thread.`,
+    );
+    this.name = "ModelConfigMissingError";
+  }
+}
