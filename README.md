@@ -264,6 +264,21 @@ And a running `serve` picks the change up **at your next message** — no restar
 and nothing to tell the server. (A server started with `--config <name>` is
 pinned and says so on its banner.)
 
+**Switching one thread from the browser.** `config model` moves the whole
+folder. To move just the thread in front of you, click the **model chip** in the
+thread's header. It lists every config, grouped by key and showing only each
+key's last four characters. Your thread's own key comes first.
+- **A model on the same key** switches with one click.
+- **A model on a different key** first asks, inline and every time, naming both
+  keys.
+- **While the thread is busy**, the pick shows as pending on the chip and takes
+  effect when the current turn ends.
+
+From then on that thread (and anything forked below the switch) keeps its model,
+whatever the folder's binding later says. The transcript marks the point:
+*switched to Sol (openai/gpt-5.6-sol)*. If a thread's config is later deleted,
+the composer locks and the picker opens in place, so you can choose another.
+
 ### Pinning a model to one endpoint
 
 OpenRouter can serve one model from several endpoints (a model card might offer

@@ -26,7 +26,7 @@ export interface AttachmentView {
 export interface EntryView {
   id: string;
   parent: string | null;
-  type: "user" | "assistant" | "tool" | "compaction" | "todo";
+  type: "user" | "assistant" | "tool" | "compaction" | "todo" | "model-switch";
   text?: string;
   reasoningText?: string;
   toolCalls?: { id?: string; name: string; arguments: string }[];
@@ -39,6 +39,8 @@ export interface EntryView {
   attachments?: AttachmentView[]; // tool → images, by reference (P8e)
   summary?: string; // compaction
   by?: "agent" | "user"; // todo — who changed the list at this point (X-31)
+  configId?: string; // model-switch — the config it names, resolved live (X-56, D-87)
+  snapshot?: { name: string; model: string }; // model-switch — what it was at switch time
 }
 
 /** The tree snapshot from GET /session/:id — entries + the viewed leaf. */
@@ -299,6 +301,45 @@ export interface SessionState {
   contextWindowSource?: "config" | "catalog" | "fallback" | null;
   persistenceFault?: PersistenceFault; // a write failed; session stopped on it (D-46)
   retryable?: boolean; // the last turn failed and can be re-sent as-is (D-57)
+  // Per-thread model (X-56, D-87). `configId`/`configName`/`model` are what the
+  // session holds; a pick made while busy waits in `pendingModelSwitch`; and
+  // `modelMissing` is the refusal the branch's next send will hit because its
+  // switch names a deleted config — the cue for the inline picker.
+  configId?: string;
+  configName?: string;
+  model?: string;
+  pendingModelSwitch?: PendingModelSwitch | null;
+  modelMissing?: ModelMissing | null;
+  /** The config governing the branch **in view** — what the picker marks
+   *  current. Mid-turn `configId` is the running turn's, which may belong to a
+   *  sibling the reader left (H-05). Null when that config was deleted. */
+  inViewConfigId?: string | null;
+}
+
+/** A model switch picked while the session was busy, written at the next idle
+ *  point (X-56 Q4). A second pick replaces it. */
+export interface PendingModelSwitch {
+  configId: string;
+  name: string;
+  model: string;
+}
+
+/** The thread's switch names a config that no longer exists (X-56 Q2): it
+ *  refuses to send rather than substitute. `snapshot` is what it *was*. */
+export interface ModelMissing {
+  code: "model-config-missing";
+  configId: string;
+  snapshot: { name: string; model: string };
+  message: string;
+}
+
+/** One key's worth of model configs, as the picker lists them (X-56 Q3). The
+ *  key never reaches the browser — `fingerprint` (its last four) is all of it
+ *  that does; `current` marks the group of the thread the list was asked for. */
+export interface ConfigGroup {
+  fingerprint: string;
+  current: boolean;
+  configs: { id: string; name: string; model: string }[];
 }
 
 /** A session event as it arrives over SSE (subset the UI acts on; see session/types.ts). */
@@ -437,6 +478,31 @@ export function openEvents(id: string, onEvent: (e: WireEvent) => void): EventSo
   return es;
 }
 
+/** A refused request, with the body it was refused with. The message is the
+ *  server's `error` line, so callers that only ever showed `.message` see what
+ *  they always did; `body` is for the refusals a caller acts on by `code` — a
+ *  cross-key switch (the confirm needs both fingerprints) and a deleted model
+ *  config (the inline picker), X-56. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** The deleted-config refusal a send/retry/edit/compact came back with, if
+ *  that is what this error is (X-56, D-87) — keyed off `code`, never the text. */
+export function modelMissingOf(err: unknown): ModelMissing | null {
+  if (!(err instanceof ApiError) || err.body.code !== "model-config-missing") return null;
+  const b = err.body as Partial<ModelMissing> & { error?: string };
+  if (typeof b.configId !== "string" || !b.snapshot) return null;
+  return { code: "model-config-missing", configId: b.configId, snapshot: b.snapshot, message: b.message ?? b.error ?? err.message };
+}
+
 async function postJson(url: string, body: unknown): Promise<any> {
   const res = await fetch(url, {
     method: "POST",
@@ -445,7 +511,7 @@ async function postJson(url: string, body: unknown): Promise<any> {
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `request failed (${res.status})`);
+    throw new ApiError(err.error ?? `request failed (${res.status})`, res.status, err);
   }
   return res.json().catch(() => ({}));
 }
@@ -627,9 +693,41 @@ export async function setQueue(id: string, queue: { text: string }[]): Promise<v
   await postJson(`/session/${id}/queue`, { queue });
 }
 
-/** Switch the active branch: point the active leaf at an existing entry (D-10). */
-export async function rewind(id: string, entryId: string): Promise<void> {
-  await postJson(`/session/${id}/rewind`, { entryId });
+/** Switch the active branch: point the active leaf at an existing entry (D-10).
+ *  Answers with the settled state, which now names the branch's model (D-87). */
+export async function rewind(id: string, entryId: string): Promise<SessionState> {
+  return (await postJson(`/session/${id}/rewind`, { entryId })) as SessionState;
+}
+
+/** Every model config, grouped by key, the thread's own group first (X-56 Q3),
+ *  plus the config the branch in view will run next — the picker's one source
+ *  of truth for "current" (the binding read fresh, or the switch's id). */
+export async function fetchConfigs(sessionId: string): Promise<{ groups: ConfigGroup[]; currentConfigId: string | null }> {
+  const res = await fetch(`/configs?session=${encodeURIComponent(sessionId)}`);
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new ApiError(err.error ?? `request failed (${res.status})`, res.status, err);
+  }
+  const body = (await res.json()) as { groups: ConfigGroup[]; currentConfigId?: string | null };
+  return { groups: body.groups, currentConfigId: body.currentConfigId ?? null };
+}
+
+/** Switch the thread's model (X-56, D-87). `applied` = written now; `pending` =
+ *  the session was busy and it lands at the next idle point. A pick under
+ *  another key throws an {@link ApiError} with `code: "cross-key"` and both
+ *  fingerprints unless `acknowledgeKeyChange` says the person confirmed it. */
+export async function switchModel(
+  id: string,
+  configId: string,
+  /** A confirmed key change, carrying the "from" fingerprint the confirm
+   *  showed (null = unknown key). The server refuses it as `cross-key` again if
+   *  the thread's key is no longer that one. */
+  acknowledged?: { expectFrom: string | null },
+): Promise<SessionState & { switch: "applied" | "pending" }> {
+  return await postJson(`/session/${id}/model`, {
+    configId,
+    ...(acknowledged ? { acknowledgeKeyChange: true, expectFrom: acknowledged.expectFrom } : {}),
+  });
 }
 
 /** Pencil-edit a message: fork a sibling with new text and run a turn (D-17). */

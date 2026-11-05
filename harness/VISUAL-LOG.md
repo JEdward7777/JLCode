@@ -1789,3 +1789,54 @@ buffering proxy does. It is not the constant the row implies.
 the descriptor is late (`session.title || session.model || "session"`). That is
 honest — a live session with no name yet — and it self-corrects. Hiding it would
 mean hiding a running session from the rail, which is worse.
+
+## P9b — the per-thread model picker · 2026-11-05 · ✅ looked good (one defect caught by looking; three more by reviewers' peeks)
+
+**Recipe:**
+- `peek up --model anthropic/claude-opus-5:online`.
+- Then four configs added to the peek's temp `config/config.json` while the server ran, under two dummy keys: `…1a2b` holds Opus and Sonnet; `…9f3c` holds Sol and Luna (`openai/gpt-5.6-luna:flex`).
+- `peek chat "hello there"`, then `peek click ".model-chip" ".mp-row@n" [".mp-confirm-actions .danger"]`.
+- **Busy** = a `write:` turn left waiting on approval.
+- **Deleted** = the config removed from config.json while the server ran.
+- **Re-bind** = `folderBindings` edited while the server ran.
+
+**Screenshots** (`harness/visual/`): `p9b-picker-open` · `p9b-same-key` · `p9b-cross-key-confirm` · `p9b-cross-key-applied` · `p9b-cross-key-again` · `p9b-pending-busy` · `p9b-pending-landed` · `p9b-deleted-config` · `p9b-deleted-confirm` · `p9b-deleted-repicked` · `p9b-deleted-promoted` · `p9b-edit-refused` · `p9b-midturn-picker` · `p9b-midturn-cross` · `p9b-midturn-pending` · `p9b-rebind-samekey` · `p9b-rebind-pinned`.
+
+**Confirmed with my own eyes:**
+- **Picker.**
+  - The chip reads `…/claude-opus-5:online ▾`, cut from the front.
+  - The popover lists "key …1a2b — Opus, Sonnet · this thread" first, then "key …9f3c — Sol, Luna".
+  - Full ids are shown, wrapped and never cut. Opus is tagged current. There is no cost or fit line anywhere.
+- **Same key.** One click on Sonnet switches the chip, and "switched to Sonnet (anthropic/claude-sonnet-5)" lands in the transcript.
+- **Cross key.**
+  - Sol opens an inline confirm under its group: "Sol uses a different OpenRouter key (key …9f3c) from this thread's (key …1a2b). Switch keys?" with Switch key / Cancel.
+  - Going back asks again, with the fingerprints reversed.
+  - A hovered row that is waiting on a confirm keeps its red border.
+- **Pending while busy.**
+  - With the approval card up, picking Luna leaves the chip on the running model, with `→ Luna · pending` beside it.
+  - Approving finishes the turn, and then the chip flips and the marker lands after the reply.
+- **Deleted config.**
+  - The chip goes red with ⚠ and the lost model.
+  - A red card under the transcript says the model no longer exists, with the picker open inside it.
+  - The composer won't take focus.
+  - A pick confirms against "This thread's key can't be confirmed…". Confirming clears the card and re-enables the composer.
+  - Opening the thread from history and sending moves the pane to the newly created live session, with the card open and the typed text back in the composer.
+- **Edit refusal on another branch** (`p9b-edit-refused`).
+  - The thread runs: one → switch Sonnet → two → switch Opus → three, and then Sonnet is deleted.
+  - Editing "two" shows a notice ("That edit would continue on Sonnet …, a model config that no longer exists — nothing was sent…").
+  - The branch in view, which runs on Opus, stays unblocked.
+- **Mid-turn, reading another branch** (`p9b-midturn-*`).
+  - The thread is on Peek (`****`), switched to Tide (`…wxyz`); a `write:` turn waits on approval; then I rewound to the unswitched first reply.
+  - The chip still names the running Tide model, but the picker heads "key **** — Peek · this thread" with Peek tagged current.
+  - Tide asks the cross-key confirm. Switch key gives a pending pick.
+- **Same-key folder re-bind** (`p9b-rebind-*`, from the round-5 reviewer's peek).
+  - The binding moved to Sol on the same key while idle.
+  - Reopening the picker tags Sol current.
+  - One click on the held Peek row pins it ("switched to Peek (peek/model)").
+
+**Caught by looking:**
+- **X-46, back in the new chip.** The first deleted-state shot showed `⚠ openai/gpt-5.6-luna:fle…`: the ⚠ plus padding pushed the chip past `.pane-model`'s 320px cap, and CSS cut the tail. Fixed by taking the cap off `button.model-chip`; `fitModelLabel` already keeps the label to 28 characters. Re-shot with the tail intact.
+- **A confirm opened out of sight.** The confirm inside the deleted-config card opened below the visible part of the thread. It now scrolls itself into view once, when it opens.
+- **Defects the reviewers found by peeking, not by reading** (D-91):
+  - A pick silently dropped mid-turn after a rewind (round 2, `r2-midturn`).
+  - The same, after a same-key re-bind (round 4, reproduced with a probe and then seen fixed in round 5's peek).

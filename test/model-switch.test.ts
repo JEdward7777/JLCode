@@ -31,6 +31,7 @@ import { resolvePaths, type JlcodePaths } from "../src/paths";
 import { newConversation, appendEntry, governingSwitch } from "../src/conversation/tree";
 import { buildWireMessages, pinnedProvider } from "../src/conversation/wire";
 import { Session } from "../src/session/session";
+import { isCurrentRow, planPick } from "../web/src/model-picker";
 import type { ChatRequest, LlmDriver, StreamEvent } from "../src/llm/types";
 import type { ModelConfig } from "../src/config/types";
 
@@ -1340,5 +1341,227 @@ describe("review round 10: approve throws before the tool runs", () => {
     const again = await post(app, "/chat", { text: "two", sessionId });
     expect(again.status).toBe(200);
     expect(again.json.status).toBe("idle");
+  });
+});
+
+// ---- P9b: what the browser picker needs from the server (X-56).
+
+describe("P9b — the server half of the picker", () => {
+  it("names the config id on the `config` event, so another tab's picker marks the right row", async () => {
+    const deps = { paths, cwd: workspace, makeDriver: plainDriver, mcpTools: () => [], catalog };
+    const { app, manager } = createServer({
+      resolveConfig: () => resolveForCwd(loadConfig(paths), workspace),
+      newSession: createSessionFactory(deps),
+      retargetSession: createSessionRetarget(deps),
+      listConfigs: () => loadConfig(paths).modelConfigs,
+      store,
+      workingDir: workspace,
+      version: "0.0.0",
+    });
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    const seen: Record<string, unknown>[] = [];
+    manager.get(sessionId)!.onEvent((e) => seen.push(e as unknown as Record<string, unknown>));
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    const config = seen.find((e) => e.type === "config");
+    expect(config).toMatchObject({ configId: seeded.sonnet.id, configName: "sonnet", model: SONNET });
+  });
+
+  it("a deleted-config refusal on /chat names the session, so a promoted history peek can land on it", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const conversationId = first.json.conversationId as string;
+    await post(app, `/session/${first.json.sessionId as string}/model`, { configId: seeded.sonnet.id });
+    const cfg = loadConfig(paths);
+    saveConfig({ ...cfg, modelConfigs: cfg.modelConfigs.filter((m) => m.id !== seeded.sonnet.id) }, paths);
+
+    // A fresh process: the thread exists only on disk, as a history row does.
+    const restarted = makeApp(plainDriver);
+    const refused = await post(restarted, "/chat", { text: "two", conversationId });
+    expect(refused.status).toBe(409);
+    expect(refused.json.code).toBe("model-config-missing");
+    expect(typeof refused.json.sessionId).toBe("string");
+    // …and it is a live session whose state already carries the refusal.
+    const state = (await post(restarted, `/session/${refused.json.sessionId as string}/queue`, { queue: [] })).json;
+    expect(state.modelMissing).toMatchObject({ code: "model-config-missing", snapshot: { name: "sonnet", model: SONNET } });
+  });
+});
+
+describe("P9b round 1 — an edit's refusal is about the branch it forks onto", () => {
+  it("/edit can refuse for a deleted config while the branch in view is healthy — stateOf disagrees, rightly", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    // Switch to sonnet (A), talk, then to opus (B) further down, and talk again.
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    await post(app, "/chat", { text: "two", sessionId });
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.opus.id });
+    await post(app, "/chat", { text: "three", sessionId });
+    // Sonnet is deleted; the leaf sits below the opus switch, so it is healthy.
+    const cfg = loadConfig(paths);
+    saveConfig({ ...cfg, modelConfigs: cfg.modelConfigs.filter((m) => m.id !== seeded.sonnet.id) }, paths);
+
+    // Edit "two" — between the switches: it would fork under the sonnet switch.
+    const tree = JSON.parse((await get(app, `/session/${sessionId}`)).text) as { entries: { id: string; type: string; text?: string }[] };
+    const two = tree.entries.find((e) => e.type === "user" && e.text === "two")!;
+    const refused = await post(app, `/session/${sessionId}/edit`, { entryId: two.id, text: "two, again" });
+    expect(refused.status).toBe(409);
+    expect(refused.json.code).toBe("model-config-missing");
+    expect(refused.json.snapshot).toEqual({ name: "sonnet", model: SONNET });
+
+    // …while the branch in view is not blocked at all, and still sends.
+    const state = JSON.parse((await get(app, `/session/${sessionId}/state`)).text) as Record<string, unknown>;
+    expect(state.modelMissing).toBeNull();
+    const ok = await post(app, "/chat", { text: "four", sessionId });
+    expect(ok.status).toBe(200);
+    expect(calls.at(-1)!.model).toBe(OPUS);
+  });
+});
+
+describe("P9b round 2 — the picker's facts are the branch in view's", () => {
+  beforeEach(() => {
+    failing = new Set();
+    askRounds = 1;
+    duringAnswer = undefined;
+  });
+
+  it("mid-turn, a rewind leaves `configId` on the running turn's config but `inViewConfigId` on the branch in view", async () => {
+    const app = makeApp(scriptDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    const a1 = (await treeOf(app, sessionId)).entries.find((e) => e.type === "assistant")!;
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.haiku.id, acknowledgeKeyChange: true });
+    const busy = await post(app, "/chat", { text: "ask: two", sessionId });
+    expect(busy.json.status).toBe("awaiting-input");
+    expect(busy.json.inViewConfigId).toBe(seeded.haiku.id);
+
+    const rewound = await post(app, `/session/${sessionId}/rewind`, { entryId: a1.id });
+    expect(rewound.json.configId).toBe(seeded.haiku.id); // the paused turn's
+    expect(rewound.json.inViewConfigId).toBe(seeded.opus.id); // the reader's branch: the binding
+    // …and the picker's groups agree with the in-view id, not with `configId`.
+    const groups = JSON.parse((await get(app, `/configs?session=${sessionId}`)).text).groups as {
+      fingerprint: string;
+      current: boolean;
+      configs: { id: string }[];
+    }[];
+    const current = groups.find((g) => g.current)!;
+    expect(current.configs.map((c) => c.id)).toContain(seeded.opus.id);
+    expect(current.configs.map((c) => c.id)).not.toContain(seeded.haiku.id);
+    // So picking haiku from here is a cross-key pick, confirmed — never a no-op.
+    const pick = await post(app, `/session/${sessionId}/model`, { configId: seeded.haiku.id });
+    expect(pick.status).toBe(409);
+    expect(pick.json).toMatchObject({ code: "cross-key", from: "aaaa", to: "bbbb" });
+  });
+
+  it("refuses an acknowledgement whose `expectFrom` is not the thread's key now, with the current fingerprints", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+
+    // The confirm the person saw said "from …bbbb" — the thread has since moved to …aaaa.
+    const stale = await post(app, `/session/${sessionId}/model`, {
+      configId: seeded.haiku.id,
+      acknowledgeKeyChange: true,
+      expectFrom: "bbbb",
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.json).toMatchObject({ code: "cross-key", from: "aaaa", to: "bbbb" });
+    expect(JSON.stringify(stale.json)).not.toContain(KEY_A);
+    // A confirm from the unknown key is stale here too.
+    const unknown = await post(app, `/session/${sessionId}/model`, {
+      configId: seeded.haiku.id,
+      acknowledgeKeyChange: true,
+      expectFrom: null,
+    });
+    expect(unknown.status).toBe(409);
+
+    const fresh = await post(app, `/session/${sessionId}/model`, {
+      configId: seeded.haiku.id,
+      acknowledgeKeyChange: true,
+      expectFrom: "aaaa",
+    });
+    expect(fresh.status).toBe(200);
+    expect(fresh.json.switch).toBe("applied");
+    expect(fresh.json.inViewConfigId).toBe(seeded.haiku.id);
+  });
+
+  it("an acknowledgement from the unknown key of a deleted config is accepted as shown", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    const cfg = loadConfig(paths);
+    saveConfig({ ...cfg, modelConfigs: cfg.modelConfigs.filter((m) => m.id !== seeded.sonnet.id) }, paths);
+
+    const state = JSON.parse((await get(app, `/session/${sessionId}/state`)).text) as Record<string, unknown>;
+    expect(state.inViewConfigId).toBeNull(); // nothing in view to mark current
+    const shownAsKnown = await post(app, `/session/${sessionId}/model`, {
+      configId: seeded.opus.id,
+      acknowledgeKeyChange: true,
+      expectFrom: "aaaa",
+    });
+    expect(shownAsKnown.status).toBe(409);
+    expect(shownAsKnown.json.from).toBeNull();
+    const ok = await post(app, `/session/${sessionId}/model`, {
+      configId: seeded.opus.id,
+      acknowledgeKeyChange: true,
+      expectFrom: null,
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.json.modelMissing).toBeNull();
+  });
+});
+
+describe("P9b round 4 — `/configs` is the picker's one source of truth for current", () => {
+  type Groups = { fingerprint: string; current: boolean; configs: { id: string; name: string; model: string }[] }[];
+  async function configsOf(app: App, sessionId: string) {
+    return JSON.parse((await get(app, `/configs?session=${sessionId}`)).text) as { groups: Groups; currentConfigId: string | null };
+  }
+
+  it("a same-key re-bind: current is the new binding, so the held config is a real (pinning) pick", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    saveConfig(setBinding(loadConfig(paths), workspace, seeded.sonnet.id), paths); // same key A
+
+    const state = JSON.parse((await get(app, `/session/${sessionId}/state`)).text) as Record<string, unknown>;
+    expect(state.inViewConfigId).toBe(seeded.opus.id); // held until the next turn top (D-82a)
+    const r = await configsOf(app, sessionId);
+    expect(r.currentConfigId).toBe(seeded.sonnet.id); // what the next send will run
+    expect(planPick(r.groups, seeded.sonnet.id, r.currentConfigId)).toEqual({ kind: "current" });
+    expect(planPick(r.groups, seeded.opus.id, r.currentConfigId)).toEqual({ kind: "switch", configId: seeded.opus.id });
+
+    // …and that pick really keeps opus: the next send runs it, not the binding.
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.opus.id });
+    await post(app, "/chat", { text: "two", sessionId });
+    expect(calls.at(-1)!.model).toBe(OPUS);
+  });
+
+  it("a cross-key re-bind: the new binding's row is current in the current group", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    saveConfig(setBinding(loadConfig(paths), workspace, seeded.haiku.id), paths); // key B
+
+    const r = await configsOf(app, sessionId);
+    expect(r.currentConfigId).toBe(seeded.haiku.id);
+    const current = r.groups.find((g) => g.current)!;
+    expect(current.fingerprint).toBe("bbbb");
+    expect(isCurrentRow(current, seeded.haiku.id, r.currentConfigId)).toBe(true);
+    expect(planPick(r.groups, seeded.opus.id, r.currentConfigId)).toMatchObject({ kind: "confirm", from: "bbbb", to: "aaaa" });
+  });
+
+  it("a switched branch's current is its switch's id; a deleted one matches no row", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    expect((await configsOf(app, sessionId)).currentConfigId).toBe(seeded.sonnet.id);
+
+    const cfg = loadConfig(paths);
+    saveConfig({ ...cfg, modelConfigs: cfg.modelConfigs.filter((m) => m.id !== seeded.sonnet.id) }, paths);
+    const r = await configsOf(app, sessionId);
+    expect(r.groups.flatMap((g) => g.configs).some((c) => c.id === r.currentConfigId)).toBe(false);
+    expect(r.groups.some((g) => g.current)).toBe(false);
   });
 });

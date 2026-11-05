@@ -648,6 +648,7 @@ export class Session {
     this.needsCompaction = false;
     this.emit({
       type: "config",
+      configId: next.config.id,
       configName: next.config.name,
       model: next.config.model,
       from,

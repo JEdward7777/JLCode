@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), next P9b.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), next P9c.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,24 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-05 (Phase 9 as the ratchet — P9a ✅, P9b ✅, next P9c).** Same run
+> as the 2026-11-04 block below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
+> **Next free ids: D-92, X-58, H-17.**
+>
+> **P9b — the per-thread picker in the browser — shipped (D-91).** Five review rounds, the theme
+> each time being *"current" in the picker disagreeing with what the server would do*: an edit
+> refusal locking the wrong branch (R1); a stale cross-key confirm still clickable (R1, R2 → closed at
+> the server with an `expectFrom` fingerprint check); mid-turn the running turn's config tagged
+> "current" (R2); after a same-key folder re-bind the held config tagged "current" so a click
+> silently did nothing (R4 → "current" now comes only from `GET /configs`'s `currentConfigId`). R3
+> and R5 were CLEAN. Build + free tiers green (**1066**, +43 over P9a). Peeked (VISUAL-LOG "P9b").
+> README gained a "Switching one thread from the browser" paragraph. Left open: **X-57** (cancel a
+> pending pick — Joshua's call) and **H-12…H-16**.
+>
+> **Resume checklist if interrupted:** P9b committed + pushed → start **P9c** (agent core: tree
+> storage, spawn/message, brakes — Tier-0 plus one Tier-1; fresh implementer; peek pairs from
+> 7821/9421 upward), then P9d, P9e, P9f in order, each its own commit. **Stop before P9g.**
 
 > **Resume block — 2026-11-04 (Phase 9 running as the ratchet — P9a ✅, next P9b).** Joshua asked
 > for Phase 9 **P9a…P9f run as the ratchet** ([`pipelines/ratchet.md`](pipelines/ratchet.md)):
@@ -2096,7 +2114,7 @@ the rail as ordinary sessions — usable, just not nested.
   first switch; deleted-config refusal; reasoning dropped + pin reset; cross-key POST refused
   without the acknowledgement; pending applied at idle; no key bytes in the configs response.
 
-### P9b — The picker in the browser (Tier-0 + peek)
+### P9b — The picker in the browser (Tier-0 + peek) ✅ *(2026-11-05, D-91 — five review rounds)*
 
 - A model chip/picker in the thread pane header: groups by key, current group first, heading =
   fingerprint + config names; same-group pick is one click; cross-group → **inline** confirm naming
@@ -2178,6 +2196,43 @@ child question routed to its parent, a cross-model switch mid-thread and back vi
 the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-16 — UI rot seen during P9b, not P9b's own.** Found 2026-11-05 by the P9b implementer and reviewers;
+  **OPEN.** (a) After approving from the card, the rail keeps saying "waiting…" while the session is
+  idle: `status` moves only through a state fold, and none follows the approval. (b) X-46 in the
+  **rail**: an untitled live row reads `anthropic/claud…`, because the rail never got `fitModelLabel`.
+  (c) The disabled Send button looks the same as the enabled one. (d) Any edit refusal closes the edit
+  box and loses the draft (`Message` calls `setEditing(false)` before `onEdit`). (e) The approval card
+  still renders while the reader views a sibling branch mid-turn.
+
+- **H-15 — small P9b leftovers.** Found 2026-11-05 by the P9b review loop; **OPEN.** (a) A message
+  *queued* on a branch whose config was deleted mid-turn is held server-side (`heldForMissingModel`)
+  with nothing in the UI saying why. (b) `roster` / `session-added` frames fold full state without
+  calling `supersedeViewRead`, so a view re-read issued before an SSE reconnect could land after the
+  fresh roster. (c) `ModelPicker` never clears `error` after a later successful `/configs` fetch.
+  (d) `seedsRef` entries leak if the promoted session's descriptor never arrives. (e) In the deleted
+  state the chip's popover and the inline card's picker can both be open, each with its own confirm
+  (harmless, since the server checks each acknowledgement).
+
+- **H-14 — two keys sharing their last four characters look identical.** Found 2026-11-05 (P9b R2);
+  **OPEN.** The fingerprint is P9a's last-four design, so the cross-key confirm can read "key …abcd
+  from key …abcd", and the `expectFrom` stale-confirm check can't tell the two apart. It fails safe
+  in practice (the server still compares the real keys for the cross-key gate), but the wording should
+  say so, or the fingerprint should widen when two keys collide.
+
+- **H-13 — the null-"from" confirm blames a deleted config when the folder was only unbound.**
+  Found 2026-11-05 (P9b R5); **OPEN.** On an idle, unswitched thread whose folder binding is removed,
+  or whose `--config` pin no longer resolves, `branchKey` and `branchConfigId` are undefined. No group is
+  current, yet the next send still runs the held config (`syncGoverningConfig` keeps what it has).
+  A same-key pick then confirms with "its model config is gone". That fails safe (an extra confirm,
+  never a silent key change), but it should either treat the held config as current or word the
+  sentence neutrally.
+
+- **H-12 — nothing pushes a config change to an idle tab.** Found 2026-11-05 (P9b); **OPEN.** A
+  config deleted, a key rotated, or a folder re-bound by the CLI while a tab sits idle reaches that
+  tab only on its next send/retry/edit/compact (a 409; the typed text is restored), on the next
+  picker open (`/configs` is refetched), or on reload. The server's `expectFrom` check keeps a stale
+  confirm from acknowledging a key change the person didn't see; this is about the display.
 
 - **H-11 — a resume that throws after marking itself `running` strands the session.** Found
   2026-11-04 by the P9a review loop (rounds 8–10); **OPEN, nothing built.**

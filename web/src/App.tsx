@@ -6,8 +6,23 @@ import { newAttentionMemory, stepAttention } from "./attention";
 import { createBlipper } from "./blip";
 import { createSpeaker, newAutoReadMemory, plainText, stepAutoRead } from "./tts";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
-import { isAwaiting } from "./session-state";
+import { isAwaiting, needsViewResync } from "./session-state";
 import { fitModelLabel } from "./model-label";
+import {
+  confirmFromRefusal,
+  crossKeyQuestion,
+  groupHeading,
+  isCurrentRow,
+  missingNotice,
+  editRefusalNotice,
+  refusalBlocksView,
+  restoredInput,
+  type MissingRoute,
+  pendingLabel,
+  planPick,
+  switchMarker,
+  type PickPlan,
+} from "./model-picker";
 import { isViewSwitch, newFollow, stepFollow, type FollowEvent, type FollowState } from "./scroll";
 import {
   answer as apiAnswer,
@@ -40,6 +55,11 @@ import {
   loadTree,
   openBus,
   sendChat,
+  fetchConfigs,
+  switchModel as apiSwitchModel,
+  modelMissingOf,
+  ApiError,
+  type ConfigGroup,
   type ApprovalPolicy,
   type ApprovalRequest,
   type ToolPreviewDiff,
@@ -73,6 +93,7 @@ import {
   sliceFromDescriptor,
   applyDescriptor,
   applyState,
+  applyViewState,
   isUnresumable,
   nextFocus,
   type LiveAssistant,
@@ -102,7 +123,11 @@ type SliceAction =
   // Believe the server over our own copy (X-21/D-57) — the settled state,
   // pauses included, after a request we can no longer account for.
   | { t: "state"; id: string; state: SessionState }
-  | { t: "patch"; id: string; patch: Partial<SessionSlice> };
+  // Only the view/model fields of a state re-read (P9b) — see `applyViewState`.
+  | { t: "view-state"; id: string; state: SessionState }
+  | { t: "patch"; id: string; patch: Partial<SessionSlice> }
+  // Hand refused text back to the composer — unless something was typed since.
+  | { t: "restore-input"; id: string; text: string };
 
 /** A read-only look at a persisted conversation (X-12). Deliberately *not* a
  *  slice: a peek has no `Session` behind it, no rail card, and no event stream —
@@ -155,10 +180,20 @@ function slicesReducer(state: SliceMap, action: SliceAction): SliceMap {
       if (!slice) return state;
       return { ...state, [action.id]: applyState(slice, action.state) };
     }
+    case "view-state": {
+      const slice = state[action.id];
+      if (!slice) return state;
+      return { ...state, [action.id]: applyViewState(slice, action.state) };
+    }
     case "patch": {
       const slice = state[action.id];
       if (!slice) return state;
       return { ...state, [action.id]: { ...slice, ...action.patch } };
+    }
+    case "restore-input": {
+      const slice = state[action.id];
+      if (!slice) return state;
+      return { ...state, [action.id]: { ...slice, input: restoredInput(slice.input, action.text) } };
     }
   }
 }
@@ -248,9 +283,39 @@ export function App() {
    * If the reader moved on while waiting, release the hold and leave them where
    * they are rather than yanking the pointer back.
    */
+  /** What to fold into a session's slice the moment its descriptor lands —
+   *  for a peek promotion the server refused because the thread's model config
+   *  was deleted (X-56): the session exists, so the pane goes to it with the
+   *  picker open and the typed text back in its composer. `patch` needs a slice
+   *  to patch, and the descriptor is what makes one. */
+  /** The newest view re-read issued per session (latest wins). */
+  const viewReadSeq = useRef(new Map<string, number>());
+  /** Anything newer than an in-flight view re-read makes it stale: bumping the
+   *  session's number drops that read's answer when it lands. */
+  const supersedeViewRead = useCallback((id: string) => {
+    viewReadSeq.current.set(id, (viewReadSeq.current.get(id) ?? 0) + 1);
+  }, []);
+  /** Fold a whole settled state — and retire any older view re-read, which
+   *  would otherwise land after it and roll a pending pick back. */
+  const foldState = useCallback(
+    (id: string, state: SessionState) => {
+      supersedeViewRead(id);
+      dispatch({ t: "state", id, state });
+    },
+    [supersedeViewRead],
+  );
+  const seedsRef = useRef(new Map<string, { patch: Partial<SessionSlice>; text: string }>());
   const described = useCallback(
     (ids: string[]) => {
-      for (const id of ids) describedRef.current.add(id);
+      for (const id of ids) {
+        describedRef.current.add(id);
+        const seed = seedsRef.current.get(id);
+        if (seed) {
+          seedsRef.current.delete(id);
+          dispatch({ t: "patch", id, patch: seed.patch });
+          dispatch({ t: "restore-input", id, text: seed.text });
+        }
+      }
       const id = promotingRef.current;
       if (!id || !describedRef.current.has(id)) return;
       setPromoting(null);
@@ -289,10 +354,28 @@ export function App() {
           break;
         case "session-event":
           dispatch({ t: "event", id: f.sessionId, event: f.event });
+          // A pending pick set or cleared is newer than any view read in flight.
+          if (f.event.type === "model-switch-pending") supersedeViewRead(f.sessionId);
+          // The branch in view (or what governs it) may have moved: re-read the
+          // settled state for its in-view config id — the picker's cue to refetch
+          // `/configs`, whose answer is what it marks current (P9b).
+          // Only the view/model fields are folded, and only from the newest
+          // re-read per session: a slow answer must not roll `status`, a card
+          // or the queue back past SSE events that have arrived since.
+          if (needsViewResync(f.event)) {
+            const id = f.sessionId;
+            const seq = (viewReadSeq.current.get(id) ?? 0) + 1;
+            viewReadSeq.current.set(id, seq);
+            void apiSessionState(id)
+              .then((state) => {
+                if (viewReadSeq.current.get(id) === seq) dispatch({ t: "view-state", id, state });
+              })
+              .catch(() => {});
+          }
           break;
       }
     },
-    [focus, described],
+    [focus, described, supersedeViewRead],
   );
 
   // One connection for the whole instance (D-43).
@@ -389,6 +472,25 @@ export function App() {
         focus(sessionId, { keepPeek: true });
       }
     } catch (err) {
+      // The thread's model config was deleted (X-56 Q2). The session was made
+      // anyway — the refusal is the send's, after the pointer moved — so go to
+      // it: its pane is where the picker lives, and the text goes back in its
+      // composer to be sent once a model is picked.
+      const missing = modelMissingOf(err);
+      const missingSession = err instanceof ApiError ? err.body.sessionId : undefined;
+      if (missing && typeof missingSession === "string") {
+        const seed = { patch: { modelMissing: missing }, text };
+        if (describedRef.current.has(missingSession)) {
+          dispatch({ t: "patch", id: missingSession, patch: seed.patch });
+          dispatch({ t: "restore-input", id: missingSession, text });
+          focus(missingSession);
+        } else {
+          seedsRef.current.set(missingSession, seed);
+          setPromoting(missingSession);
+          focus(missingSession, { keepPeek: true });
+        }
+        return;
+      }
       const message = (err as Error).message;
       // Pre-H-04 logs replay malformed signed reasoning and the provider refuses
       // the call. Nothing can repair it in place, so say so and offer the door.
@@ -566,6 +668,29 @@ export function App() {
 
   const notify = useCallback((id: string, message: string) => dispatch({ t: "patch", id, patch: { notice: message } }), []);
 
+  /** If `err` is the deleted-model refusal (X-56 Q2), put the thread into its
+   *  "pick one" state — composer off, picker open inline — and say so; `text`
+   *  is a message the refused call took out of the composer, handed back. The
+   *  state frame already carries this when the deletion predates it; this is
+   *  the case where the config went while the page was looking. */
+  const onMissing = useCallback((id: string, route: MissingRoute, err: unknown, text?: string): boolean => {
+    const missing = modelMissingOf(err);
+    if (!missing) return false;
+    if (refusalBlocksView(route)) {
+      dispatch({ t: "patch", id, patch: { modelMissing: missing, working: false } });
+    } else {
+      // An edit is refused for the branch it would fork onto, which need not be
+      // the one in view: say so, and let the server's settled state decide
+      // whether the pane itself is blocked.
+      dispatch({ t: "patch", id, patch: { notice: editRefusalNotice(missing), noticeKind: "error", working: false } });
+      void apiSessionState(id)
+        .then((state) => foldState(id, state))
+        .catch(() => {});
+    }
+    if (text) dispatch({ t: "restore-input", id, text });
+    return true;
+  }, []);
+
   // ---- Per-session actions (operate on the given session id). ----
 
   const setInput = useCallback((id: string, input: string) => {
@@ -586,10 +711,13 @@ export function App() {
         const { sessionId } = await sendChat(id, text, { conversationId });
         if (sessionId !== id) focus(sessionId); // revived under a new id
       } catch (err) {
+        // A deleted model config (X-56 Q2) refuses before anything is written:
+        // open the picker, and give the text back rather than losing it.
+        if (onMissing(id, "send", err, text)) return;
         notify(id, (err as Error).message);
       }
     },
-    [slices, notify, focus],
+    [slices, notify, focus, onMissing],
   );
 
   /** Commit the todo list the user just finished editing (X-31). The server
@@ -652,10 +780,11 @@ export function App() {
       try {
         await apiCompact(id, opts);
       } catch (err) {
+        if (onMissing(id, "compact", err)) return;
         dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
       }
     },
-    [],
+    [onMissing],
   );
 
   // Resume a turn paused on the tool-round budget (D-79). Optimistic: clear the
@@ -770,7 +899,7 @@ export function App() {
    */
   const resync = useCallback(async (id: string) => {
     try {
-      dispatch({ t: "state", id, state: await apiSessionState(id) });
+      foldState(id, await apiSessionState(id));
     } catch {
       // The re-sync itself failed — the connection is properly down, and the SSE
       // bus will deliver a fresh roster when it returns. Leave the notice up.
@@ -786,13 +915,13 @@ export function App() {
       try {
         await apiRetry(id);
       } catch (err) {
-        notify(id, (err as Error).message);
+        if (!onMissing(id, "retry", err)) notify(id, (err as Error).message);
         // We just cleared `retryable` optimistically. If the POST never landed,
         // that clear was a lie and it would take the button away with it.
         await resync(id);
       }
     },
-    [notify, resync],
+    [notify, resync, onMissing],
   );
 
   const killOne = useCallback(
@@ -823,7 +952,10 @@ export function App() {
       const slice = slices[id];
       if (!slice) return;
       try {
-        await apiRewind(id, leafOf(slice.entries, siblingId));
+        // The answer names the branch's model now (D-87) — and whether its
+        // switch points at a config that is gone.
+        const state = await apiRewind(id, leafOf(slice.entries, siblingId));
+        foldState(id, state);
         const t = await loadTree(id);
         dispatch({ t: "tree", id, entries: t.entries, activeLeaf: t.activeLeaf, conversationId: t.conversationId });
       } catch (err) {
@@ -841,10 +973,10 @@ export function App() {
         const t = await loadTree(id);
         dispatch({ t: "tree", id, entries: t.entries, activeLeaf: t.activeLeaf, conversationId: t.conversationId });
       } catch (err) {
-        notify(id, (err as Error).message);
+        if (!onMissing(id, "edit", err)) notify(id, (err as Error).message);
       }
     },
-    [notify],
+    [notify, onMissing],
   );
 
   // Read an assistant reply aloud, or stop if it's already speaking (§11 TTS).
@@ -977,6 +1109,7 @@ export function App() {
           onLoadJournal={loadJournal}
           onOpenDrawer={openDrawer}
           onCloseDrawer={() => setDrawerOpen(false)}
+          onModelState={foldState}
         />
       ) : (
         <div className="pane empty-pane">
@@ -1497,6 +1630,7 @@ function ChatPane({
   onLoadJournal,
   onOpenDrawer,
   onCloseDrawer,
+  onModelState,
 }: {
   slice: SessionSlice;
   journal: JournalRecord[];
@@ -1528,6 +1662,8 @@ function ChatPane({
   onLoadJournal: () => void;
   onOpenDrawer: () => void;
   onCloseDrawer: () => void;
+  /** Fold the settled state a model switch answered with (X-56). */
+  onModelState: (id: string, state: SessionState) => void;
 }) {
   const id = slice.id;
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1564,7 +1700,8 @@ function ChatPane({
       e.type === "user" ||
       e.type === "tool" ||
       (e.type === "assistant" && (e.text || e.reasoningText)) ||
-      (e.type === "todo" && e.by === "user"),
+      (e.type === "todo" && e.by === "user") ||
+      e.type === "model-switch",
   );
   // Arguments live on the calling assistant entry, results on the tool entry;
   // `toolCallId` is the join.
@@ -1665,16 +1802,14 @@ function ChatPane({
     slice.pendingCompaction !== null ||
     // A stalled write stops everything until it is retried or discarded (D-46).
     slice.persistenceFault !== null;
+  // The branch's model config is gone (X-56 Q2): nothing can be sent *or*
+  // queued until a model is picked — a queued message would only be held.
+  const noModel = slice.modelMissing !== null;
 
   return (
     <div className="pane">
       <header className="topbar">
-        {/* Elided from the *front* when it doesn't fit (D-71): the vendor is what
-            you can infer, and `:online` — the part you can't — lives at the end.
-            The `title` always carries the id whole. */}
-        <span className="pane-model" title={slice.model}>
-          {fitModelLabel(slice.model) || "session"}
-        </span>
+        <ModelChip slice={slice} onState={(state) => onModelState(id, state)} />
         <div className="controls">
           <button className="ghost" title="debug journal (D-15)" onClick={onOpenDrawer}>
             journal
@@ -1744,6 +1879,7 @@ function ChatPane({
               </div>
             );
           }
+          if (entry.type === "model-switch") return <SwitchMark key={entry.id} entry={entry} />;
           if (entry.type === "tool") {
             return <ToolBlock key={entry.id} entry={entry} args={entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined} />;
           }
@@ -1802,6 +1938,14 @@ function ChatPane({
           />
         )}
         {slice.capReached && <CapBanner spendUsd={slice.spendUsd} capUsd={slice.capUsd} onRaise={(v) => onChangeCap(id, v)} />}
+        {/* The thread's model config was deleted (X-56 Q2): never a silent
+            substitute — say so, with the picker already open right here. */}
+        {slice.modelMissing && (
+          <div className="notice model-missing">
+            <span>{missingNotice(slice.modelMissing)}</span>
+            <ModelPicker sessionId={id} viewConfigId={null} inline onState={(state) => onModelState(id, state)} />
+          </div>
+        )}
         {/* A request that has gone quiet (D-57). Offered only after real silence,
             and it abandons just the model request — tasks and queue keep going. */}
         {looksHung && (
@@ -1866,8 +2010,11 @@ function ChatPane({
       <footer className="composer">
         <textarea
           value={slice.input}
+          disabled={noModel}
           placeholder={
-            slice.pendingApproval
+            noModel
+              ? "This thread's model no longer exists — pick one above to send."
+              : slice.pendingApproval
               ? "Say something with your decision — it goes in with Approve/Deny…  (Enter queues it for later instead)"
               : slice.pendingAsk
                 ? "Respond to the agent above…"
@@ -1879,6 +2026,7 @@ function ChatPane({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
+              if (noModel) return;
               if (blocked) queueHere();
               else sendHere();
             }
@@ -1886,17 +2034,256 @@ function ChatPane({
           rows={2}
         />
         {blocked ? (
-          <button onClick={queueHere} disabled={!slice.input.trim()}>
+          <button onClick={queueHere} disabled={noModel || !slice.input.trim()}>
             Queue
           </button>
         ) : (
-          <button onClick={sendHere} disabled={!slice.input.trim()}>
+          <button onClick={sendHere} disabled={noModel || !slice.input.trim()}>
             Send
           </button>
         )}
       </footer>
 
       {drawerOpen && <JournalDrawer records={journal} entries={slice.entries} onClose={onCloseDrawer} onRefresh={onLoadJournal} />}
+    </div>
+  );
+}
+
+/** Where a thread changed model (X-56, D-87), read from the entry's snapshot —
+ *  so a switch to a config deleted since still says what it switched to. */
+function SwitchMark({ entry }: { entry: EntryView }) {
+  return (
+    <div className="todo-mark switch-mark" title={entry.configId ? `model config ${entry.configId}` : undefined}>
+      {switchMarker(entry)}
+    </div>
+  );
+}
+
+/**
+ * The thread's model, as a chip that opens the picker (X-56, D-87).
+ *
+ * The label is still elided from the **front** (D-71, X-46): the vendor is what
+ * you can infer, the tail (`:online`) is what you can't, and the `title` carries
+ * the id whole. A pick made while busy is shown beside it as pending rather than
+ * folded into it — the chip keeps naming what is running *now*. A thread whose
+ * config was deleted names the snapshot it lost, marked, since the config the
+ * session last held may be a different branch's.
+ */
+function ModelChip({ slice, onState }: { slice: SessionSlice; onState: (state: SessionState) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const missing = slice.modelMissing;
+  const model = missing ? missing.snapshot.model : slice.model;
+  const name = missing ? missing.snapshot.name : slice.configName;
+  const pending = slice.pendingModelSwitch;
+
+  // Close on a click anywhere else, or Escape — a popover, not a modal.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const title = [
+    name && name !== model ? `${name} — ${model}` : model,
+    missing ? "this config no longer exists" : null,
+    pending ? `switching to ${pending.name} (${pending.model}) once the current turn ends` : null,
+    "click to switch this thread's model",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return (
+    <div className="model-chip-wrap" ref={wrapRef}>
+      <button
+        className={`pane-model model-chip ${missing ? "missing" : ""}`}
+        title={title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {missing && <span className="model-chip-warn">⚠ </span>}
+        {fitModelLabel(model) || "session"}
+        <span className="model-chip-caret"> ▾</span>
+      </button>
+      {pending && (
+        <span className="model-pending" title={title}>
+          {pendingLabel(pending)}
+        </span>
+      )}
+      {open && (
+        <ModelPicker
+          sessionId={slice.id}
+          // A refresh key, not "current": when the branch in view's config
+          // changes (a pick landed, another tab switched or rewound) the list
+          // is refetched and any open confirm dropped. Which row is current is
+          // the server's answer in `/configs` (P9b).
+          viewConfigId={missing ? null : slice.inViewConfigId}
+          pendingConfigId={pending?.configId ?? null}
+          onState={onState}
+          onDone={() => setOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Every model config, grouped by key, this thread's group first (X-56 Q3).
+ *
+ * Heading = key fingerprint + the names under it. A pick under the same key is
+ * one click; under another key it asks **inline**, right under that group,
+ * naming both fingerprints — every time, no "don't ask again". No cost or fit
+ * line (Q4). `inline` is the deleted-config card's copy, which stays open; the
+ * popover closes once a pick lands (applied or pending).
+ */
+function ModelPicker({
+  sessionId,
+  viewConfigId,
+  pendingConfigId = null,
+  inline = false,
+  onState,
+  onDone,
+}: {
+  sessionId: string;
+  /** The slice's in-view config id — only a cue to refetch and drop a
+   *  confirm when it changes. "Current" itself comes from `/configs`. */
+  viewConfigId: string | null;
+  pendingConfigId?: string | null;
+  inline?: boolean;
+  onState: (state: SessionState) => void;
+  onDone?: () => void;
+}) {
+  const [groups, setGroups] = useState<ConfigGroup[] | null>(null);
+  /** The config the branch in view will run next, as `/configs` answered —
+   *  the one source of truth for the "current" row and `planPick`. The slice
+   *  cannot know it: an unswitched thread holds its config until the next turn
+   *  top, and a CLI re-bind emits nothing (D-82a). Null in the deleted state. */
+  const [currentConfigId, setCurrentConfigId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<Extract<PickPlan, { kind: "confirm" }> | null>(null);
+  const [busy, setBusy] = useState(false);
+  // The confirm can open below the fold of the thread (the deleted-config
+  // card sits at the bottom of it). Stable, so it scrolls on mount only — an
+  // inline ref would re-fire on every streamed token's re-render.
+  const revealConfirm = useCallback((el: HTMLDivElement | null) => el?.scrollIntoView({ block: "nearest" }), []);
+
+  // Fetched per open (so a CLI re-bind is seen), again when the in-view
+  // branch's config changes under it, and on demand when a row turned out
+  // stale or the server says the key moved. "Current" — the row tag and
+  // `planPick` — is whatever this fetch says, never the slice's guess.
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setGroups(null);
+    fetchConfigs(sessionId)
+      .then((r) => {
+        if (!live) return;
+        setGroups(r.groups);
+        setCurrentConfigId(r.currentConfigId);
+      })
+      .catch((err) => live && setError((err as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [sessionId, viewConfigId, reload]);
+  // A confirm names the thread's key *as it was when shown*. Once the in-view
+  // branch's config changes under it (a pending pick landed, another tab
+  // switched or rewound), acknowledging it would approve a key change nobody
+  // was shown — so it goes. (The server refuses a stale one too: `expectFrom`.)
+  useEffect(() => {
+    setConfirm(null);
+    setError(null);
+  }, [sessionId, viewConfigId]);
+
+  const send = async (configId: string, name: string, acknowledged?: { expectFrom: string | null }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const state = await apiSwitchModel(sessionId, configId, acknowledged);
+      setConfirm(null);
+      onState(state);
+      onDone?.();
+    } catch (err) {
+      // The server is the authority on keys: a pick we thought same-key that it
+      // calls cross-key gets the confirm, built from *its* fingerprints — and so
+      // does an acknowledgement whose "from" key is no longer the thread's,
+      // which also means the list's "this thread" group is stale.
+      const refusal = err instanceof ApiError ? confirmFromRefusal(err.body, configId, name) : null;
+      if (refusal) {
+        setConfirm(refusal);
+        if (acknowledged) setReload((n) => n + 1);
+      } else setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pick = (c: { id: string; name: string }) => {
+    const plan = planPick(groups ?? [], c.id, currentConfigId);
+    setError(null);
+    if (plan.kind === "current") return onDone?.();
+    if (plan.kind === "confirm") return setConfirm(plan);
+    if (plan.kind === "unknown") {
+      // The row is stale — the config left the list since it was fetched.
+      setReload((n) => n + 1);
+      return setError(`${c.name} is no longer in the config list.`);
+    }
+    setConfirm(null);
+    void send(plan.configId, c.name);
+  };
+
+  return (
+    <div className={`model-picker ${inline ? "inline" : "popover"}`} role="dialog" aria-label="switch this thread's model">
+      {groups === null && !error && <div className="mp-loading">loading configs…</div>}
+      {groups?.length === 0 && <div className="mp-loading">No model configs are defined.</div>}
+      {groups?.map((g) => (
+        <div className={`mp-group ${g.current ? "current" : ""}`} key={g.configs[0]?.id ?? g.fingerprint}>
+          <div className="mp-heading">
+            {groupHeading(g)}
+            {g.current && <span className="mp-this"> · this thread</span>}
+          </div>
+          {g.configs.map((c) => {
+            const isCurrent = isCurrentRow(g, c.id, currentConfigId);
+            return (
+              <button
+                key={c.id}
+                className={`mp-row ${isCurrent ? "on" : ""} ${confirm?.configId === c.id ? "confirming" : ""}`}
+                disabled={busy}
+                onClick={() => pick(c)}
+                title={`${c.name} — ${c.model}`}
+              >
+                <span className="mp-name">{c.name}</span>
+                <span className="mp-model">{c.model}</span>
+                {isCurrent && <span className="mp-tag">current</span>}
+                {!isCurrent && c.id === pendingConfigId && <span className="mp-tag">pending</span>}
+              </button>
+            );
+          })}
+          {confirm && g.configs.some((c) => c.id === confirm.configId) && (
+            <div className="mp-confirm" role="alertdialog" ref={revealConfirm}>
+              <span>{crossKeyQuestion(confirm)}</span>
+              <div className="mp-confirm-actions">
+                <button className="danger" disabled={busy} onClick={() => void send(confirm.configId, confirm.name, { expectFrom: confirm.from })}>
+                  Switch key
+                </button>
+                <button className="ghost" disabled={busy} onClick={() => setConfirm(null)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+      {error && <div className="mp-error">{error}</div>}
     </div>
   );
 }
@@ -1948,7 +2335,11 @@ function PeekPane({
 
   const path = pathToLeaf(entries, peek.leaf);
   const rendered = path.filter(
-    (e) => e.type === "user" || e.type === "tool" || (e.type === "assistant" && (e.text || e.reasoningText)),
+    (e) =>
+      e.type === "user" ||
+      e.type === "tool" ||
+      (e.type === "assistant" && (e.text || e.reasoningText)) ||
+      e.type === "model-switch",
   );
   const argsByCall = new Map<string, string>();
   for (const e of path) {
@@ -1979,6 +2370,7 @@ function PeekPane({
         {!peek.conv && !peek.error && <div className="empty">loading…</div>}
         {peek.conv && rendered.length === 0 && <div className="empty">This thread is empty.</div>}
         {rendered.map((entry) => {
+          if (entry.type === "model-switch") return <SwitchMark key={entry.id} entry={entry} />;
           if (entry.type === "tool") {
             return <ToolBlock key={entry.id} entry={entry} args={entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined} />;
           }

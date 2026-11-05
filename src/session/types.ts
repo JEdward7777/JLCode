@@ -257,7 +257,8 @@ export type SessionEvent =
   // D-82a). Raised at the top of a user turn, never mid-cycle — see
   // `Session.adoptConfig`. `from` is what it was, because "you are on Sonnet
   // now" is only half the sentence a person needs when they did not expect it.
-  | { type: "config"; configName: string; model: string; from: { name: string; model: string } }
+  // `configId` is what the browser's model picker marks as current (X-56, P9b).
+  | { type: "config"; configId: string; configName: string; model: string; from: { name: string; model: string } }
   // A model switch picked while the session was busy (X-56, D-87): held in
   // memory and written at the next idle point; a second pick replaces it.
   // `null` clears it — written, or superseded by nothing.

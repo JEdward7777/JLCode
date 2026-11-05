@@ -266,6 +266,11 @@ function stateOf(session: Session): Record<string, unknown> {
     model: session.config.model,
     pendingModelSwitch: session.pendingModelSwitch ?? null,
     modelMissing: missingView(session.modelMissing),
+    // The config governing the branch **in view** (P9b) — what the picker marks
+    // current. Not `configId`: mid-turn that is the running turn's config, and
+    // the reader may have moved to a sibling (H-05). Null when that branch's
+    // switch names a deleted config.
+    inViewConfigId: session.inViewConfig?.id ?? null,
   };
   // `approval` is the policy (above); the pending request rides separately so the
   // two don't collide.
@@ -326,6 +331,19 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (!sw) return deps.resolveConfig()?.openRouterKey;
     const live = deps.listConfigs?.().find((m) => m.id === sw.configId);
     return live?.openRouterKey;
+  };
+
+  /**
+   * The config id a branch runs under, resolved exactly as {@link branchKey}
+   * resolves its key: the governing switch's id (even a deleted one — then no
+   * row is current), else the folder binding **read fresh**. Not
+   * `session.inViewConfig`, which on an unswitched branch is the *held* config
+   * until the next turn top adopts a re-bind (D-82a) — the picker's "current"
+   * must name what the next send will actually run (P9b).
+   */
+  const branchConfigId = (session: Session, leaf: string | null = session.conversation.activeLeaf): string | undefined => {
+    const sw = governingSwitch(session.conversation, leaf);
+    return sw ? sw.configId : deps.resolveConfig()?.id;
   };
 
   // Outward-bind auth (D-40): guard every route + expose /auth/login. Installed
@@ -480,7 +498,12 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const sessionId = c.req.query("session");
     const session = sessionId ? manager.get(sessionId) : undefined;
     if (sessionId && !session) return c.json({ error: "no such session" }, 404);
-    return c.json({ groups: groupConfigsByKey(deps.listConfigs(), session ? branchKey(session) : undefined) });
+    return c.json({
+      groups: groupConfigsByKey(deps.listConfigs(), session ? branchKey(session) : undefined),
+      // The single source of truth for the picker's "current" row (P9b): fresh
+      // on every open, so a CLI re-bind (which emits nothing) is reflected.
+      currentConfigId: session ? (branchConfigId(session) ?? null) : null,
+    });
   });
 
   // Switch a thread's model (X-56, D-87): `{configId, acknowledgeKeyChange?}`.
@@ -492,18 +515,29 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     if (!deps.listConfigs) return c.json({ error: "model switching not supported" }, 404);
-    const body = (await c.req.json().catch(() => ({}))) as { configId?: unknown; acknowledgeKeyChange?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      configId?: unknown;
+      acknowledgeKeyChange?: unknown;
+      expectFrom?: unknown;
+    };
     if (typeof body.configId !== "string") return c.json({ error: "body must include 'configId'" }, 400);
     const target = deps.listConfigs().find((m) => m.id === body.configId);
     if (!target) return c.json({ error: `no such model config: ${body.configId}` }, 404);
     const fromKey = branchKey(session);
+    const fromPrint = fromKey === undefined ? null : keyFingerprint(fromKey);
     const acknowledged = body.acknowledgeKeyChange === true;
-    if (target.openRouterKey !== fromKey && !acknowledged) {
+    // `expectFrom` is the "from" fingerprint the confirm *showed* (null = the
+    // unknown key of a deleted config). If the branch in view has moved to
+    // another key since — a pending pick landed, another tab rewound — the
+    // acknowledgement is for a key change nobody was shown, so it is refused
+    // like an unconfirmed one and the confirm re-renders from this answer.
+    const stale = acknowledged && "expectFrom" in body && body.expectFrom !== fromPrint;
+    if (target.openRouterKey !== fromKey && (!acknowledged || stale)) {
       return c.json(
         {
           error: "that model config uses a different OpenRouter key; confirm the key change to switch",
           code: "cross-key",
-          from: fromKey === undefined ? null : keyFingerprint(fromKey),
+          from: fromPrint,
           to: keyFingerprint(target.openRouterKey),
         },
         409,
@@ -975,7 +1009,12 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       await session.send(body.text);
       await flushDurable(); // read-your-writes: entries durable before we respond
     } catch (err) {
-      if (err instanceof ModelConfigMissingError) return c.json({ error: err.message, ...missingView(err) }, 409);
+      // `sessionId` rides along because this refusal can come from a session
+      // this very request materialized (a history peek's first message): the
+      // browser has to land on it to open the picker there (X-56, P9b).
+      if (err instanceof ModelConfigMissingError) {
+        return c.json({ error: err.message, ...missingView(err), sessionId: session.id }, 409);
+      }
       return c.json({ error: (err as Error).message }, 409);
     }
     return c.json(stateOf(session));

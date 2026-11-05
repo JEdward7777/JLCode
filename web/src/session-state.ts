@@ -14,6 +14,8 @@ import type {
   PersistenceFault,
   EntryView,
   Mode,
+  ModelMissing,
+  PendingModelSwitch,
   QueuedMessage,
   SessionDescriptor,
   SessionState,
@@ -37,6 +39,20 @@ export interface LiveAssistant {
 export interface SessionSlice {
   id: string;
   model: string;
+  /** The model config the thread runs under (X-56, D-87) — what the picker
+   *  marks as current. Empty until a state frame names it. */
+  configId: string;
+  configName: string;
+  /** A pick made while busy, written at the next idle point (Q4) — the chip
+   *  says so rather than pretending the switch already happened. */
+  pendingModelSwitch: PendingModelSwitch | null;
+  /** The branch's switch names a deleted config, so its next send is refused
+   *  (Q2): the composer is disabled and the picker opens inline. */
+  modelMissing: ModelMissing | null;
+  /** The config governing the branch **in view** (null: unknown, or deleted) —
+   *  what the picker marks current. Not `configId`, which mid-turn is the
+   *  running turn's and may be a sibling branch's (H-05). */
+  inViewConfigId: string | null;
   /** The thread's label (X-09) — auto after the first exchange, or hand-edited.
    *  Null until it has one; the rail falls back to the model name. */
   title: string | null;
@@ -125,6 +141,11 @@ export function newSlice(id: string, model = ""): SessionSlice {
   return {
     id,
     model,
+    configId: "",
+    configName: "",
+    pendingModelSwitch: null,
+    modelMissing: null,
+    inViewConfigId: null,
     title: null,
     status: "idle",
     mode: "code",
@@ -213,6 +234,25 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (typeof state.contextTokens === "number") next.contextTokens = state.contextTokens;
   next.persistenceFault = state.persistenceFault ?? null;
   if (typeof state.retryable === "boolean") next.retryable = state.retryable;
+  // The view/model fields: one fold, shared with the partial re-read.
+  return applyViewState(next, state);
+}
+
+/**
+ * Fold **only** the view/model fields of a settled state (P9b): which config
+ * governs the branch in view, the running config, a pending pick and a deleted
+ * config. For the re-read an `active-leaf`/`config` event triggers — that read
+ * can land after newer SSE events, so the rest of the frame (status, cards,
+ * queue, spend) is the bus's to keep, not this snapshot's to roll back.
+ */
+export function applyViewState(s: SessionSlice, state: SessionState): SessionSlice {
+  const next = { ...s };
+  if (state.configId) next.configId = state.configId;
+  if (state.configName) next.configName = state.configName;
+  if (state.model) next.model = state.model;
+  if (state.pendingModelSwitch !== undefined) next.pendingModelSwitch = state.pendingModelSwitch;
+  if (state.modelMissing !== undefined) next.modelMissing = state.modelMissing;
+  if (state.inViewConfigId !== undefined) next.inViewConfigId = state.inViewConfigId;
   return next;
 }
 
@@ -290,7 +330,23 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       const entry = e.entry as EntryView;
       const entries = s.entries.some((x) => x.id === entry.id) ? s.entries : [...s.entries, entry];
       const activeLeaf = entry.parent === s.activeLeaf ? entry.id : s.activeLeaf;
-      return { ...s, entries, activeLeaf, live: entry.type === "assistant" ? null : s.live };
+      const next = { ...s, entries, activeLeaf, live: entry.type === "assistant" ? null : s.live };
+      // A switch written on the branch in view now governs it (X-56, D-87). It
+      // is only ever written naming a config that exists, so whatever deleted
+      // config this branch was stuck on is behind it. A switch to the config the
+      // session already held emits no `config` event, so this is also the only
+      // signal another tab gets that the thread is now pinned to it.
+      if (entry.type === "model-switch" && entry.parent === s.activeLeaf && entry.configId && entry.snapshot) {
+        return {
+          ...next,
+          configId: entry.configId,
+          configName: entry.snapshot.name,
+          model: entry.snapshot.model,
+          modelMissing: null,
+          inViewConfigId: entry.configId,
+        };
+      }
+      return next;
     }
     case "active-leaf":
       return { ...s, activeLeaf: (e.leaf as string | null) ?? null };
@@ -301,7 +357,17 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       // adopted it at the top of this user turn (X-40, D-82a). The chip has to
       // follow: a pane labelled with the model the thread *started* on is the
       // kind of quiet lie that costs an hour of debugging the wrong model.
-      return { ...s, model: e.model as string };
+      // The config id rides along so the picker marks the right row (X-56).
+      return {
+        ...s,
+        model: e.model as string,
+        configName: (e.configName as string | undefined) ?? s.configName,
+        configId: (e.configId as string | undefined) ?? s.configId,
+      };
+    case "model-switch-pending":
+      // A pick made while busy, held until the next idle point — or `null` once
+      // it was written or dropped (X-56 Q4).
+      return { ...s, pendingModelSwitch: (e.pending as PendingModelSwitch | null) ?? null };
     case "title":
       // Auto-titled after the first exchange, or renamed by hand (X-09).
       return { ...s, title: e.title as string };
@@ -450,4 +516,15 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
  */
 export function isUnresumable(message: string): boolean {
   return /invalid signature/i.test(message);
+}
+
+/**
+ * Does this event mean the branch in view — or what governs it — may have
+ * moved without the event saying where (P9b)? `active-leaf` is a rewind from
+ * any tab (allowed mid-turn, H-05); `config` is the session adopting a config.
+ * Neither carries the **in-view** config id the picker marks as current, so the
+ * client re-reads the settled state, which does.
+ */
+export function needsViewResync(e: WireEvent): boolean {
+  return e.type === "active-leaf" || e.type === "config";
 }

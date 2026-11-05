@@ -5,7 +5,7 @@
  * and the events that flip status/spend/prompt state.
  */
 import { describe, it, expect } from "vitest";
-import { newSlice, reduceEvent, sliceFromDescriptor, applyState, isUnresumable, isAwaiting, nextFocus, applyDescriptor } from "../web/src/session-state";
+import { newSlice, reduceEvent, sliceFromDescriptor, applyState, isUnresumable, isAwaiting, nextFocus, applyDescriptor, needsViewResync, applyViewState } from "../web/src/session-state";
 import type { SessionDescriptor, WireEvent } from "../web/src/api";
 
 describe("session slice from a roster descriptor", () => {
@@ -479,5 +479,132 @@ describe("applyDescriptor — a descriptor carries identity, not just state", ()
     const s = applyDescriptor(placeholder, descriptor("peek/model"));
     expect(s.model).toBe("peek/model");
     expect(s.spendUsd).toBe(0.5);
+  });
+});
+
+describe("per-thread model state folds into the slice (X-56, P9b)", () => {
+  const missing = {
+    code: "model-config-missing" as const,
+    configId: "sonnet",
+    snapshot: { name: "Sonnet", model: "anthropic/claude-sonnet-5" },
+    message: "gone",
+  };
+
+  it("a settled state names the config, the pending pick and a deleted config", () => {
+    const s = applyState(newSlice("s1"), {
+      configId: "opus",
+      configName: "Opus",
+      model: "anthropic/claude-opus-5",
+      pendingModelSwitch: { configId: "sol", name: "Sol", model: "openai/gpt-5.6-sol" },
+      modelMissing: missing,
+    });
+    expect(s).toMatchObject({ configId: "opus", configName: "Opus", model: "anthropic/claude-opus-5" });
+    expect(s.pendingModelSwitch?.name).toBe("Sol");
+    expect(s.modelMissing).toEqual(missing);
+    // …and a later state with both cleared clears them.
+    const cleared = applyState(s, { pendingModelSwitch: null, modelMissing: null });
+    expect(cleared.pendingModelSwitch).toBeNull();
+    expect(cleared.modelMissing).toBeNull();
+  });
+
+  it("a state without the fields leaves them alone (older server, partial frame)", () => {
+    const s = { ...newSlice("s1"), modelMissing: missing, configId: "opus" };
+    const next = applyState(s, { status: "idle" });
+    expect(next.modelMissing).toEqual(missing);
+    expect(next.configId).toBe("opus");
+  });
+
+  it("model-switch-pending sets and clears the chip's pending pick", () => {
+    const pending = { configId: "sol", name: "Sol", model: "openai/gpt-5.6-sol" };
+    const s = reduceEvent(newSlice("s1"), { type: "model-switch-pending", pending } as WireEvent);
+    expect(s.pendingModelSwitch).toEqual(pending);
+    expect(reduceEvent(s, { type: "model-switch-pending", pending: null } as WireEvent).pendingModelSwitch).toBeNull();
+  });
+
+  it("the `config` event carries the config id and name, so the picker marks the right row", () => {
+    const s = reduceEvent(newSlice("s1", "anthropic/claude-opus-5"), {
+      type: "config",
+      configId: "sonnet",
+      configName: "Sonnet",
+      model: "anthropic/claude-sonnet-5",
+      from: { name: "Opus", model: "anthropic/claude-opus-5" },
+    } as WireEvent);
+    expect(s).toMatchObject({ configId: "sonnet", configName: "Sonnet", model: "anthropic/claude-sonnet-5" });
+  });
+
+  it("a switch entry on the branch in view governs it and clears a deleted-config state", () => {
+    const base = { ...newSlice("s1", "anthropic/claude-opus-5"), activeLeaf: "u1", modelMissing: missing };
+    const s = reduceEvent(base, {
+      type: "entry",
+      entry: { id: "m1", parent: "u1", type: "model-switch", configId: "sol", snapshot: { name: "Sol", model: "openai/gpt-5.6-sol" } },
+    } as unknown as WireEvent);
+    expect(s.activeLeaf).toBe("m1");
+    expect(s).toMatchObject({ configId: "sol", configName: "Sol", model: "openai/gpt-5.6-sol", modelMissing: null });
+  });
+
+  it("a switch entry on another branch changes nothing about the one in view", () => {
+    const base = { ...newSlice("s1", "anthropic/claude-opus-5"), activeLeaf: "u2", configId: "opus", modelMissing: missing };
+    const s = reduceEvent(base, {
+      type: "entry",
+      entry: { id: "m1", parent: "u1", type: "model-switch", configId: "sol", snapshot: { name: "Sol", model: "openai/gpt-5.6-sol" } },
+    } as unknown as WireEvent);
+    expect(s.activeLeaf).toBe("u2");
+    expect(s).toMatchObject({ configId: "opus", model: "anthropic/claude-opus-5", modelMissing: missing });
+  });
+});
+
+describe("the in-view config the picker marks current (P9b round 2)", () => {
+  it("applyState folds `inViewConfigId` separately from the running `configId`", () => {
+    const s = applyState(newSlice("s1"), { configId: "haiku", inViewConfigId: "opus" });
+    expect(s.configId).toBe("haiku");
+    expect(s.inViewConfigId).toBe("opus");
+    expect(applyState(s, { inViewConfigId: null }).inViewConfigId).toBeNull();
+    expect(applyState(s, { status: "idle" }).inViewConfigId).toBe("opus"); // absent → untouched
+  });
+
+  it("a switch landing on the branch in view becomes its in-view config", () => {
+    const base = { ...newSlice("s1"), activeLeaf: "u1", inViewConfigId: "opus" };
+    const s = reduceEvent(base, {
+      type: "entry",
+      entry: { id: "m1", parent: "u1", type: "model-switch", configId: "sol", snapshot: { name: "Sol", model: "x" } },
+    } as unknown as WireEvent);
+    expect(s.inViewConfigId).toBe("sol");
+  });
+
+  it("a rewind or a config adoption asks for a state re-read; ordinary traffic does not", () => {
+    expect(needsViewResync({ type: "active-leaf", leaf: "a1" })).toBe(true);
+    expect(needsViewResync({ type: "config", configId: "x" })).toBe(true);
+    expect(needsViewResync({ type: "text", delta: "hi" })).toBe(false);
+    expect(needsViewResync({ type: "entry" })).toBe(false);
+  });
+});
+
+describe("the view re-read folds only view/model fields (P9b round 3)", () => {
+  it("leaves status, cards and the queue to the bus", () => {
+    const approval = { id: "a1", tool: "write_file", kind: "write", args: {}, reason: "policy" };
+    const live = {
+      ...newSlice("s1"),
+      status: "awaiting-approval",
+      pendingApproval: approval as never,
+      queue: [{ id: "q1", text: "later" }] as never,
+      spendUsd: 0.5,
+    };
+    // A slow snapshot taken before the approval arrived.
+    const next = applyViewState(live, {
+      status: "running",
+      queue: [],
+      spendUsd: 0.1,
+      configId: "haiku",
+      configName: "Haiku",
+      model: "anthropic/claude-haiku-5",
+      inViewConfigId: "opus",
+      pendingModelSwitch: null,
+      modelMissing: null,
+    });
+    expect(next.status).toBe("awaiting-approval");
+    expect(next.pendingApproval).toEqual(approval);
+    expect(next.queue).toEqual([{ id: "q1", text: "later" }]);
+    expect(next.spendUsd).toBe(0.5);
+    expect(next).toMatchObject({ configId: "haiku", configName: "Haiku", model: "anthropic/claude-haiku-5", inViewConfigId: "opus" });
   });
 });
