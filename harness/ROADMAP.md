@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), next P9d.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), next P9e.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,23 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-09 (Phase 9 as the ratchet — P9a…P9d ✅, next P9e).** Same run as the
+> blocks below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
+> **Next free ids: D-94, X-58, H-22.**
+>
+> **P9d — addressed questions, stricter children, the off switch — shipped (D-93).** Two review
+> rounds. R1: an explicit `mode` equal to the parent's wasn't recorded, so a revival after the parent
+> loosened ran the child looser. Also a status guard on `answerFromParent`, which closes a gap that
+> could strand a child. R2 CLEAN. The peek itself found a real bug: with the pause off, an unbraked loop
+> starved the event loop so Stop couldn't land (it now yields each round). Build + free tiers green
+> (**1158**, +28 over P9c). README covers `--tool-rounds`, the card's new button, stricter children
+> and addressed questions. Peeked (VISUAL-LOG "P9d"). Filed **H-21**.
+>
+> **Resume checklist if interrupted:** P9d committed + pushed → start **P9e** (rail nesting +
+> transcript cards — Tier-0 + peek; fresh implementer; peek pair 7831/9431, then upward), then **P9f**
+> (peek), each its own commit. **Stop before P9g** and ask Joshua the level; P9g also records P9c's
+> Tier-1 fixture.
 
 > **Resume block — 2026-11-07 (Phase 9 as the ratchet — P9a ✅, P9b ✅, P9c ✅, next P9d).** Same
 > run as the blocks below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
@@ -2176,7 +2193,7 @@ the rail as ordinary sessions — usable, just not nested.
   busy child lands at its next tool-loop pass. One Tier-1 cached run of a real model spawning and
   messaging a child, so the tool descriptions are proven legible.
 
-### P9d — Addressed questions, stricter children, the off switch (Tier-0)
+### P9d — Addressed questions, stricter children, the off switch (Tier-0) ✅ *(2026-11-09, D-93 — two review rounds)*
 
 - Question tool takes **`to: user|parent`**; default = whoever started the current turn; `parent` on
   a root refused. An outstanding question is answered only by its addressee or the human; others
@@ -2222,6 +2239,18 @@ child question routed to its parent, a cross-model switch mid-thread and back vi
 the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-21 — small P9d leftovers.** Found 2026-11-09 by the P9d review loop; **OPEN.**
+  - (a) A parent reply is matched to the child's *current* parent-addressed question, not to the question it was written about. So a reply about Q1 (already answered by the person) can answer a newer Q2.
+  - (b) `retry` re-derives `turnByHuman` from the last user entry. That can be a mid-turn flushed inbound message or a todo nudge, which flips the default addressee. A todo-nudge-opened turn counts as agent-opened.
+  - (c) Switching the pause off and then on again mid-run leaves `toolRounds` far past the budget, so the card fires every round until Continue's doublings catch up.
+  - (d) An unbraked loop re-reads the root config from disk every round past the budget.
+  - (e) A soft Stop mid-batch can still send a child's `ask(to: parent)`; it ends cleanly on resume (the H-17(a) family).
+  - (f) A parent-addressed question can sit unnoticed: if the parent's turn ends without replying, nothing lights the parent for the person.
+  - (g) "Don't ask again" does not release a sub-agent already paused on its own card.
+  - (h) A child spawned with no `mode` revives at the parent's *current* mode, which can be looser than when it ran. A parent tightened later doesn't pass that on to running children.
+  - (i) There is no undo for "don't ask again" short of editing the log.
+  - (j) A person's send while an answered turn sits `queued` abandons the rest of its batch, as with P9c's cap resume.
 
 - **H-20 — small P9c leftovers.** Found 2026-11-07 by the P9c review loop; **OPEN.** (a) On load,
   the tree header is read first-vs-last inconsistently. (b) A `retryPersistence` whose fault was

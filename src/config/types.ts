@@ -104,7 +104,9 @@ export interface CommandSettings {
    *  it is still getting somewhere (D-79). Absent = 50; the budget **doubles**
    *  on each Continue, so this is where the first question lands, not a ceiling.
    *  Lives beside the watchdog for the same reason: how patient to be with a
-   *  long run is a question about the model you are paying for. */
+   *  long run is a question about the model you are paying for. **0 switches
+   *  the pause off** (P9d, D-89) — the spend cap is then the only brake. Like
+   *  the agent limits, the **root** thread's config decides that for its tree. */
   toolRounds?: number;
   /** How many levels of sub-agents may hang below the human-started root
    *  (X-56 Q12/Q13, D-89). Absent = 3; **0 means this config never spawns**.

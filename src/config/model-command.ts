@@ -122,7 +122,7 @@ export function nonDefaultSettings(config: ModelConfig): string[] {
     out.push(watchdog <= 0 ? `watchdog:off` : `watchdog:${watchdog}min`);
   }
   const rounds = config.commands?.toolRounds;
-  if (rounds !== undefined && rounds !== DEFAULT_TOOL_ROUNDS) out.push(`toolRounds:${rounds}`);
+  if (rounds !== undefined && rounds !== DEFAULT_TOOL_ROUNDS) out.push(rounds === 0 ? "toolRounds:off" : `toolRounds:${rounds}`);
   // The sub-agent brakes (D-89) carry with the rest of `commands` and are
   // printed the same way — a tree that suddenly may not spawn, or may run ten
   // agents at once, is exactly the kind of inherited setting D-82 names.

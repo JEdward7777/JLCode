@@ -472,6 +472,12 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, working: false, live: null, pendingApproval: e.request as ApprovalRequest };
     case "awaiting-input":
       return { ...s, working: false, live: null, pendingAsk: e.question as AskUserRequest };
+    case "status":
+      // A question can be answered from outside this tab — by the parent agent
+      // a sub-agent asked (P9d) — so leaving `awaiting-input` for a working or
+      // resting status retires the form. (A persistence fault is a pause over
+      // it, not an answer, so that one keeps it.)
+      return ["running", "queued", "idle", "halted"].includes(e.status as string) ? { ...s, pendingAsk: null } : s;
     case "truncation":
       return { ...s, notice: e.message as string, noticeKind: "truncation" };
     case "retrying": {

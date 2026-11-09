@@ -111,7 +111,7 @@ JLCODE_FAKE_LLM=1 npx github:JEdward7777/JLCode serve
 server that hosts a pre-built React client and streams the conversation to it:
 
 - **Down: SSE.** Tokens, reasoning, tool-call events, approval requests, spend
-  updates and `ask_user` forms stream over `GET /events` (one multiplexed bus
+  updates and question forms stream over `GET /events` (one multiplexed bus
   per instance, resumable via `Last-Event-ID`).
 - **Up: POST.** Discrete actions — send a message, approve/deny/**edit** a tool
   call, answer a question, switch branch, change mode/approval. (D-18)
@@ -187,8 +187,18 @@ On a long piece of work JLCode eventually stops and asks: *"50 model turns on
 this message without finishing — still getting somewhere?"* with a **Continue**
 button that doubles the budget and picks up exactly where it paused. Nothing is
 lost when it asks — every tool call it made has already run — and typing a new
-message instead is just as good an answer. The first number is
-`commands.toolRounds` in your config if 50 is the wrong place for it to ask.
+message instead is just as good an answer. A second button, **Continue, don't ask
+again in this thread**, switches the question off for that thread and every
+sub-agent it starts — it is written to the thread's log, so it holds after a
+restart. Set where it first asks, or switch it off everywhere, per config:
+
+```sh
+jlcode config set work --tool-rounds 80     # ask after 80 model turns (default 50)
+jlcode config set work --tool-rounds off    # never ask; the spend cap is the only brake
+jlcode config set work --tool-rounds default
+```
+
+For a tree of sub-agents, "off" is read from the config of the thread you started.
 
 Past threads are in the rail too, under **HISTORY** below the live ones — filtered
 to the folder you're serving, with an *all folders* toggle. Clicking one **peeks**
@@ -325,6 +335,13 @@ Past the depth, a spawn is refused and the agent does the work itself. Past the
 concurrency cap, nothing is refused: the extra agent waits, queued, until one
 finishes. Messages between agents never reset the "still working?" budget; only
 something you type does.
+
+An agent can start a sub-agent **stricter** than itself — an Ask-mode
+researcher under a Code-mode parent — but never looser. A sub-agent with a
+question can put it to you or to its parent agent; by default it asks whoever
+started its current turn. A question to the parent is answered by the parent's
+reply; anyone else's message waits until it is answered. You can always answer
+any question yourself from the sub-agent's thread.
 
 ### It knows what day it is
 

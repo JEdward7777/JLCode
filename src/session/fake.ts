@@ -91,7 +91,7 @@ function toolCalls(calls: { name: string; args: unknown }[]): StreamEvent[] {
 /** An agent message's attribution line (D-88), which the prefixes below must
  *  look past: a sub-agent's task *is* a driver command — `spawn: msg: parent |
  *  done` has the child report back — but it arrives under its header. */
-const INBOUND_HEADER = /^\[(?:Task|Message) from [\s\S]*?\]\n\n/;
+const INBOUND_HEADER = /^\[(?:Task|Message|Question) from [\s\S]*?\]\n\n/;
 
 function toolCall(name: string, args: unknown): StreamEvent[] {
   return [
@@ -108,7 +108,7 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
 }
 
 /**
- * An offline driver that can drive the *gated* flows (approvals, ask_user) end
+ * An offline driver that can drive the *gated* flows (approvals, questions) end
  * to end for the browser — no spend, no key. It reacts to command prefixes in
  * the latest user message so a person can trigger each surface by hand:
  *
@@ -120,13 +120,17 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   loop: [path]                → read_file, over and over, until the tool-round
  *                                 budget pauses the turn (D-79). The one surface
  *                                 that needs a model which will not stop.
- *   ask: <q> [| a, b, c]        → a single-question ask_user form (D-72 escape hatch)
- *   form:                       → a multi-question ask_user form
+ *   ask: <q> [| a, b, c]        → a single-question `ask` form (D-72 escape hatch)
+ *   ask@<user|parent>: <q> [| a, b]
+ *                               → the same, addressed (P9d); no options unless named
+ *   form:                       → a multi-question `ask` form
  *   mcp: <tool> <json>          → a bridged MCP call, e.g. `mcp: srv__echo {"text":"hi"}`
  *   spawn: <task> [;; <task>…]  → spawn_agent, one call per task in one batch (X-56).
  *                                 The task is itself a command for the child:
  *                                 `spawn: msg: parent | done` has it report back.
  *   spawn@<model>: <task>       → spawn_agent on a named model config
+ *   spawn#<mode>: <task>        → spawn_agent with a stricter `mode` (P9d);
+ *                                 `spawn@<model>#<mode>:` combines the two
  *   msg: <to> | <text>          → send_message
  *   models:                     → list_models
  *
@@ -308,15 +312,23 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     }
     // `ask: <question>` — or `ask: <question> | a, b, c` to name the options,
     // which is what poses the D-72 card with something other than Yes/No.
-    if (msg.startsWith("ask:")) {
-      const [q, opts] = after("ask:").split("|");
+    const ask = /^ask(?:@(\w+))?:/.exec(msg);
+    if (ask) {
+      const to = ask[1];
+      const [q, opts] = msg.slice(ask[0].length).trim().split("|");
       const options = opts
         ? opts
             .split(",")
             .map((o) => o.trim())
             .filter(Boolean)
-        : ["Yes", "No"];
-      return toolCall("ask_user", { question: (q ?? "").trim() || "How should I proceed?", options });
+        : to
+          ? []
+          : ["Yes", "No"];
+      return toolCall("ask", {
+        ...(to ? { to } : {}),
+        question: (q ?? "").trim() || "How should I proceed?",
+        ...(options.length > 0 ? { options } : {}),
+      });
     }
     // A bridged MCP tool by its namespaced name, args verbatim (P7b) — the only
     // way to drive an MCP call offline, and how the D-48 learn card is peeked.
@@ -334,9 +346,10 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     }
     // Sub-agents (X-56): the three agent tools, so a whole tree is drivable
     // offline — and testable end to end without a model.
-    const spawn = /^spawn(?:@([^:]+))?:/.exec(msg);
+    const spawn = /^spawn(?:@([^:#]+))?(?:#(\w+))?:/.exec(msg);
     if (spawn) {
       const model = spawn[1]?.trim();
+      const mode = spawn[2];
       const tasks = msg
         .slice(spawn[0].length)
         .split(" ;; ")
@@ -345,7 +358,7 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
       return toolCalls(
         (tasks.length > 0 ? tasks : ["say hello"]).map((task) => ({
           name: "spawn_agent",
-          args: model ? { task, model } : { task },
+          args: { task, ...(model ? { model } : {}), ...(mode ? { mode } : {}) },
         })),
       );
     }
@@ -356,7 +369,7 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     if (msg.startsWith("models:")) return toolCall("list_models", {});
     if (msg.startsWith("demo")) return textReply(RICH_MD);
     if (msg.startsWith("form:")) {
-      return toolCall("ask_user", {
+      return toolCall("ask", {
         questions: [
           { header: "Store", question: "Which store should I use?", options: ["sqlite", "postgres"] },
           {

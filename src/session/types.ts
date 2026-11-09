@@ -233,10 +233,14 @@ export interface AskUserQuestion {
   required?: boolean;
 }
 
-/** The model's ask_user pause (D-18) — a structured multi-question form. */
+/** The model's question pause (D-18) — a structured multi-question form. */
 export interface AskUserRequest {
   id: string;
   questions: AskUserQuestion[];
+  /** Who the model asked (P9d, X-56 Q16): `parent` when a sub-agent asked the
+   *  agent that started it — whose reply then answers it. Absent = the person.
+   *  The person may answer either kind: they outrank every agent. */
+  to?: "parent";
 }
 
 /** A resolved answer to one question of an ask_user form. `answer` is the flat
@@ -286,6 +290,10 @@ export type SessionEvent =
   | { type: "inbox"; message: InboundMessage }
   // Inbox messages that will never be delivered (a hard Stop, a cancelled queue).
   | { type: "inbox-dropped"; ids: string[] }
+  // "Continue, don't ask again in this thread" (P9d, D-89): the tool-round
+  // pause is off for this thread and its subtree — persisted, so it holds
+  // across a restart.
+  | { type: "rounds-off" }
   // The session came to rest with nothing more to do on its own — no suspended
   // turn, nothing queued behind it (D-88). A sub-agent's parent gets its
   // completion notice from this.

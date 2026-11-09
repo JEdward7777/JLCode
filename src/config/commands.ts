@@ -21,6 +21,8 @@ import {
   commandWatchdogMinutes,
   agentConcurrencyLimit,
   agentDepthLimit,
+  toolRoundBudget,
+  toolRoundsOff,
   configuredRouting,
   routingWithOnly,
   removeModelConfig,
@@ -79,6 +81,12 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
                          model is told what it can rely on. "off" removes the
                          check (only a person or a per-call timeout ends a
                          runaway); "default" clears it back to 30.
+  --tool-rounds <n|off|default>
+                         model turns one message may take before JLCode pauses
+                         to ask whether it is still getting somewhere (D-79); 50
+                         by default, and Continue doubles it. "off" removes the
+                         pause (D-89) — the spend cap is then the only brake. The
+                         ROOT thread's config decides "off" for its whole tree.
   --agent-depth <n|default>
                          how many levels of sub-agents may hang below a thread
                          you started (X-56, D-89); 3 by default, 0 = this config
@@ -217,6 +225,20 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
       patch.agentConcurrency = n;
     }
   }
+  // The tool-round pause (D-79), shaped like the watchdog: "off" is 0 (P9d,
+  // D-89 — the pause can now be switched off, deliberately), a number is the
+  // budget, "default" clears it back to 50.
+  const rounds = flagString(flags, "tool-rounds");
+  if (rounds !== undefined) {
+    const v = rounds.trim().toLowerCase();
+    if (v === "default") patch.toolRounds = null;
+    else if (v === "off" || v === "none") patch.toolRounds = 0;
+    else {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`--tool-rounds must be a positive whole number, "off", or "default"`);
+      patch.toolRounds = n;
+    }
+  }
   const provider = providerFlag(flags);
   if (provider !== undefined) patch.providerOnly = provider;
   return patch;
@@ -286,6 +308,17 @@ function agentLimitsLine(config: ModelConfig): string {
   const levels = depth === 0 ? "no sub-agents (agent depth 0)" : `sub-agents up to ${depth} level${depth === 1 ? "" : "s"} below the root`;
   const running = width === 0 ? "no cap on how many run at once" : `at most ${width} running at once (the rest wait queued)`;
   return `    agents: ${levels}, ${running} — when this config is the root's\n`;
+}
+
+/** The tool-round pause this config sets (D-79, D-89). Always printed by
+ *  `which`, like the agent limits: switched off, it leaves the spend cap as the
+ *  only brake, and that must be readable without opening `config.json`. */
+function toolRoundsLine(config: ModelConfig): string {
+  if (toolRoundsOff(config)) {
+    return `    tool rounds: off — no pause to ask whether a long run is getting somewhere; the spend cap is the only brake (for a tree, the root's config decides)\n`;
+  }
+  const n = toolRoundBudget(config);
+  return `    tool rounds: pause after ${n} model turn${n === 1 ? "" : "s"} on one message; Continue doubles it\n`;
 }
 
 function line(c: ModelConfig, boundId: string | undefined): string {
@@ -363,6 +396,7 @@ export async function runConfig(args: string[]): Promise<number> {
       // confirm it was found, and one that has none needs to see that too.
       process.stdout.write(projectInstructionsLine(selected, cwd));
       process.stdout.write(routingLine(selected));
+      process.stdout.write(toolRoundsLine(selected));
       process.stdout.write(agentLimitsLine(selected));
       return 0;
     }
@@ -507,6 +541,7 @@ export async function runConfig(args: string[]): Promise<number> {
             : `    run_command: the watchdog asks to kill or keep after ${m} min\n`,
         );
       }
+      if (patch.toolRounds !== undefined) process.stdout.write(toolRoundsLine(updated));
       if (patch.agentDepth !== undefined || patch.agentConcurrency !== undefined) {
         process.stdout.write(agentLimitsLine(updated));
       }

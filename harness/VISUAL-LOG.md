@@ -1840,3 +1840,18 @@ mean hiding a running session from the rail, which is worse.
 - **Defects the reviewers found by peeking, not by reading** (D-91):
   - A pick silently dropped mid-turn after a rewind (round 2, `r2-midturn`).
   - The same, after a same-key re-bind (round 4, reproduced with a probe and then seen fixed in round 5's peek).
+
+## P9d — the pause card's "don't ask again" button · 2026-11-09 · ✅ looked good (**the peek found a defect: an unbraked loop starved Stop**)
+
+**Setup:** run by the P9d implementer on peek pair 7821/9421, with the fake driver. The prompt was `loop: README.md` and `commands.toolRounds` was 3, so the D-79 card comes up after three rounds. The coordinator checked the screenshot.
+
+**Confirmed by eye** (`p9d-stall-card.png`):
+- The card shows the primary **Continue (budget → 6)** and, beside it, the secondary **Continue, don't ask again in this thread**. Both are readable on one row, inside the card's red border.
+- The rail row reads `continue?`.
+
+**Clicking the new button** with the real mouse, over CDP:
+- The session kept running past the budget, and no new card appeared.
+- The thread's `.jsonl` gained a `rounds-off` record.
+- The server stayed responsive: a `state` request and then a Stop over HTTP both landed.
+
+**Caught by looking:** the first click, before the fix, hung the server. With the pause off, the fake driver's loop never yielded, so no Stop request, log write or timer could run. The loop now yields once per round past the budget (D-93). A real driver always does network I/O, but a run with no brake must never lock out Stop.

@@ -9,6 +9,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import type { Mode } from "../config/types.js";
+import { MODES } from "../config/types.js";
 import type { Conversation, Entry, InboundMeta } from "../conversation/types.js";
 import { AppendLog, type AppendFault, type FaultListener } from "./append-log.js";
 
@@ -32,6 +34,10 @@ export interface AgentRecord {
   name: string;
   /** Levels below the root (a root's child is 1). */
   depth: number;
+  /** The mode it was spawned in when that was stricter than its parent's
+   *  (P9d, X-56 Q10) — kept so a revival does not loosen it back to the
+   *  parent's. Absent = it runs at its parent's mode. */
+  mode?: Mode;
   createdAt: string;
 }
 
@@ -185,6 +191,7 @@ export class ConversationStore {
         parentAgentId: typeof r.parentAgentId === "string" ? r.parentAgentId : null,
         name: r.name,
         depth: typeof r.depth === "number" ? r.depth : 1,
+        ...(typeof r.mode === "string" && (MODES as readonly string[]).includes(r.mode) ? { mode: r.mode as Mode } : {}),
         createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
       });
     }
@@ -212,6 +219,14 @@ export class ConversationStore {
    *  queue, or the person cancelled them — so load stops calling them pending. */
   inboxDropped(convId: string, ids: string[]): Promise<void> {
     return this.log(convId).append(ConversationStore.tag(convId, { kind: "inbox-drop", ids }));
+  }
+
+  /** "Continue, don't ask again in this thread" (P9d, D-89): the tool-round
+   *  pause is off here and in this thread's sub-agents from now on. A control
+   *  record, not a tree entry — it belongs to the thread, not to a branch, and
+   *  carries nothing a model reads. */
+  roundsOff(convId: string): Promise<void> {
+    return this.log(convId).append(ConversationStore.tag(convId, { kind: "rounds-off", ts: new Date().toISOString() }));
   }
 
   /** Start a new conversation log (header + index row). Both appends are issued
@@ -318,6 +333,7 @@ export class ConversationStore {
      *  hand-rename must still read as hand-picked after a restart, or the
      *  drift re-title would quietly undo it. */
     let titleSource: "auto" | "manual" | undefined;
+    let roundsOff = false;
     // An explicit `activeLeaf` record is *in force* until an append actually
     // continues from it. While it is, a non-matching append is a turn writing to
     // the branch it was pinned to (H-05) and must not drag the pointer over.
@@ -327,11 +343,14 @@ export class ConversationStore {
     for (const r of records) {
       if (r.kind === "inbox") {
         if (typeof r.id === "string" && typeof r.from === "string" && typeof r.text === "string") {
-          const kind = r.msgKind === "task" || r.msgKind === "finished" ? r.msgKind : "message";
+          const kind =
+            r.msgKind === "task" || r.msgKind === "finished" || r.msgKind === "question" ? r.msgKind : "message";
           inbox.set(r.id, { id: r.id, from: r.from, kind, text: r.text });
         }
       } else if (r.kind === "inbox-drop") {
         if (Array.isArray(r.ids)) for (const id of r.ids) if (typeof id === "string") delivered.add(id);
+      } else if (r.kind === "rounds-off") {
+        roundsOff = true;
       } else if (r.kind === "activeLeaf") {
         if (r.leaf === null || typeof r.leaf === "string") {
           activeLeaf = r.leaf;
@@ -366,6 +385,7 @@ export class ConversationStore {
       title,
       titleSource,
       ...(pending.length > 0 ? { inbox: pending } : {}),
+      ...(roundsOff ? { roundsOff: true } : {}),
       entries,
       activeLeaf,
       createdAt: typeof header.createdAt === "string" ? header.createdAt : new Date().toISOString(),

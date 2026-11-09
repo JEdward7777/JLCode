@@ -3,6 +3,7 @@
  * `kind` (for the mode gate, Phase 3b), whether it `mutates` state (for approval
  * policies), and an `execute` that runs against a sandboxed context.
  */
+import type { Mode } from "../config/types.js";
 import type { ToolDef } from "../llm/types.js";
 import type { Sandbox } from "./sandbox.js";
 import type { TaskRegistry } from "./task-registry.js";
@@ -33,7 +34,7 @@ export interface ToolResult {
  * refusal — the depth limit, a model on another key, an unknown recipient.
  */
 export interface AgentAccess {
-  spawn(task: string, model?: string): Promise<string>;
+  spawn(task: string, model?: string, mode?: Mode): Promise<string>;
   send(to: string, text: string): string;
   listModels(): string;
 }

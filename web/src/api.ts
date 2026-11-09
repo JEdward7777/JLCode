@@ -230,6 +230,9 @@ export interface AskQuestion {
 export interface AskUserRequest {
   id: string;
   questions: AskQuestion[];
+  /** A sub-agent asked its parent agent (P9d): the parent's reply answers it,
+   *  but the person may answer first. Absent = asked of the person. */
+  to?: "parent";
 }
 
 /** One answer posted back (D-72). `answer` is the flat rendering; `chosen` /
@@ -611,9 +614,10 @@ export async function compact(id: string, opts: { skip?: boolean } = {}): Promis
 }
 
 /** Resume a turn paused on the tool-round budget (D-79) — the Continue button.
- *  The budget doubles and the loop picks up where it paused. */
-export async function continueRun(id: string): Promise<void> {
-  await postJson(`/session/${id}/continue`, {});
+ *  The budget doubles and the loop picks up where it paused. `dontAskAgain`
+ *  (P9d, D-89) also switches the pause off for this thread and its sub-agents. */
+export async function continueRun(id: string, opts: { dontAskAgain?: boolean } = {}): Promise<void> {
+  await postJson(`/session/${id}/continue`, opts.dontAskAgain ? { dontAskAgain: true } : {});
 }
 
 /** Recover from a stalled persistence write (D-46): retry the queued records, or

@@ -36,7 +36,7 @@ export { fileTools } from "./tools/file-tools.js";
 export { runCommandTool } from "./tools/shell-tool.js";
 export { AllowAllGate } from "./tools/gate.js";
 export { ModeApprovalGate } from "./tools/mode-gate.js";
-export { askUserTool, ASK_USER } from "./tools/ask-user.js";
+export { askTool, askUserTool, isAskTool, ASK, ASK_USER } from "./tools/ask-user.js";
 export type { Tool, ToolResult, ToolContext, ToolGate, GateDecision, ToolKind } from "./tools/types.js";
 
 // Persistence

@@ -16,6 +16,7 @@
  * of the cached prefix (D-81): a changeable list there would re-bill the whole
  * window every time someone added a config.
  */
+import { MODES, type Mode } from "../config/types.js";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 export const SPAWN_AGENT = "spawn_agent";
@@ -49,12 +50,18 @@ export function spawnAgentTool(): Tool {
           "When the sub-agent finishes a turn you are sent a notice; it does not send its results unless asked, " +
           "so say in `task` what to report back with send_message, or ask it afterwards. Write `task` so it stands " +
           "on its own: the sub-agent cannot see your conversation. `model` is a name from list_models; omit it " +
-          "to use your own model.",
+          "to use your own model. `mode` makes the sub-agent stricter than you — \"ask\" (read-only) or " +
+          "\"plan\" (markdown writes only) — never looser; omit it to give it your own mode.",
         parameters: {
           type: "object",
           properties: {
             task: { type: "string", description: "Everything the sub-agent needs to do the work and report back" },
             model: { type: "string", description: "A model config name from list_models (default: your own)" },
+            mode: {
+              type: "string",
+              enum: [...MODES],
+              description: "ask < plan < code. As strict as yours or stricter (default: your own mode)",
+            },
           },
           required: ["task"],
         },
@@ -64,7 +71,12 @@ export function spawnAgentTool(): Tool {
       const task = typeof args.task === "string" ? args.task.trim() : "";
       if (!task) return Promise.resolve({ content: "spawn_agent needs a non-empty `task`", isError: true });
       const model = typeof args.model === "string" && args.model.trim() !== "" ? args.model.trim() : undefined;
-      return guarded(ctx, (agents) => agents.spawn(task, model));
+      const rawMode = typeof args.mode === "string" ? args.mode.trim().toLowerCase() : "";
+      if (rawMode !== "" && !(MODES as readonly string[]).includes(rawMode)) {
+        return Promise.resolve({ content: `spawn_agent: \`mode\` is one of ${MODES.join(", ")}, not ${JSON.stringify(args.mode)}`, isError: true });
+      }
+      const mode = rawMode === "" ? undefined : (rawMode as Mode);
+      return guarded(ctx, (agents) => agents.spawn(task, model, mode));
     },
   };
 }

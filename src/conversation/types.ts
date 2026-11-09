@@ -33,8 +33,10 @@ export interface InboundMeta {
   /** The sender's agent name (`root`, `agent-2`). */
   from: string;
   /** `task`: the spawn's opening message; `message`: `send_message`;
-   *  `finished`: the completion notice a parent gets when a child goes idle. */
-  kind: "task" | "message" | "finished";
+   *  `finished`: the completion notice a parent gets when a child goes idle;
+   *  `question`: a child's `ask(to: "parent")`, which its parent answers by
+   *  replying with `send_message` (P9d, X-56 Q16). */
+  kind: "task" | "message" | "finished" | "question";
 }
 
 export interface UserEntry extends BaseEntry {
@@ -192,4 +194,9 @@ export interface Conversation {
    *  log on load; a resumed session holds them in its queue, so they land with
    *  the next turn rather than vanishing. Absent on fresh conversations. */
   inbox?: (InboundMeta & { text: string })[];
+  /** "Continue, don't ask again in this thread" was chosen here (P9d, X-56 Q8,
+   *  D-89): the tool-round pause no longer fires in this thread or anywhere in
+   *  its sub-agent subtree. Folded from a `rounds-off` record in the log, so it
+   *  survives a restart. Absent = the pause is on. */
+  roundsOff?: boolean;
 }

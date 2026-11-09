@@ -91,12 +91,21 @@ export function commandWatchdogMinutes(config: { commands?: CommandSettings } | 
 
 /** Model turns one user message gets before the loop pauses to ask (D-79).
  *  Resolved here rather than defaulted in `Session` so the browser, the factory
- *  and the constructor cannot disagree about the number. `0` is not a way to
- *  disable the pause — an unbounded loop is the bug this exists to catch — so a
- *  non-positive value falls back to the default. */
+ *  and the constructor cannot disagree about the number. A non-positive value
+ *  falls back to the default **number**: `0` is the switch-off (P9d, D-89),
+ *  which {@link toolRoundsOff} reads — the budget a session holds stays a real
+ *  one, so a thread whose root turns the pause back on has a sane count. */
 export function toolRoundBudget(config: { commands?: CommandSettings } | undefined): number {
   const n = config?.commands?.toolRounds;
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_TOOL_ROUNDS;
+}
+
+/** The tool-round pause is switched off (`config set --tool-rounds off`,
+ *  stored as `commands.toolRounds: 0` — P9d, X-56 Q8, D-89; reverses D-79's
+ *  "cannot be disabled", deliberately). The spend cap is then the only brake.
+ *  Read from the **root** thread's config for a whole agent tree, live. */
+export function toolRoundsOff(config: { commands?: CommandSettings } | undefined): boolean {
+  return config?.commands?.toolRounds === 0;
 }
 
 /** Levels of sub-agents below the human-started root (X-56 Q12, D-89). */
@@ -198,6 +207,9 @@ export interface ModelConfigPatch {
   agentDepth?: number | null;
   /** Agents of one tree running at once (D-89); `0` = no cap, `null` clears. */
   agentConcurrency?: number | null;
+  /** Model turns per message before the pause (D-79); `0` switches the pause
+   *  off (P9d, D-89), `null` clears back to the default. */
+  toolRounds?: number | null;
   /** Endpoint slugs to pin (D-86a) — `--provider openai/flex`. Merged into any
    *  hand-edited block so its other keys survive; `null` removes the block. */
   providerOnly?: string[] | null;
@@ -259,6 +271,7 @@ export function updateModelConfig(
     ["watchdogMinutes", patch.watchdogMinutes],
     ["agentDepth", patch.agentDepth],
     ["agentConcurrency", patch.agentConcurrency],
+    ["toolRounds", patch.toolRounds],
   ] as const;
   for (const [field, value] of commandPatch) {
     if (value === undefined) continue;

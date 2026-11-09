@@ -26,12 +26,12 @@
  */
 import { newId } from "../util/id.js";
 import { newConversation } from "../conversation/tree.js";
-import { agentConcurrencyLimit, agentDepthLimit } from "../config/operations.js";
-import type { ModelConfig } from "../config/types.js";
+import { agentConcurrencyLimit, agentDepthLimit, toolRoundsOff } from "../config/operations.js";
+import { MODES, type Mode, type ModelConfig } from "../config/types.js";
 import type { Conversation } from "../conversation/types.js";
 import { agentConversationId, type AgentRecord } from "../persist/conversation-store.js";
 import type { AgentHost, Session } from "./session.js";
-import type { InboundMessage, SessionEvent, SubtreeSummary } from "./types.js";
+import type { AskUserRequest, InboundMessage, SessionEvent, SubtreeSummary } from "./types.js";
 
 /** The root thread's name, as its sub-agents see it. */
 export const ROOT_AGENT_NAME = "root";
@@ -73,8 +73,17 @@ interface Tree {
 }
 
 /** Statuses a person has to act on — an approval, a question, the round
- *  budget, a compaction decision. What lights a parent (X-56 Q10/Q11). */
+ *  budget, a compaction decision. What lights a parent (X-56 Q10/Q11). A
+ *  question addressed to the parent agent (P9d) is the parent's to answer, so
+ *  it does not count — see {@link waitsForYou}. */
 const WAITING_FOR_YOU = new Set(["awaiting-approval", "awaiting-input", "awaiting-continue", "awaiting-compaction"]);
+
+const waitsForYou = (s: Session): boolean => WAITING_FOR_YOU.has(s.status) && !(s.status === "awaiting-input" && s.asksParent);
+
+/** How strict a mode is: a lower rank may do less (ask < plan < code). */
+const modeRank = (m: Mode): number => MODES.indexOf(m);
+/** The stricter of two modes (X-56 Q10: the parent's mode is a ceiling). */
+const stricter = (a: Mode, b: Mode): Mode => (modeRank(a) <= modeRank(b) ? a : b);
 
 export class AgentCoordinator implements AgentHost {
   private readonly members = new Map<string, Member>();
@@ -144,7 +153,7 @@ export class AgentCoordinator implements AgentHost {
 
   // ---- The tools (AgentHost).
 
-  async spawn(session: Session, task: string, model?: string): Promise<string> {
+  async spawn(session: Session, task: string, model?: string, mode?: Mode): Promise<string> {
     const parent = this.member(session);
     // A Stop reaches the subtree (D-34): the rest of a stopped batch still runs,
     // but it must not grow the tree.
@@ -159,13 +168,25 @@ export class AgentCoordinator implements AgentHost {
               `this tree allows sub-agents ${maxDepth} level${maxDepth === 1 ? "" : "s"} deep. Do the work yourself.`,
       );
     }
+    // The parent's mode is a ceiling (X-56 Q10): `mode` may only tighten it.
+    if (mode !== undefined && modeRank(mode) > modeRank(session.mode)) {
+      throw new Error(
+        `spawn_agent refused: you are in ${session.mode} mode, and a sub-agent may only be as strict or stricter ` +
+          `(${MODES.slice(0, modeRank(session.mode) + 1).join(", ")}). Nothing was started.`,
+      );
+    }
     const config = this.pickConfig(session, model);
     const rootId = tree.root.session.conversation.id;
+    const tighter = mode !== undefined && mode !== session.mode;
     const record: AgentRecord = {
       agentId: newId("ag"),
       parentAgentId: parent.agentId,
       name: this.nextName(tree),
       depth: parent.depth + 1,
+      // Any mode passed is recorded — an equal one too: it names a fixed mode,
+      // and a revival must not read "the parent's mode" off a parent that has
+      // since been loosened. `stricter()` at revival still caps it.
+      ...(mode !== undefined ? { mode } : {}),
       createdAt: new Date().toISOString(),
     };
     const conversation = newConversation(agentConversationId(rootId, record.agentId));
@@ -174,13 +195,14 @@ export class AgentCoordinator implements AgentHost {
     conversation.title = record.name;
     conversation.titleSource = "manual";
     const child = this.attach(this.deps.startAgent({ config, conversation, rootId, record }), record, parent, tree);
-    await this.inherit(child);
+    await this.inherit(child, record.mode);
     // The child's model is an entry in its own log (D-87), never the folder
     // binding — or the next re-bind would move a sub-agent the parent placed.
     await child.session.switchModel(config.id);
     this.deliver(child, parent, "task", task);
     return (
-      `Started sub-agent "${record.name}" on ${config.name} (${config.model}). It is working in the background, ` +
+      `Started sub-agent "${record.name}" on ${config.name} (${config.model})${tighter ? ` in ${mode} mode` : ""}. ` +
+      `It is working in the background, ` +
       `and your turn ends here. You will get a notice each time it finishes a turn; ask it with send_message ` +
       `(to: "${record.name}") for anything it has not sent you.`
     );
@@ -189,8 +211,42 @@ export class AgentCoordinator implements AgentHost {
   send(session: Session, to: string, text: string): string {
     const sender = this.member(session);
     const target = this.resolve(sender, to);
+    // A child paused on a question it asked this sender (P9d, X-56 Q16): the
+    // reply is its answer. Anyone else's message — and this sender's, once the
+    // person has answered first — queues as usual.
+    if (target.parent === sender && target.session.answerFromParent(sender.name, text)) {
+      this.later(() => target.session.resumeAnswered());
+      return `Sent to "${target.name}" as the answer to its question; it carries on from there.`;
+    }
     this.deliver(target, sender, "message", text);
     return `Sent to "${target.name}".`;
+  }
+
+  /** A child asked its parent (P9d, X-56 Q16): the question reaches the parent
+   *  as a message from the child, which starts its turn like any message. The
+   *  parent answers by replying (`send`, above); if it cannot, its own `ask`
+   *  climbs to its questioner — a turn an agent opened defaults to the parent. */
+  askParent(session: Session, request: AskUserRequest): void {
+    const child = this.member(session);
+    if (!child.parent) return;
+    const lines = request.questions.map((q, i) => {
+      const head = request.questions.length > 1 ? `${i + 1}. ` : "";
+      const label = q.header ? `${q.header} — ` : "";
+      const options = q.options && q.options.length > 0 ? ` (suggested: ${q.options.join(" / ")})` : "";
+      return `${head}${label}${q.question}${options}`;
+    });
+    this.deliver(child.parent, child, "question", lines.join("\n"));
+  }
+
+  /** The tool-round pause is off for this session (P9d, D-89): the root's
+   *  config says so, read live, or "don't ask again" was chosen on it or on an
+   *  agent above it — a thread's choice covers its whole subtree. */
+  roundsOff(session: Session): boolean {
+    const m = this.members.get(session.id);
+    if (!m) return session.conversation.roundsOff === true;
+    if (toolRoundsOff(this.rootConfig(m.tree))) return true;
+    for (let x: Member | undefined = m; x; x = x.parent) if (x.session.conversation.roundsOff) return true;
+    return false;
   }
 
   /** The caller's key as the live store has it now — a rotation reaches the
@@ -252,11 +308,12 @@ export class AgentCoordinator implements AgentHost {
     return `agent-${tree.nextIndex++}`;
   }
 
-  /** A sub-agent starts at its parent's mode and approval policy (Q10) and
-   *  under its tree's spend cap — measured against the whole tree (D-33). */
-  private async inherit(child: Member): Promise<void> {
+  /** A sub-agent starts at its parent's mode and approval policy (Q10) — or
+   *  the stricter `mode` it was spawned with (P9d) — and under its tree's
+   *  spend cap, measured against the whole tree (D-33). */
+  private async inherit(child: Member, mode?: Mode): Promise<void> {
     const parent = child.parent!.session;
-    child.session.setModeApproval(parent.mode, parent.approval);
+    child.session.setModeApproval(mode ? stricter(mode, parent.mode) : parent.mode, parent.approval);
     await child.session.setSpendCap(child.tree.root.session.spendCapUsd ?? null);
   }
 
@@ -295,7 +352,10 @@ export class AgentCoordinator implements AgentHost {
     if (!conversation) throw new Error(`Sub-agent "${record.name}" could not be loaded from disk.`);
     const session = this.deps.startAgent({ config: parent.session.config, conversation, rootId });
     const child = this.attach(session, record, parent, parent.tree);
-    child.session.setModeApproval(parent.session.mode, parent.session.approval);
+    // A child spawned stricter stays stricter (P9d); the parent's mode, as it
+    // stands now, is still the ceiling.
+    const mode = record.mode ? stricter(record.mode, parent.session.mode) : parent.session.mode;
+    child.session.setModeApproval(mode, parent.session.approval);
     this.track(child.session.setSpendCap(parent.tree.root.session.spendCapUsd ?? null));
     return child;
   }
@@ -329,6 +389,13 @@ export class AgentCoordinator implements AgentHost {
       );
     }
     if (kind === "finished") return body;
+    if (kind === "question") {
+      return (
+        `[Question from your sub-agent "${from.name}" — it is paused until it gets an answer. Reply with ` +
+        `send_message(to: "${from.name}"): your message is its answer. If you cannot answer, ask your own ` +
+        `questioner with ask.]\n\n${body}`
+      );
+    }
     const who =
       from === to.parent ? `your parent agent "${from.name}"` : from.parent === to ? `your sub-agent "${from.name}"` : `agent "${from.name}"`;
     return `[Message from ${who}]\n\n${body}`;
@@ -401,7 +468,7 @@ export class AgentCoordinator implements AgentHost {
       agents: below.length,
       running: count((s) => s.status === "running"),
       queued: count((s) => s.status === "queued"),
-      waiting: count((s) => WAITING_FOR_YOU.has(s.status)),
+      waiting: count(waitsForYou),
       spendUsd: below.reduce((sum, d) => sum + d.session.spendUsd, 0),
     };
   }

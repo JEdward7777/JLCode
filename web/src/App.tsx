@@ -790,10 +790,10 @@ export function App() {
   // Resume a turn paused on the tool-round budget (D-79). Optimistic: clear the
   // card and show working straight away, because the loop picks up at the model
   // call it paused before — there is nothing to replay and nothing to undo.
-  const doContinue = useCallback(async (id: string) => {
+  const doContinue = useCallback(async (id: string, dontAskAgain?: boolean) => {
     dispatch({ t: "patch", id, patch: { pendingStall: null, working: true } });
     try {
-      await apiContinue(id);
+      await apiContinue(id, { dontAskAgain });
     } catch (err) {
       dispatch({ t: "patch", id, patch: { notice: (err as Error).message, working: false } });
     }
@@ -1643,7 +1643,7 @@ function ChatPane({
   onChangeMode: (id: string, patch: { mode?: Mode; approval?: ApprovalPolicy }) => void;
   onChangeTriggerMode: (id: string, mode: TriggerMode) => void;
   onCompact: (id: string, opts?: { skip?: boolean }) => void;
-  onContinue: (id: string) => void;
+  onContinue: (id: string, dontAskAgain?: boolean) => void;
   onResolvePersistence: (id: string, opts?: { discard?: boolean }) => void;
   retryingPersistence: boolean;
   onResolveApproval: (
@@ -1928,7 +1928,13 @@ function ChatPane({
             windowSource={slice.contextWindowSource}
           />
         )}
-        {slice.pendingStall && <StallCard request={slice.pendingStall} onContinue={() => onContinue(id)} />}
+        {slice.pendingStall && (
+          <StallCard
+            request={slice.pendingStall}
+            onContinue={() => onContinue(id)}
+            onContinueAlways={() => onContinue(id, true)}
+          />
+        )}
         {/* suggest mode: non-blocking nudge once the budget is crossed (D-27). */}
         {slice.triggerMode === "suggest" && slice.needsCompaction && !slice.pendingCompaction && (
           <CompactionBanner
@@ -2789,7 +2795,17 @@ function TasksPanel({ tasks, onKill }: { tasks: TaskView[]; onKill: (id: string)
  *  rather than accuses, and says in as many words that nothing was lost — the
  *  bug it replaces silently dropped the pending tool call, which is exactly the
  *  way for work to look done without having happened. */
-function StallCard({ request, onContinue }: { request: StallRequest; onContinue: () => void }) {
+function StallCard({
+  request,
+  onContinue,
+  onContinueAlways,
+}: {
+  request: StallRequest;
+  onContinue: () => void;
+  /** P9d (D-89): continue and never pause on rounds again in this thread or
+   *  its sub-agents — logged, so it survives a restart. The spend cap stays. */
+  onContinueAlways: () => void;
+}) {
   return (
     <div className="card cap-banner">
       <div className="fence-note">
@@ -2800,6 +2816,12 @@ function StallCard({ request, onContinue }: { request: StallRequest; onContinue:
       <div className="actions">
         <button className="primary" onClick={onContinue}>
           Continue (budget → {request.nextBudget})
+        </button>
+        <button
+          onClick={onContinueAlways}
+          title="Stop pausing on tool rounds in this thread and its sub-agents. The spend cap still applies."
+        >
+          Continue, don't ask again in this thread
         </button>
       </div>
     </div>
@@ -3803,6 +3825,9 @@ function AskForm({
 
   return (
     <div className="card ask">
+      {request.to === "parent" ? (
+        <div className="fence-note">Asked of its parent agent, whose reply will answer it — or answer it yourself.</div>
+      ) : null}
       {request.questions.map((q, i) => (
         <div className="q" key={i}>
           <div className="q-head">

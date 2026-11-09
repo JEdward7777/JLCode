@@ -449,6 +449,8 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       // takes it in (X-56 Q15) — and so is the fact that one never will be.
       else if (e.type === "inbox") settled(deps.store.inbox(session.conversation.id, e.message));
       else if (e.type === "inbox-dropped") settled(deps.store.inboxDropped(session.conversation.id, e.ids));
+      // "Don't ask again in this thread" (P9d) must outlive the process (D-89).
+      else if (e.type === "rounds-off") settled(deps.store.roundsOff(session.conversation.id));
       else if (e.type === "title") {
         // A hand-rename can land before the first message. Records fold by id
         // rather than by order, so this only has to make the row exist.
@@ -808,14 +810,17 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json(stateOf(session));
   });
 
-  // Resume a turn paused on the tool-round budget (D-79). No body: Continue means
-  // "keep going on double the budget", and the loop picks up at the model call it
-  // was about to make — nothing was dropped to replay.
+  // Resume a turn paused on the tool-round budget (D-79). Continue means "keep
+  // going on double the budget", and the loop picks up at the model call it was
+  // about to make — nothing was dropped to replay. `{dontAskAgain: true}` is the
+  // card's third button (P9d, D-89): continue, and switch the pause off for this
+  // thread and its sub-agents, logged so it survives a restart.
   app.post("/session/:id/continue", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { dontAskAgain?: unknown };
     if (session.status !== "awaiting-continue") return c.json({ error: "not paused for continue" }, 409);
-    await session.continueRun();
+    await session.continueRun({ dontAskAgain: body.dontAskAgain === true });
     await flushDurable();
     return c.json(stateOf(session));
   });
@@ -1259,8 +1264,11 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json(stateOf(session));
   });
 
-  // Answer a pending ask_user (D-18): either {text} for a single-question form,
-  // or {answers:[{question, answer, header?}]} for a multi-question form.
+  // Answer a pending question (D-18) — the `ask` tool, `ask_user` before P9d:
+  // either {text} for a single-question form, or {answers:[{question, answer,
+  // header?}]} for a multi-question form. The person answers any question, one
+  // a sub-agent addressed to its parent agent included: they outrank every
+  // agent (X-56 Q16).
   app.post("/session/:id/answer", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);

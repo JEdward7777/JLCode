@@ -3,7 +3,7 @@
  * config. It fully owns its state — the anti-entropy invariant.
  *
  * The loop is a resumable state machine so it can **pause** for approvals
- * (D-08/D-16) and for ask_user (D-18), then **resume**: `send()` runs until the
+ * (D-08/D-16) and for a question (`ask`, D-18), then **resume**: `send()` runs until the
  * session settles (idle/halted) or needs the user (awaiting-approval /
  * awaiting-input); `approve()` and `answer()` continue it. Truncation (D-30) and
  * the consecutive-failure circuit breaker (D-32) still apply.
@@ -11,7 +11,7 @@
 import path from "node:path";
 import { newId } from "../util/id.js";
 import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
-import { DEFAULT_TOOL_ROUNDS, DEFAULT_WATCHDOG_MINUTES, configuredRouting, turnTimestampsEnabled } from "../config/operations.js";
+import { DEFAULT_TOOL_ROUNDS, DEFAULT_WATCHDOG_MINUTES, configuredRouting, toolRoundsOff, turnTimestampsEnabled } from "../config/operations.js";
 import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage, ProviderRouting } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
@@ -31,7 +31,7 @@ import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { AgentAccess, Tool, ToolGate, ToolPreview } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
-import { ASK_USER } from "../tools/ask-user.js";
+import { isAskTool } from "../tools/ask-user.js";
 import { TODO_GUIDANCE, TODO_READ } from "../tools/todo-tools.js";
 import {
   planTodoSnapshot,
@@ -119,7 +119,7 @@ export interface SessionRetarget {
  * been attached to one runs exactly as before P9c.
  */
 export interface AgentHost {
-  spawn(session: Session, task: string, model?: string): Promise<string>;
+  spawn(session: Session, task: string, model?: string, mode?: Mode): Promise<string>;
   send(session: Session, to: string, text: string): string;
   listModels(session: Session): string;
   /** May this session open an **agent-started** turn now, under the tree's
@@ -130,6 +130,14 @@ export interface AgentHost {
   treeSpendUsd(session: Session): number;
   /** This session's descendants, for the parent's "waiting for you" flag. */
   subtree(session: Session): SubtreeSummary;
+  /** Hand the question this session just paused on — addressed to its parent
+   *  agent (P9d, X-56 Q16) — to that parent, as a message it answers by
+   *  replying. Called once the session is `awaiting-input`. */
+  askParent?(session: Session, request: AskUserRequest): void;
+  /** Is the tool-round pause switched off for this session (P9d, D-89)? By its
+   *  **root's** config, read live, or by a "don't ask again" recorded on it or
+   *  on any agent above it. */
+  roundsOff?(session: Session): boolean;
 }
 
 export interface SessionOptions {
@@ -371,10 +379,17 @@ export class Session {
   private yieldTurn = false;
   /** The current turn was ended by a Stop — the outcome a parent is told. */
   private stoppedTurn = false;
-  /** A turn parked on the spend cap was released by a raise but its tree is at
-   *  its concurrency cap (D-89): it waits `queued`, and `startQueued` resumes
-   *  the parked turn rather than opening a new one. */
-  private queuedResume = false;
+  /** A suspended turn is ready to go on but its tree is at its concurrency cap
+   *  (D-89): it waits `queued`, and `startQueued` resumes the parked turn rather
+   *  than opening a new one. `cap`: a raise released a turn parked on the spend
+   *  cap. `answer`: the parent agent answered the question it was paused on
+   *  (P9d) — a resume an agent caused, so it waits for a slot like any
+   *  agent-started turn. */
+  private queuedResume: false | "cap" | "answer" = false;
+  /** Whether a person opened the current turn — the human, rather than an
+   *  agent's message or notice. Decides who an `ask` with no `to` goes to (P9d,
+   *  X-56 Q16): the person for a human-started turn, else the parent agent. */
+  private turnByHuman = true;
   /** The pause a persistence fault covered (D-46) — a card, the round budget —
    *  restored when the fault clears, so the card stays up instead of reading
    *  `idle` with a decision still pending under it. */
@@ -975,7 +990,7 @@ export class Session {
     if (!this.capReached || this.capBlocked()) return;
     this.capReached = false;
     if (this.agentHost && !this.agentHost.admit(this)) {
-      this.queuedResume = true;
+      this.queuedResume = "cap";
       this.status = "queued";
       return;
     }
@@ -1058,6 +1073,58 @@ export class Session {
     await this.drainQueue({ admitted: true });
   }
 
+  /** The question this session is paused on is addressed to its parent agent
+   *  (P9d) — so the parent's next message to it answers it rather than queue. */
+  get asksParent(): boolean {
+    return this.pendingQuestion?.request.to === "parent";
+  }
+
+  /**
+   * The parent agent replied while this session waits on the question it asked
+   * that parent (P9d, X-56 Q16): the reply **is** the answer. Synchronous, like
+   * {@link receive} — the answer is on the tree inside the sender's own tool
+   * call, so it is on disk before the sender moves on — and like `receive` it
+   * opens no turn: the session waits `queued` until the coordinator calls
+   * {@link resumeAnswered} off the sender's stack. Returns false (nothing done)
+   * when there is no such question any more — the person answered it first, or
+   * a Stop ended it — and the caller delivers the reply as an ordinary message.
+   *
+   * Under a persistence fault the answer still lands (it joins the backlog, as
+   * a `receive` would) and the resume waits for recovery.
+   */
+  answerFromParent(from: string, text: string): boolean {
+    const pending = this.pendingQuestion;
+    if (!pending || pending.request.to !== "parent") return false;
+    // Only a session actually paused on the card. Between `tryExecute` setting
+    // the question and `runLoop` setting `awaiting-input`, an answer that set
+    // `queued` would be overwritten — a question-less card, stranded. The
+    // reply then queues like any message.
+    const paused =
+      this.status === "awaiting-input" ||
+      (this.status === "awaiting-persistence" && this.statusBeforeFault === "awaiting-input");
+    if (!paused) return false;
+    this.pendingQuestion = undefined;
+    // Answers the call (H-10): nothing more is said over it, and the rest of
+    // the batch — if the question was not its last call — runs on resume.
+    this.appendToolResult(pending.call, `[Answer from your parent agent "${from}"]\n\n${text}`, false);
+    this.pendingToolCalls.shift();
+    this.queuedResume = "answer";
+    if (this.pendingPersistence) this.statusBeforeFault = "queued";
+    else this.status = "queued";
+    return true;
+  }
+
+  /** Resume a turn its parent's answer released (P9d) — through `admit`, since
+   *  an agent caused it: no slot → it stays `queued` and the tree starts it
+   *  FIFO. A no-op once anything else has claimed the turn (a Stop, a person's
+   *  message, a persistence fault). */
+  async resumeAnswered(): Promise<void> {
+    if (this.status !== "queued" || this.queuedResume !== "answer") return;
+    if (this.agentHost && !this.agentHost.admit(this)) return;
+    this.queuedResume = false;
+    await this.advance();
+  }
+
   /** The current turn is being, or was, ended by a Stop — so nothing it does
    *  from here may start another agent's turn (D-34 reaching the subtree). */
   get stopping(): boolean {
@@ -1070,8 +1137,8 @@ export class Session {
     const host = this.agentHost;
     if (!host) return undefined;
     return {
-      spawn: async (task, model) => {
-        const result = await host.spawn(this, task, model);
+      spawn: async (task, model, mode) => {
+        const result = await host.spawn(this, task, model, mode);
         this.yieldTurn = true;
         return result;
       },
@@ -1330,13 +1397,31 @@ export class Session {
 
   /** Resume a stalled turn on a doubled budget (D-79) — the Continue button.
    *  Nothing is replayed and nothing was dropped: the loop picks up at the model
-   *  call it was about to make. */
-  async continueRun(): Promise<void> {
+   *  call it was about to make.
+   *
+   *  `dontAskAgain` is the card's third button (P9d, X-56 Q8, D-89): continue,
+   *  and switch the pause off for this thread and every sub-agent below it.
+   *  Recorded in the log (`rounds-off`), so it holds across a restart; the
+   *  spend cap (D-33) is then the only brake. */
+  async continueRun(opts: { dontAskAgain?: boolean } = {}): Promise<void> {
     const pending = this.pendingStall;
     if (!pending) throw new Error("No pending continue");
     this.pendingStall = undefined;
     this.iterationBudget = pending.nextBudget;
+    if (opts.dontAskAgain && !this.conversation.roundsOff) {
+      this.conversation.roundsOff = true;
+      this.emit({ type: "rounds-off" });
+    }
     await this.advance();
+  }
+
+  /** Whether the tool-round pause is off for this session (P9d, D-89): in a
+   *  tree, the coordinator answers from the root's config and the "don't ask
+   *  again" marks above; alone, this thread's own config (read live) and mark. */
+  get roundsOff(): boolean {
+    if (this.agentHost?.roundsOff) return this.agentHost.roundsOff(this);
+    const live = this.lookupConfig?.(this.config.id) ?? this.config;
+    return this.conversation.roundsOff === true || toolRoundsOff(live);
   }
 
   /** Compact on demand from the UI (P6c) — the `manual`/`suggest` "Compact now"
@@ -1394,7 +1479,8 @@ export class Session {
     // fault clears, the session returns to idle, not to a card that is gone.
     this.statusBeforeFault = undefined;
     // A resume a cap raise queued is a parked turn again: a hard stop ends it
-    // below; a soft one leaves it parked on the cap, as before the raise.
+    // below; a soft one leaves it parked on the cap, as before the raise. A
+    // resume an answer queued (P9d) has nothing to park on — any Stop ends it.
     const resumeWasQueued = this.queuedResume;
     this.queuedResume = false;
     if (scope === "hard") {
@@ -1425,11 +1511,13 @@ export class Session {
       // `settleStopped` answers it, so even a soft Stop has ended that turn
       // and it gets the same tail as a hard one.
       const ends =
-        scope === "hard" || (this.turnLeaf !== undefined && unansweredToolCalls(this.conversation, this.turnLeaf).length > 0);
+        scope === "hard" ||
+        resumeWasQueued === "answer" ||
+        (this.turnLeaf !== undefined && unansweredToolCalls(this.conversation, this.turnLeaf).length > 0);
       const endsTurn = ends && this.turnLeaf !== undefined;
       if (endsTurn) this.stoppedTurn = true;
       this.settleStopped();
-      if (!ends && resumeWasQueued) this.capReached = true;
+      if (!ends && resumeWasQueued === "cap") this.capReached = true;
       // A hard stop of a turn that was *suspended* — a card, the round budget,
       // or parked on the spend cap — ends it here, and no `advance` tail will
       // ever run for it. So do that tail's work now: release its pin (and the
@@ -1491,8 +1579,9 @@ export class Session {
     // while it read `awaiting-persistence`. It goes back to idle — its queued
     // messages wait for the next turn to open, and a resume a raise had
     // queued is parked on the cap again, where the next raise finds it.
+    // An answered turn (P9d) keeps its mark: `afterRecovery` resumes it.
     if (before === "queued") {
-      if (this.queuedResume) {
+      if (this.queuedResume === "cap") {
         this.queuedResume = false;
         this.capReached = true;
       }
@@ -1599,6 +1688,12 @@ export class Session {
    *  have. Back on a card, neither — they wait behind the person's decision. */
   private async afterRecovery(): Promise<void> {
     if (this.status !== "idle") return;
+    if (this.queuedResume === "answer") {
+      // The parent's answer landed under the fault (P9d): resume that turn now,
+      // through `admit` like any agent-caused resume.
+      this.status = "queued";
+      return this.resumeAnswered();
+    }
     if (this.capReached) return this.resumeFromCap(); // still blocked → stays parked for the next raise
     if (this.queue.some((m) => m.inbound)) await this.drainQueue();
   }
@@ -2000,6 +2095,7 @@ export class Session {
       this.toolRounds = 0;
       this.iterationBudget = this.maxToolIterations;
     }
+    this.turnByHuman = opts.human;
     this.pendingStall = undefined;
     this.appendUserText(text, opts.inbound);
     this.pendingToolCalls = [];
@@ -2080,7 +2176,7 @@ export class Session {
     await this.advance();
   }
 
-  /** Provide the answer(s) to a pending ask_user and continue (D-18). A bare
+  /** Provide the answer(s) to a pending question and continue (D-18). A bare
    *  string answers a single-question form verbatim (the tool result is exactly
    *  that text); an array carries per-question answers for a multi-question form.
    *
@@ -2205,6 +2301,10 @@ export class Session {
         }
         if (outcome === "paused-input") {
           this.status = "awaiting-input";
+          // A question for the parent agent goes to it now that this session is
+          // paused (P9d) — its reply is the answer. The person can answer too.
+          const asked = this.pendingQuestion?.request;
+          if (asked?.to === "parent") this.agentHost?.askParent?.(this, asked);
           return;
         }
         this.pendingToolCalls.shift(); // "done" → dequeue
@@ -2238,9 +2338,20 @@ export class Session {
       // Out of budget (D-79). Every tool call this turn issued has run and its
       // result is on the tree, so the pause costs nothing to hold and nothing to
       // resume — Continue simply takes the next turn on a doubled budget.
+      // Unless it is switched off (P9d, D-89): the root's config says
+      // `--tool-rounds off`, or someone chose "don't ask again" on this thread
+      // or above it. The spend cap above is then the only brake.
       if (this.toolRounds >= this.iterationBudget) {
-        this.raiseStallPause();
-        return;
+        if (!this.roundsOff) {
+          this.raiseStallPause();
+          return;
+        }
+        // Unbraked, a round whose driver and tools never touch I/O (the fake
+        // driver, a sync tool refusal) would hold the event loop for good: no
+        // Stop request, no log write, no timer could land. Past the budget,
+        // give the rest of the process a turn before every further round.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (this.stopScope) return this.settleStopped();
       }
 
       // Pre-send compaction (D-44/D-27): once ground-truth usage from a previous
@@ -2704,6 +2815,12 @@ export class Session {
       throw err;
     }
     this.takeTurn(); // the retried turn owns the pin from here
+    // Who opened the retried turn, for an `ask` with no `to` (P9d): its last
+    // user entry — the message the failed request was answering.
+    const opener = pathToLeaf(this.conversation, this.turnLeaf)
+      .reverse()
+      .find((e) => e.type === "user");
+    this.turnByHuman = !(opener?.type === "user" && opener.inbound);
     this.retryable = false;
     this.consecutiveFailures = 0;
     this.stopScope = null;
@@ -2883,6 +3000,24 @@ export class Session {
     this.emit({ type: "tool-end", name: call.function.name, isError });
   }
 
+  /** Who an `ask` goes to (P9d, X-56 Q16). Omitted → whoever opened the
+   *  current turn: the person for one they typed, the parent agent for one an
+   *  agent's message or notice opened — so a question a sub-agent cannot
+   *  answer climbs to its own questioner, up to the person at the root. A
+   *  session with no parent agent asks the person, and is refused `parent`. */
+  private addressee(raw: unknown): "user" | "parent" | { refused: string } {
+    const hasParent = this.agentHost !== undefined && (this.agentInfo?.parentSessionId ?? null) !== null;
+    const wanted = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+    if (wanted === "") return this.turnByHuman || !hasParent ? "user" : "parent";
+    if (wanted === "user" || wanted === "human") return "user";
+    if (wanted === "parent") {
+      return hasParent
+        ? "parent"
+        : { refused: 'ask refused: you have no parent agent — ask the user (to: "user"). Nothing was asked.' };
+    }
+    return { refused: `ask refused: \`to\` is "user" or "parent", not ${JSON.stringify(raw)}. Nothing was asked.` };
+  }
+
   /** Attempt to process the front tool call; may pause for approval/input. */
   private async tryExecute(call: ToolCall): Promise<StepOutcome> {
     let args: Record<string, unknown>;
@@ -2893,9 +3028,19 @@ export class Session {
       return "done";
     }
 
-    // ask_user is intercepted — it pauses for the user's answer (D-18).
-    if (call.function.name === ASK_USER) {
-      const request: AskUserRequest = { id: newId("ask"), questions: parseAskQuestions(args) };
+    // The question tool is intercepted — it pauses for the answer (D-18). Its
+    // old name, `ask_user`, still is: logs before P9d are full of it.
+    if (isAskTool(call.function.name)) {
+      const to = this.addressee(args.to);
+      if (typeof to !== "string") {
+        this.appendToolResult(call, to.refused, true);
+        return "done";
+      }
+      const request: AskUserRequest = {
+        id: newId("ask"),
+        questions: parseAskQuestions(args),
+        ...(to === "parent" ? { to } : {}),
+      };
       this.pendingQuestion = { request, call };
       this.emit({ type: "awaiting-input", question: request });
       return "paused-input";
