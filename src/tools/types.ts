@@ -25,8 +25,23 @@ export interface ToolResult {
   files?: SharedFile[];
 }
 
+/**
+ * What the agent tools may ask of the tree the calling session belongs to
+ * (X-56, D-88). Supplied by the Session, which knows who is calling; a session
+ * outside any coordinator has none, and the tools say so. Each call either
+ * returns the text the model reads or throws an `Error` whose message is the
+ * refusal — the depth limit, a model on another key, an unknown recipient.
+ */
+export interface AgentAccess {
+  spawn(task: string, model?: string): Promise<string>;
+  send(to: string, text: string): string;
+  listModels(): string;
+}
+
 export interface ToolContext {
   sandbox: Sandbox;
+  /** The calling session's agent tree (D-88), for the agent tools. */
+  agents?: AgentAccess;
   /** Background-task registry (D-34) — long-running commands register here so
    *  they can be listed, killed, and watchdog-watched. */
   tasks?: TaskRegistry;

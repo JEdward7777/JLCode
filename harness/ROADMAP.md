@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), next P9c.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), next P9d.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,24 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-07 (Phase 9 as the ratchet — P9a ✅, P9b ✅, P9c ✅, next P9d).** Same
+> run as the blocks below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
+> **Next free ids: D-93, X-58, H-21.**
+>
+> **P9c — the agent core — shipped (D-92).** Seven review rounds. R1–R3 kept finding unanswered
+> tool calls left on a branch by one stop/settle path or another; a **second opinion** turned that
+> into one invariant (no user entry, and no turn at rest, over an unanswered `tool_use`), which also
+> **closes H-10**. R4–R6 were stop/park/cap edges and persistence-fault recovery (a fault now
+> restores the pause it covered; recovery is idempotent by fault id and answers before the resumed
+> turn runs). R7 CLEAN. Build + free tiers green (**1130**, +64 over P9b). Headless (sub-agents show
+> as plain threads until P9e). README gained a "Sub-agents" section. **Re-cuts:** `AgentCoordinator`
+> instead of `SessionManager` parent links; the Tier-1 recording moves to **P9g**. Filed **H-17…H-20**.
+>
+> **Resume checklist if interrupted:** P9c committed + pushed → start **P9d** (addressed questions,
+> stricter children, the off switch — Tier-0; fresh implementer), then **P9e** and **P9f** (UI, peek —
+> port pairs from 7821/9421 upward, one fresh pair per agent), each its own commit. **Stop before
+> P9g** and ask Joshua the level; P9g also records P9c's Tier-1 fixture.
 
 > **Resume block — 2026-11-05 (Phase 9 as the ratchet — P9a ✅, P9b ✅, next P9c).** Same run
 > as the 2026-11-04 block below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
@@ -2125,7 +2143,13 @@ the rail as ordinary sessions — usable, just not nested.
 - Overlaps **X-19** (switching only; preset editing stays X-19's). Mind **X-46** (chip tail-cut).
 - **Peek** (VISUAL-LOG): same-key switch, cross-key confirm, pending-while-busy, deleted config.
 
-### P9c — Agent core: tree storage, spawn/message, and the brakes (Tier-0, one Tier-1)
+### P9c — Agent core: tree storage, spawn/message, and the brakes (Tier-0, one Tier-1) ✅ *(2026-11-07, D-92 — seven review rounds; closes H-10)*
+
+> **Re-cut at build (D-92):** (1) parent links live in a new `AgentCoordinator`
+> (`src/session/agents.ts`), not in `SessionManager`. (2) The Tier-1 run is written
+> (`test/agents-live.test.ts`) but **not recorded**: recording costs money, so it moves to **P9g**
+> (`JLCODE_LIVE=1 npx vitest run test/agents-live.test.ts`, model `openai/gpt-4o-mini`, override with
+> `JLCODE_AGENTS_MODEL`). Until then it skips.
 
 - Storage: entries gain an **agent id**; `ConversationStore` folds several roots per file, each with
   its own `activeLeaf` records; a session loads only its agent's subtree. One `AppendLog` per file
@@ -2191,11 +2215,46 @@ the rail as ordinary sessions — usable, just not nested.
 
 ### P9g — Live validation (paid tier — **ask Joshua which level first**)
 
+**Also record P9c's Tier-1 fixture** (`test/agents-live.test.ts`, see the P9c re-cut).
+
 A real tree on a cheap model: spawn on a same-key sibling config, a mid-task correction landing, a
 child question routed to its parent, a cross-model switch mid-thread and back via fork. Record what
 the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-20 — small P9c leftovers.** Found 2026-11-07 by the P9c review loop; **OPEN.** (a) On load,
+  the tree header is read first-vs-last inconsistently. (b) A `retryPersistence` whose fault was
+  replaced mid-retry reports `recovered: true` (the returned state does show the new fault). (c) Its
+  failure message reads `failure.message`, which is undefined for a non-`Error` throw. (d)
+  `POST /session/:id/persistence` checks the status before `await c.req.json()`, so a concurrent
+  recovery makes the second request a 500 instead of a 409 (the approve/answer routes share the
+  shape; pre-existing). (e) The watchdog ask builds a D-84-shaped request (pre-existing). (f) A
+  tree-wide persistence fault is recovered per member, one card each — P9e's UI should offer one.
+  (g) A comment on `startRecovery` should say the resume must *start synchronously* (an `await`
+  before `runLoop` would open a second-loop gap).
+
+- **H-19 — the width cap and human turns.** Found 2026-11-07 by the P9c review loop; **OPEN.** (a)
+  Human resumes (approve, answer, continue) bypass `admit`, so a human can push a tree one over
+  `agentConcurrency`, by design for now (D-92). (b) A human `/queue` into a session that is itself
+  `queued` waits behind the cap. (c) A human `/queue` made during a persistence fault waits at idle
+  after recovery until the next send (`afterRecovery` drains only for inbound agent messages). (d)
+  `maybeAutoTitle` runs outside the width count.
+
+- **H-18 — tree spend is incomplete.** Found 2026-11-07 by the P9c review loop; **OPEN.** (a) A
+  closed child's spend drops out of `treeSpendUsd`, so closing an agent frees spend-cap headroom.
+  (b) Spend that is held only in memory is lost from the tree total after a restart.
+
+- **H-17 — Stop and settle edges in the agent tree.** Found 2026-11-07 by the P9c review loop
+  (rounds 1–7); **OPEN.** None strands a session or breaks the H-10 invariant; each is a wrong
+  notice, a missed event, or a Stop that doesn't land where expected. (a) A soft Stop on the
+  compaction or stall card, or on a non-resume queued turn, does not end it. (b) A Stop or a
+  persistence fault during the tail title ask skips `settled`. (c) A queued drain that bails emits no
+  `settled`. (d) The card-stop tail calls `applyPendingSwitch` without `drainQueue`. (e) A Stop that
+  lands mid-spawn gets an inaccurate `spawn_agent` result. (f) Closing a child sends its parent a
+  "stopped" notice. (g) A re-park at the spend cap emits no cap-reached event. (h) `toolRounds++`
+  counts a round that was never sent. (i) A soft Stop under a fault, after a cap raise under the
+  same fault, is overridden on recovery (the order of the person's actions is lost).
 
 - **H-16 — UI rot seen during P9b, not P9b's own.** Found 2026-11-05 by the P9b implementer and reviewers;
   **OPEN.** (a) After approving from the card, the rail keeps saying "waiting…" while the session is
@@ -2253,7 +2312,9 @@ the models actually did with the tool descriptions.
     `isError` tool result, and `loadConfig` failures in the resolve path mapped to a typed refusal.
 
 - **H-10 — a Stop from a question or approval card leaves the card's tool call unanswered.** Found
-  2026-11-04 by the P9a review loop (round 6); pre-existing, unchanged by P9a; **OPEN.** Soft or
+  2026-11-04 by the P9a review loop (round 6); pre-existing, unchanged by P9a; **CLOSED 2026-11-07 by
+  P9c (D-92):** a structural invariant — no user entry appended and no turn at rest over an unanswered
+  `tool_use` — enforced by `closeDanglingCalls` in the stop, flush and turn-open paths. Soft or
   hard Stop while `awaiting-input`/`awaiting-approval` settles `idle` with the `tool_use` still on
   the branch and no result; the next `send` clears `pendingToolCalls` and appends a user message
   under it — the dropped-call shape D-79 forbids, and the unanswered-`tool_calls` request D-84 found

@@ -288,6 +288,21 @@ export function pinnedProvider(conv: Conversation, leafId?: string | null): stri
  * property of the messages, not of the loop that built them.
  */
 export function endsWithUnansweredToolCall(messages: ChatMessage[]): boolean {
-  const last = messages[messages.length - 1];
-  return last?.role === "assistant" && (last.tool_calls?.length ?? 0) > 0;
+  // The message-level twin of `unansweredToolCalls` (tree.ts): trailing tool
+  // results, then the assistant that called them — answered only if every one
+  // of its calls is among them. A partly answered batch used to slip past a
+  // check that only looked at the last message. The attachments message
+  // (P8b) rides after a run of results, so it is stepped over too.
+  const answered = new Set<string>();
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === "tool") {
+      if (m.tool_call_id) answered.add(m.tool_call_id);
+      continue;
+    }
+    if (m.role === "user" && Array.isArray(m.content) && messages[i - 1]?.role === "tool") continue;
+    if (m.role !== "assistant") return false;
+    return (m.tool_calls ?? []).some((c) => !answered.has(c.id));
+  }
+  return false;
 }

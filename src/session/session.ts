@@ -16,12 +16,20 @@ import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult,
 import { accumulate } from "../llm/stream.js";
 import { isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
-import { newConversation, appendEntry, governingSwitch, pathToLeaf, setActiveLeaf as treeSetActiveLeaf, type EntryInput } from "../conversation/tree.js";
+import {
+  newConversation,
+  appendEntry,
+  governingSwitch,
+  pathToLeaf,
+  setActiveLeaf as treeSetActiveLeaf,
+  unansweredToolCalls,
+  type EntryInput,
+} from "../conversation/tree.js";
 import { buildWireMessages, endsWithUnansweredToolCall, pinnedProvider } from "../conversation/wire.js";
-import type { Attachment, Conversation, Entry, ModelSwitchEntry, SharedFile } from "../conversation/types.js";
+import type { Attachment, Conversation, Entry, InboundMeta, ModelSwitchEntry, SharedFile } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { Tool, ToolGate, ToolPreview } from "../tools/types.js";
+import type { AgentAccess, Tool, ToolGate, ToolPreview } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
 import { ASK_USER } from "../tools/ask-user.js";
 import { TODO_GUIDANCE, TODO_READ } from "../tools/todo-tools.js";
@@ -57,7 +65,14 @@ import {
 } from "./compaction.js";
 import { buildTitleInstruction, driftedEnough, sanitizeTitle, TITLE_MAX_TOKENS, type TitleMark } from "./title.js";
 import type { CompactionTrigger } from "../config/types.js";
-import { ModelConfigMissingError, type PendingModelSwitch, type QueuedMessage } from "./types.js";
+import {
+  ModelConfigMissingError,
+  type AgentInfo,
+  type InboundMessage,
+  type PendingModelSwitch,
+  type QueuedMessage,
+  type SubtreeSummary,
+} from "./types.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -96,6 +111,25 @@ export interface SessionRetarget {
   contextWindowSource?: WindowSource;
   compactorWindow?: number;
   acceptsImages: boolean;
+}
+
+/**
+ * What a session asks of the agent tree it belongs to (X-56, D-88/D-89). The
+ * coordinator (`src/session/agents.ts`) implements it; a session that has never
+ * been attached to one runs exactly as before P9c.
+ */
+export interface AgentHost {
+  spawn(session: Session, task: string, model?: string): Promise<string>;
+  send(session: Session, to: string, text: string): string;
+  listModels(session: Session): string;
+  /** May this session open an **agent-started** turn now, under the tree's
+   *  concurrency cap (D-89)? False → it waits `queued`, and the host starts it
+   *  (`startQueued`) when a slot frees, FIFO. */
+  admit(session: Session): boolean;
+  /** Whole-tree spend (D-33): what the cap is measured against. */
+  treeSpendUsd(session: Session): number;
+  /** This session's descendants, for the parent's "waiting for you" flag. */
+  subtree(session: Session): SubtreeSummary;
 }
 
 export interface SessionOptions {
@@ -260,6 +294,12 @@ const DECLINE_NOTE =
 
 const quote = (s: string): string => `"${s}"`;
 
+/** The result a call gets when a Stop ends its turn before it ran (H-10). */
+const STOPPED_CALL = "stopped by the user — this call was not run";
+/** …and when the conversation simply moved on past it: a rewind onto a call,
+ *  a `length` cut-off mid-call, a log written before this rule. */
+const SKIPPED_CALL = "not run — the conversation continued";
+
 /** Nothing was said here — an explicit decline, or a blank that amounts to one. */
 export function isBlankAnswer(a: AskUserAnswer): boolean {
   return a.declined === true || (!(a.chosen?.length ?? 0) && !(a.typed?.trim() ?? "") && !a.answer.trim());
@@ -319,7 +359,39 @@ export class Session {
    *  switch (new model, old window) is the H-06 shape with a new face. */
   config: ModelConfig;
   conversation: Conversation;
-  status: SessionStatus = "idle";
+  /** Backing field for {@link status}. */
+  private currentStatus: SessionStatus = "idle";
+  /** Where this session sits in an agent tree (D-88), once it is in one. */
+  agentInfo: AgentInfo | undefined;
+  /** The tree this session belongs to (D-88); see {@link AgentHost}. */
+  private agentHost: AgentHost | undefined;
+  /** A `spawn_agent` call succeeded in the batch being run: the turn ends when
+   *  the batch drains, unless something new was said meanwhile (X-56 Q5 — the
+   *  parent ends its turn and idles, as if waiting on the user). */
+  private yieldTurn = false;
+  /** The current turn was ended by a Stop — the outcome a parent is told. */
+  private stoppedTurn = false;
+  /** A turn parked on the spend cap was released by a raise but its tree is at
+   *  its concurrency cap (D-89): it waits `queued`, and `startQueued` resumes
+   *  the parked turn rather than opening a new one. */
+  private queuedResume = false;
+  /** The pause a persistence fault covered (D-46) — a card, the round budget —
+   *  restored when the fault clears, so the card stays up instead of reading
+   *  `idle` with a decision still pending under it. */
+  private statusBeforeFault: SessionStatus | undefined;
+
+  /** Where the loop stands. Every change is announced (`status` event): the
+   *  agent coordinator counts a tree's running agents by it (D-89), and it is
+   *  what a sub-agent's rail dot will be drawn from (P9e). */
+  get status(): SessionStatus {
+    return this.currentStatus;
+  }
+  set status(next: SessionStatus) {
+    if (next === this.currentStatus) return;
+    this.currentStatus = next;
+    this.emit({ type: "status", status: next });
+  }
+
   /** Live capability mode + approval policy (D-07/D-08), switchable at runtime. */
   mode: Mode;
   approval: ApprovalPolicy;
@@ -565,6 +637,14 @@ export class Session {
       (sum, e) => (e.type === "assistant" ? sum + computeCost(e.usage, this.pricing) : sum),
       0,
     );
+    // Agent messages a previous process recorded as sent but never delivered
+    // (D-88) wait in the queue rather than vanish. Nothing auto-starts on load
+    // (X-56 Q15): they land with whatever turn opens next.
+    this.queue = (this.conversation.inbox ?? []).map((m) => ({
+      id: newId("q"),
+      text: m.text,
+      inbound: { id: m.id, from: m.from, kind: m.kind },
+    }));
     // A resumed thread whose branch was switched (D-87) reports — and runs
     // under — its own model from the start, not the binding's it was built
     // with. A deleted config is left for `send` to refuse, where the refusal
@@ -880,15 +960,124 @@ export class Session {
   async setSpendCap(capUsd: number | null): Promise<void> {
     this.spendCapUsd = capUsd ?? undefined;
     this.emit({ type: "cap", capUsd });
-    if (this.capReached && !this.capBlocked()) {
-      this.capReached = false;
-      await this.advance(); // resume where the breach paused us
+    // Under a persistence fault nothing resumes (D-46): the cap is recorded and
+    // the park kept, and recovery resumes it if this raise freed it.
+    if (this.pendingPersistence) return;
+    await this.resumeFromCap();
+  }
+
+  /** Resume a turn parked on the spend cap, if the cap now allows it — the
+   *  one path for a raise and for recovery from a persistence fault. A raise
+   *  resumes every parked member of a tree at once; the width cap must hold
+   *  through that too (D-89), so a resume asks for a slot like an
+   *  agent-started turn does, and waits `queued` for one. */
+  private async resumeFromCap(): Promise<void> {
+    if (!this.capReached || this.capBlocked()) return;
+    this.capReached = false;
+    if (this.agentHost && !this.agentHost.admit(this)) {
+      this.queuedResume = true;
+      this.status = "queued";
+      return;
     }
+    await this.advance(); // resume where the breach paused us
   }
 
   /** At/over the cap → the next LLM call is declined (D-33). */
   private capBlocked(): boolean {
-    return this.spendCapUsd !== undefined && this.spendUsd >= this.spendCapUsd;
+    // In an agent tree the cap is the tree's (D-33 "whole-tree", D-35): every
+    // member carries the root's cap and measures the whole tree against it.
+    const spent = this.agentHost ? this.agentHost.treeSpendUsd(this) : this.spendUsd;
+    return this.spendCapUsd !== undefined && spent >= this.spendCapUsd;
+  }
+
+  // ---- Sub-agents (X-56, D-88/D-89). The tree itself — names, depth, keys, the
+  // concurrency queue — is the coordinator's; the session only carries its
+  // place in it, takes in messages, and asks before an agent-started turn.
+
+  /** Join an agent tree. Called by the coordinator, once. */
+  setAgentHost(host: AgentHost, info: AgentInfo): void {
+    this.agentHost = host;
+    this.agentInfo = info;
+  }
+
+  /** Leave it (the session was closed out of the tree). */
+  clearAgentHost(): void {
+    this.agentHost = undefined;
+  }
+
+  /** This session's descendants, when it is in a tree. */
+  get subtree(): SubtreeSummary | undefined {
+    return this.agentHost?.subtree(this);
+  }
+
+  /** Whole-tree spend when in a tree, else this session's own (D-33). */
+  get treeSpendUsd(): number {
+    return this.agentHost ? this.agentHost.treeSpendUsd(this) : this.spendUsd;
+  }
+
+  /** Announce a change below this session (the coordinator's call). */
+  reportSubtree(summary: SubtreeSummary): void {
+    this.emit({ type: "subtree", summary });
+  }
+
+  /**
+   * Take in a message another agent sent (X-56 Q5, D-88) — recorded first
+   * (`inbox`, persisted before anything else, so a message owed a reply
+   * survives a crash), then queued. It does **not** open a turn: the
+   * coordinator calls {@link startNext} for that, so a turn never starts
+   * inside the sender's own tool call. While this session is busy it simply
+   * rides the queue, which the loop flushes at every tool-loop pass (D-52) —
+   * which is how a correction reaches a working child before its next step.
+   */
+  receive(message: InboundMessage): void {
+    this.emit({ type: "inbox", message });
+    this.queue.push({
+      id: newId("q"),
+      text: message.text,
+      inbound: { id: message.id, from: message.from, kind: message.kind },
+    });
+    this.emit({ type: "queue", queue: [...this.queue] });
+  }
+
+  /** Open a turn on the queue's head if idle — what a delivered message does to
+   *  an idle receiver (D-88). Busy, it is already waiting its turn. */
+  async startNext(): Promise<void> {
+    if (this.status === "idle") await this.drainQueue();
+  }
+
+  /** The coordinator found a slot for a `queued` turn (D-89): start it — or,
+   *  for a turn a cap raise released, resume it where the breach parked it. */
+  async startQueued(): Promise<void> {
+    if (this.status !== "queued") return;
+    if (this.queuedResume) {
+      this.queuedResume = false;
+      await this.advance(); // `runLoop` marks it running
+      return;
+    }
+    this.status = "idle";
+    await this.drainQueue({ admitted: true });
+  }
+
+  /** The current turn is being, or was, ended by a Stop — so nothing it does
+   *  from here may start another agent's turn (D-34 reaching the subtree). */
+  get stopping(): boolean {
+    return this.stopScope !== null || this.stoppedTurn;
+  }
+
+  /** The agent tools' handle on the tree, bound to this session as the caller.
+   *  A successful spawn marks the turn to end once its batch drains. */
+  private get agentAccess(): AgentAccess | undefined {
+    const host = this.agentHost;
+    if (!host) return undefined;
+    return {
+      spawn: async (task, model) => {
+        const result = await host.spawn(this, task, model);
+        this.yieldTurn = true;
+        return result;
+      },
+      send: (to, text) => host.send(this, to, text),
+      listModels: () => host.listModels(this),
+    };
   }
 
   /** The compaction budget for this session (D-27/D-44), or undefined when no
@@ -1155,6 +1344,16 @@ export class Session {
    *  can't race a live turn). compact() clears needsCompaction on success. */
   async compactNow(): Promise<boolean> {
     if (this.status !== "idle") return false;
+    // Over an open call (a reply cut off mid-call) the summary request would be
+    // the D-84 shape. Compaction writes only its summary, so it refuses rather
+    // than answer the call itself; the next message heals the branch (P9c).
+    if (unansweredToolCalls(this.conversation, this.workingLeaf).length > 0) {
+      this.emit({
+        type: "error",
+        message: "Can't compact yet: the last reply ended in the middle of a tool call. Send a message first, then compact.",
+      });
+      return false;
+    }
     this.alignOutOfTurn(); // the config invariant: summarize with this branch's model
     return this.compact();
   }
@@ -1184,10 +1383,32 @@ export class Session {
     // A stop outranks a Retry that was mid-flight: the user changed their mind
     // about wanting this turn at all, so don't let the restart flag resurrect it.
     this.restartRequested = false;
+    // A running turn ends at its next safe point: that turn was ended by a
+    // person — what a parent is told. (A suspended one is marked below, only
+    // if this Stop actually ends it: a soft Stop leaves a cap-parked turn
+    // parked, and the raise that resumes it must run it as a normal turn.)
+    if (this.status === "running") this.stoppedTurn = true;
+    // A spawn earlier in the batch must not end some later turn early.
+    this.yieldTurn = false;
+    // Whatever pause a persistence fault was covering, a Stop ends it: when the
+    // fault clears, the session returns to idle, not to a card that is gone.
+    this.statusBeforeFault = undefined;
+    // A resume a cap raise queued is a parked turn again: a hard stop ends it
+    // below; a soft one leaves it parked on the cap, as before the raise.
+    const resumeWasQueued = this.queuedResume;
+    this.queuedResume = false;
     if (scope === "hard") {
       this.abortController?.abort();
       this.tasks?.killAll("stop");
+      // Agent messages emptied out here will never be delivered: say so on
+      // disk, or a reload would hand them back as still owed (D-88).
+      this.dropInbound(this.queue);
       this.queue = [];
+      // A remark that rode in on an approval belongs to the turn being stopped.
+      this.pendingNote = undefined;
+      // Nothing is answered here: mid-batch the head call is still running and
+      // its real result will land. The calls that never run are answered when
+      // the loop unwinds, in `settleStopped` — the one closer (H-10).
       this.pendingToolCalls = [];
       this.pendingApproval = undefined;
       this.pendingQuestion = undefined;
@@ -1197,7 +1418,18 @@ export class Session {
     }
     this.emit({ type: "stopped", scope });
     if (this.status !== "running") {
+      // A suspended turn ended here is the one place a turn comes to rest with
+      // no `advance` tail to say so (see below); remembered before the reset.
+      // A turn whose branch ends in a call with no result (a card — whatever
+      // the status says, `awaiting-persistence` included) cannot stay parked:
+      // `settleStopped` answers it, so even a soft Stop has ended that turn
+      // and it gets the same tail as a hard one.
+      const ends =
+        scope === "hard" || (this.turnLeaf !== undefined && unansweredToolCalls(this.conversation, this.turnLeaf).length > 0);
+      const endsTurn = ends && this.turnLeaf !== undefined;
+      if (endsTurn) this.stoppedTurn = true;
       this.settleStopped();
+      if (!ends && resumeWasQueued) this.capReached = true;
       // A hard stop of a turn that was *suspended* — a card, the round budget,
       // or parked on the spend cap — ends it here, and no `advance` tail will
       // ever run for it. So do that tail's work now: release its pin (and the
@@ -1207,12 +1439,13 @@ export class Session {
       // this as the idle point it is — the in-view branch's config, then any
       // pick made while it was busy. The hard stop has already emptied the
       // queue, so there is nothing held to drain.
-      if (scope === "hard") {
+      if (ends) {
         this.turnLeaf = undefined;
         this.capReached = false;
         this.turnGen++;
         this.resyncModel();
         this.applyPendingSwitch();
+        if (endsTurn) this.emit({ type: "settled", outcome: "stopped" });
       }
     }
     // else: the running advance() loop notices stopScope and settles at a safe point.
@@ -1222,8 +1455,56 @@ export class Session {
    *  persistence write settles into its own pause instead of idle (D-46), so the
    *  session can't quietly accept new work while records are unwritten. */
   private settleStopped(): void {
+    // Nothing comes to rest over a call with no result (H-10): every stopped
+    // path — a card, mid-batch, a stream that finished into a Stop — ends here.
+    this.closeDanglingCalls(STOPPED_CALL);
     this.stopScope = null;
     this.status = this.pendingPersistence ? "awaiting-persistence" : "idle";
+  }
+
+  /**
+   * Answer every call at the turn's tip that has no result, as an error, and
+   * drop whatever was waiting to run or to be decided on them. The one place a
+   * dangling `tool_use` is closed (H-10, P9c). Reads the **tree**, not the loop's
+   * bookkeeping, so it is right however the turn got here; and writes only on
+   * the turn's own pinned branch — with no turn pinned there is nothing of this
+   * session's to close, and an idle Stop must never write to the reader's branch.
+   * Never called while a call is in flight: `approve` and the loop mark the
+   * session `running` first, and a Stop then defers to the unwind.
+   */
+  private closeDanglingCalls(content: string): number {
+    if (this.turnLeaf === undefined) return 0;
+    const dangling = unansweredToolCalls(this.conversation, this.turnLeaf);
+    for (const call of dangling) this.appendToolResult(call, content, true);
+    this.pendingToolCalls = [];
+    this.pendingApproval = undefined;
+    this.pendingQuestion = undefined;
+    return dangling.length;
+  }
+
+  /** The status to return to when a persistence fault clears: the pause it
+   *  covered, or `idle`. A Stop meanwhile ended that pause, and cleared this. */
+  private takeStatusBeforeFault(): SessionStatus {
+    const before = this.statusBeforeFault ?? "idle";
+    this.statusBeforeFault = undefined;
+    // A turn that was waiting for a slot lost its place in the tree's queue
+    // while it read `awaiting-persistence`. It goes back to idle — its queued
+    // messages wait for the next turn to open, and a resume a raise had
+    // queued is parked on the cap again, where the next raise finds it.
+    if (before === "queued") {
+      if (this.queuedResume) {
+        this.queuedResume = false;
+        this.capReached = true;
+      }
+      return "idle";
+    }
+    return before;
+  }
+
+  /** Record that these queued agent messages will never be delivered (D-88). */
+  private dropInbound(removed: QueuedMessage[]): void {
+    const ids = removed.flatMap((m) => (m.inbound ? [m.inbound.id] : []));
+    if (ids.length > 0) this.emit({ type: "inbox-dropped", ids });
   }
 
   get awaitingPersistence(): PersistenceFault | undefined {
@@ -1244,6 +1525,7 @@ export class Session {
     if (this.status === "running") {
       this.stop("hard"); // abort the in-flight call; the loop settles into the pause
     } else {
+      this.statusBeforeFault = this.status;
       this.status = "awaiting-persistence";
     }
   }
@@ -1254,16 +1536,28 @@ export class Session {
    *  is injected by the server (it owns the store). */
   async retryPersistence(retryWrites: () => Promise<void>): Promise<boolean> {
     if (!this.pendingPersistence) throw new Error("No pending persistence fault");
+    const faultId = this.pendingPersistence.id;
+    let failure: Error | undefined;
     try {
       await retryWrites();
     } catch (err) {
-      this.pendingPersistence = { ...this.pendingPersistence, message: (err as Error).message, retryFailed: true };
+      failure = err as Error;
+    }
+    // Another recovery (a second tab, a Discard) may have cleared this fault
+    // while the writes were retried — and its resume may already be running. By
+    // identity, not truthiness: a newer fault is not this one either. Then this
+    // call has nothing left to restore, and must not write `idle` over a live
+    // loop (which would let a second turn open beside it).
+    if (this.pendingPersistence?.id !== faultId) return failure === undefined;
+    if (failure) {
+      this.pendingPersistence = { ...this.pendingPersistence, message: failure.message, retryFailed: true };
       this.emit({ type: "awaiting-persistence", fault: this.pendingPersistence });
       return false;
     }
     this.pendingPersistence = undefined;
-    this.status = "idle";
+    this.status = this.takeStatusBeforeFault();
     this.emit({ type: "persistence-recovered", discarded: 0 });
+    this.startRecovery();
     return true;
   }
 
@@ -1272,11 +1566,41 @@ export class Session {
    *  entries after a restart, which is why it is never done automatically. */
   discardPersistence(discardWrites: () => number): number {
     if (!this.pendingPersistence) throw new Error("No pending persistence fault");
+    // No await between the check and the clear, so no other recovery can slip
+    // in between (the race `retryPersistence` guards against).
     const discarded = discardWrites();
     this.pendingPersistence = undefined;
-    this.status = "idle";
+    this.status = this.takeStatusBeforeFault();
     this.emit({ type: "persistence-recovered", discarded });
+    this.startRecovery();
     return discarded;
+  }
+
+  /** The resume a recovery set off, if any — resolves when it has run as far as
+   *  its first pause or its end. Recovery itself does not wait for it. */
+  private recovery: Promise<void> = Promise.resolve();
+  get recovered(): Promise<void> {
+    return this.recovery;
+  }
+
+  /** Run `afterRecovery` **off the request** that cleared the fault: the
+   *  person's Retry/Discard answers as soon as the fault is gone, rather than
+   *  staying open for the whole resumed turn (and failing with it). A failure
+   *  in the resumed turn is reported on the session's stream, never thrown. */
+  private startRecovery(): void {
+    this.recovery = this.afterRecovery().catch((err: unknown) => {
+      this.emit({ type: "error", message: `Resuming after the persistence fault failed: ${err instanceof Error ? err.message : String(err)}` });
+    });
+  }
+
+  /** What the fault held back, once it clears (D-46): a cap park a raise freed
+   *  meanwhile resumes (through `admit`, like any raise); otherwise agent
+   *  messages that arrived during it start their turn, as a delivery would
+   *  have. Back on a card, neither — they wait behind the person's decision. */
+  private async afterRecovery(): Promise<void> {
+    if (this.status !== "idle") return;
+    if (this.capReached) return this.resumeFromCap(); // still blocked → stays parked for the next raise
+    if (this.queue.some((m) => m.inbound)) await this.drainQueue();
   }
 
   /** The background tasks currently running (D-34), for the UI list. */
@@ -1608,8 +1932,38 @@ export class Session {
     }
   }
 
-  /** Send a user message and run until the session settles or needs the user. */
+  /**
+   * The bookkeeping every turn opening shares, once its branch is pinned —
+   * `openTurn` and `retry` both, so a future way of opening a turn cannot
+   * forget a piece of it. The turn takes the pin and its settle (`turnGen`),
+   * starts with no stale Stop, yield or queued resume, and **heals** its tip:
+   * a branch can reach a new turn with a call still open — a rewind onto it,
+   * a `length` cut-off mid-call, an idle pick written over one, a log older
+   * than the rule — and nothing may be sent or said under it (P9c).
+   */
+  private takeTurn(): void {
+    this.turnGen++;
+    this.stoppedTurn = false;
+    this.yieldTurn = false;
+    this.queuedResume = false; // a parked turn a raise had queued is abandoned
+    this.closeDanglingCalls(SKIPPED_CALL);
+  }
+
+  /** Send a **human-typed** message and run until the session settles or needs
+   *  the user. The only door that resets the tool-round budget (D-89). */
   async send(text: string): Promise<void> {
+    await this.openTurn(text, { human: true });
+  }
+
+  /**
+   * Open a turn on one message. `human` is whether a person typed it — or, for a
+   * queue drain, whether a person typed anything waiting in it: only human input
+   * starts the D-79 budget over (D-89, X-56 Q7). An agent's message, a sub-agent's
+   * completion notice and (P9f) a Wake all continue the count, so a tree that
+   * keeps waking itself up still pauses at the same budget a single unattended
+   * turn would.
+   */
+  private async openTurn(text: string, opts: { human: boolean; inbound?: InboundMeta }): Promise<void> {
     this.assertCanSend();
     // A send always opens a **new** turn on the reader's branch. A pin still
     // held here belongs to a turn that is not coming back as such — one parked
@@ -1637,15 +1991,17 @@ export class Session {
     // everything this turn produces chains off here no matter where the reader
     // navigates while it runs.
     this.turnLeaf = this.conversation.activeLeaf;
-    this.turnGen++; // this turn now owns the pin and its settle
-    // A fresh message is a fresh turn, so the tool-round budget starts over
-    // (D-79) — and it starts over *here only*: approval, ask_user and compaction
-    // all resume the same turn and must keep spending the same budget.
-    this.toolRounds = 0;
-    this.iterationBudget = this.maxToolIterations;
+    this.takeTurn();
+    // A fresh *human* message is a fresh turn, so the tool-round budget starts
+    // over (D-79) — and it starts over *here only*: approval, ask_user and
+    // compaction all resume the same turn and keep spending the same budget,
+    // and an agent's message continues it (D-89).
+    if (opts.human) {
+      this.toolRounds = 0;
+      this.iterationBudget = this.maxToolIterations;
+    }
     this.pendingStall = undefined;
-    const entry = this.pushEntry({ type: "user", text });
-    this.emit({ type: "user", entryId: entry.id, text });
+    this.appendUserText(text, opts.inbound);
     this.pendingToolCalls = [];
     await this.advance();
   }
@@ -1748,8 +2104,8 @@ export class Session {
 
   /** Append one user entry mid-run and announce it (the shared seam behind the
    *  approval note and the mid-run queue drain). */
-  private appendUserText(text: string): void {
-    const entry = this.pushEntry({ type: "user", text });
+  private appendUserText(text: string, inbound?: InboundMeta): void {
+    const entry = this.pushEntry(inbound ? { type: "user", text, inbound } : { type: "user", text });
     this.emit({ type: "user", entryId: entry.id, text });
   }
 
@@ -1762,17 +2118,30 @@ export class Session {
    *  assistant message unbroken, so every call site is guarded by a drained
    *  batch. The queue is held back behind a stop — a stopped loop takes no
    *  further turn, so injecting there would strand the message unanswered. */
-  private flushPendingUser(): void {
+  private flushPendingUser(): boolean {
+    // Nothing is said over an unanswered call (D-79/D-84). Stopping, the calls
+    // that will never run are closed first, so a note lands after them; not
+    // stopping, a dangling call here is a loop bug — refuse to write it.
+    const dangling = this.turnLeaf === undefined ? [] : unansweredToolCalls(this.conversation, this.turnLeaf);
+    if (dangling.length > 0) {
+      if (!this.stopScope) {
+        throw new Error(`invariant: about to append a message over ${dangling.length} unanswered tool call(s)`);
+      }
+      this.closeDanglingCalls(STOPPED_CALL);
+    }
+    let landed = false;
     if (this.pendingNote) {
       const text = this.pendingNote;
       this.pendingNote = undefined;
       this.appendUserText(text);
+      landed = true;
     }
-    if (this.stopScope || this.queue.length === 0) return;
+    if (this.stopScope || this.queue.length === 0) return landed;
     const pending = this.queue;
     this.queue = [];
     this.emit({ type: "queue", queue: [] });
-    for (const m of pending) this.appendUserText(m.text);
+    for (const m of pending) this.appendUserText(m.text, m.inbound);
+    return true;
   }
 
   /** Run the loop, then release the turn's branch pin unless the turn is merely
@@ -1800,6 +2169,13 @@ export class Session {
         // The turn is over — the other idle point a pending switch waits for —
         // and a queue held for a missing model can go once one is written.
         if (this.applyPendingSwitch()) await this.drainQueue();
+        // At rest, and still this turn's to report: no newer turn opened from
+        // the queue in the meantime (that one reports for itself), nothing is
+        // waiting for a slot. This is what a sub-agent's parent hears (D-88).
+        if (gen === this.turnGen && (this.status === "idle" || this.status === "halted")) {
+          const outcome = this.stoppedTurn ? "stopped" : this.status === "halted" || this.retryable ? "failed" : "finished";
+          this.emit({ type: "settled", outcome });
+        }
       }
     }
   }
@@ -1836,11 +2212,19 @@ export class Session {
       // Batch drained — this is the turn boundary (D-34). Anything the user has
       // said since lands *here*, before the next LLM call, so a queued message
       // steers the run it was typed during instead of arriving after it (D-52).
-      this.flushPendingUser();
+      const spoken = this.flushPendingUser();
 
       // A stop requested *during* this iteration's tool run (soft or hard): take
       // no further LLM turn. Running commands were allowed to finish above.
       if (this.stopScope) return this.settleStopped();
+
+      // A sub-agent was spawned in this batch (X-56 Q5): the parent's turn ends
+      // here, like a turn waiting on the user — its children report back by
+      // message. Unless someone just said something, which the model must see.
+      if (this.yieldTurn) {
+        this.yieldTurn = false;
+        if (!spoken) break;
+      }
 
       // Spend cap (D-33): at/over the cap, decline the next LLM call. Kill
       // nothing; just pause so the user can raise the cap (which resumes us).
@@ -2006,8 +2390,11 @@ export class Session {
     });
     const startedAt = Date.now();
     const events: StreamEvent[] = [];
+    // Its own controller, so a hard Stop (which aborts the current one) cuts
+    // the ask short rather than waiting it out.
+    this.abortController = new AbortController();
     try {
-      for await (const ev of this.driver.streamChat(req)) events.push(ev);
+      for await (const ev of this.driver.streamChat(req, { signal: this.abortController.signal })) events.push(ev);
     } catch (err) {
       // A failed title costs the thread nothing but its name — and it used to
       // cost that *silently*: a thrown ask wrote no journal line at all, which
@@ -2076,14 +2463,25 @@ export class Session {
    *  model call they never asked for is not a notification, it's a bill. Parked
    *  or not, `flushPendingUser` lands it before the next LLM call either way. */
   async enqueue(text: string, opts: { openTurn?: boolean } = {}): Promise<void> {
-    this.queue.push({ id: newId("q"), text });
+    // A parked message is JLCode's own (the todo nudge) — not human input, so it
+    // must never count as the human speaking when a turn later drains it (D-89).
+    this.queue.push(opts.openTurn === false ? { id: newId("q"), text, machine: true } : { id: newId("q"), text });
     this.emit({ type: "queue", queue: [...this.queue] });
     if (this.status === "idle" && opts.openTurn !== false) await this.drainQueue();
   }
 
   /** Replace the pending queue wholesale — the UI's edit/cancel affordance. */
   setQueue(messages: { text: string }[]): void {
-    this.queue = messages.map((m) => ({ id: newId("q"), text: m.text }));
+    // The browser edits by text alone. An agent message it hands back unchanged
+    // keeps its attribution; one it dropped is recorded as never delivered
+    // (D-88); one it edited is now the person's own words.
+    const before = [...this.queue];
+    this.queue = messages.map((m) => {
+      const at = before.findIndex((q) => q.text === m.text && (q.inbound || q.machine));
+      if (at >= 0) return before.splice(at, 1)[0]!;
+      return { id: newId("q"), text: m.text };
+    });
+    this.dropInbound(before);
     this.emit({ type: "queue", queue: [...this.queue] });
   }
 
@@ -2093,15 +2491,24 @@ export class Session {
    *  LLM call of a run still needs a turn opened for it, and that is this. The
    *  rest of the queue rides along: `send` → `advance` flushes it before the
    *  first LLM call, so the whole backlog lands together. */
-  private async drainQueue(): Promise<void> {
+  private async drainQueue(opts: { admitted?: boolean } = {}): Promise<void> {
     if (this.status !== "idle" || this.stopScope || this.capReached) return;
     // A thread whose model is gone keeps its queue rather than drop the head
     // into a send that refuses it (D-87); picking a model is what unblocks it.
     if (this.modelMissing) return;
-    const next = this.queue.shift();
+    const next = this.queue[0];
     if (!next) return;
+    // Whether a person said any of this (D-89): they reset the budget, and they
+    // never wait behind the tree's concurrency cap — a turn of agent traffic
+    // does, `queued`, until the coordinator starts it (`startQueued`).
+    const human = this.queue.some((m) => !m.inbound && !m.machine);
+    if (!human && !opts.admitted && this.agentHost && !this.agentHost.admit(this)) {
+      this.status = "queued";
+      return;
+    }
+    this.queue.shift();
     this.emit({ type: "queue", queue: [...this.queue] });
-    await this.send(next.text);
+    await this.openTurn(next.text, { human, inbound: next.inbound });
   }
 
   // ---- The shared todo list (X-31): state folded from ops on this branch.
@@ -2296,7 +2703,7 @@ export class Session {
       this.turnLeaf = prior; // a refused retry opens no turn
       throw err;
     }
-    this.turnGen++; // the retried turn owns the pin from here
+    this.takeTurn(); // the retried turn owns the pin from here
     this.retryable = false;
     this.consecutiveFailures = 0;
     this.stopScope = null;
@@ -2304,6 +2711,10 @@ export class Session {
   }
 
   private async oneAssistantTurn(): Promise<AssistantResult | undefined> {
+    // No model call after a Stop — whichever caller reached here: the loop
+    // after an in-loop title ask, the forced-compaction retry, the D-57
+    // restart. The caller settles, and `settleStopped` closes the batch.
+    if (this.stopScope) return undefined;
     const req = this.buildRequest();
     const toolNames = (req.tools ?? []).map((t) => t.function.name);
     // Attempt loop (D-57). A *transient* failure — rate limited, gateway blip,
@@ -2643,6 +3054,7 @@ export class Session {
       todos: this.todoAccess,
       acceptsImages: this.acceptsImages,
       conversationId: this.conversation.id,
+      agents: this.agentAccess,
     });
     const note = edited ? "[note: the user edited the arguments before running]\n" : "";
     this.appendToolResult(call, note + res.content, res.isError ?? false, res.attachments, res.files);

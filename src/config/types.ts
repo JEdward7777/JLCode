@@ -106,6 +106,17 @@ export interface CommandSettings {
    *  Lives beside the watchdog for the same reason: how patient to be with a
    *  long run is a question about the model you are paying for. */
   toolRounds?: number;
+  /** How many levels of sub-agents may hang below the human-started root
+   *  (X-56 Q12/Q13, D-89). Absent = 3; **0 means this config never spawns**.
+   *  Read from the **root** thread's config, live, for the whole tree — a child
+   *  on a laxer config cannot nest deeper than its root allows. */
+  agentDepth?: number;
+  /** How many agents of one tree may be **running** at the same moment (X-56
+   *  Q21, D-89); idle, waiting, finished and closed ones don't count, the root
+   *  does. Absent = 4; **0 means no cap**. Past it nothing is refused — the turn
+   *  waits `queued` and starts, FIFO, as running agents go idle. Root governs,
+   *  read live, like `agentDepth`. */
+  agentConcurrency?: number;
 }
 
 /** A named model configuration a user works under (e.g. "Client A — Opus"). */

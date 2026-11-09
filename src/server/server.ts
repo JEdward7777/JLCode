@@ -20,12 +20,13 @@ import type { McpServerStatus } from "../mcp/client.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import { base64Bytes, classifyFile } from "../tools/media.js";
 import { textMimeFor } from "../tools/file-url.js";
-import type { ConversationStore } from "../persist/conversation-store.js";
+import { splitConversationId, type ConversationStore } from "../persist/conversation-store.js";
 import { governingSwitch } from "../conversation/tree.js";
 import { groupConfigsByKey, keyFingerprint } from "../config/operations.js";
 import { ModelConfigMissingError } from "../session/types.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
+import { AgentCoordinator } from "../session/agents.js";
 import type { Session } from "../session/session.js";
 import type { AuthGuard } from "./auth.js";
 import type { Logger } from "../logger.js";
@@ -201,7 +202,9 @@ function wireEvent(e: SessionEvent, convId: string): unknown {
 /** A session's roster descriptor for the multiplexed bus (D-43): identity + its
  *  current settled state, so the rail can draw a badge without loading the tree. */
 function sessionDescriptor(session: Session): Record<string, unknown> {
-  return { id: session.id, model: session.config.model, state: stateOf(session) };
+  // `agent` places a sub-agent under its parent (D-88) — the rail nests by it
+  // in P9e; until then children show flat, as ordinary sessions.
+  return { id: session.id, model: session.config.model, agent: session.agentInfo ?? null, state: stateOf(session) };
 }
 
 
@@ -240,6 +243,13 @@ function stateOf(session: Session): Record<string, unknown> {
     mode: session.mode,
     approval: session.approval,
     spendUsd: session.spendUsd,
+    // Sub-agents (X-56, D-88): where this session sits in its tree, how the
+    // agents below it stand — `waiting > 0` is the parent's "waiting for you"
+    // flag, since a child's approvals go to the human, never to its parent —
+    // and the whole tree's spend, which is what the spend cap measures (D-33).
+    agent: session.agentInfo ?? null,
+    subtree: session.subtree ?? null,
+    treeSpendUsd: session.treeSpendUsd,
     spendCapUsd: session.spendCapUsd ?? null,
     capReached: session.capReached,
     tasks: session.taskList,
@@ -282,9 +292,35 @@ function stateOf(session: Session): Record<string, unknown> {
   return base;
 }
 
-export function createServer(deps: ServerDeps): { app: Hono; manager: SessionManager } {
+export function createServer(deps: ServerDeps): { app: Hono; manager: SessionManager; agents: AgentCoordinator } {
   const app = new Hono();
   const manager = new SessionManager();
+  const listConfigs = (): ModelConfig[] => {
+    if (deps.listConfigs) return deps.listConfigs();
+    const only = deps.resolveConfig();
+    return only ? [only] : [];
+  };
+
+  /**
+   * Every thread is the root of an agent tree (X-56, D-88); a spawn grows it.
+   * Sub-agents are ordinary sessions in the bag, persisted into their root's
+   * file — `startAgent` is the one place that difference is wired.
+   */
+  const agents = new AgentCoordinator({
+    listConfigs,
+    startAgent: ({ config, conversation, rootId, record }) => {
+      // The agent's own row goes into its tree's file ahead of its first entry
+      // (the store's one queue per file keeps that order, D-37). Not awaited and
+      // its rejection swallowed, like every projection write here: a failed
+      // write surfaces through the store's fault listener, which stops the
+      // session on that file (D-46) — that, not this promise, is the signal.
+      if (record) void deps.store.agent(rootId, record).catch(() => {});
+      return startSession(config, conversation, { agent: true });
+    },
+    agentRecords: (rootId) => deps.store.agents(rootId),
+    loadConversation: (convId) => deps.store.load(convId),
+    onError: (err) => deps.logger?.error("agent turn failed to start", { err }),
+  });
 
   /**
    * Pick up a model-config switch at **the top of a user turn** (X-40, D-82a).
@@ -352,7 +388,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
 
   /** Build a session, register it, and wire persistence. Pass a loaded
    *  conversation to resume; otherwise a fresh conversation log is created. */
-  function startSession(config: ModelConfig, conversation?: Conversation): Session {
+  function startSession(config: ModelConfig, conversation?: Conversation, opts: { agent?: boolean } = {}): Session {
     const session = deps.newSession(config, conversation);
 
     /** A stalled write is reported by the store's fault listener, **not** by the
@@ -366,9 +402,11 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
 
     // Stop this session on a write failure to its own log — or to the shared
     // index, where a full disk means nothing can be trusted to persist (D-46).
+    // A sub-agent writes into its root's file (D-88), so "its own log" is that.
+    const ownLog = path.basename(deps.store.filePath(session.conversation.id));
     const ours = (filePath: string): boolean => {
       const base = path.basename(filePath);
-      return base === `${session.conversation.id}.jsonl` || base === "index.jsonl";
+      return base === ownLog || base === "index.jsonl";
     };
     deps.store.onFault((fault) => {
       if (!ours(fault.filePath)) return;
@@ -407,6 +445,10 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         ensureCreated(); // issued first, so the header leads the log
         settled(deps.store.entry(session.conversation.id, e.entry));
       } else if (e.type === "active-leaf") settled(deps.store.activeLeaf(session.conversation.id, e.leaf));
+      // An agent message is on disk the moment it is sent, before the receiver
+      // takes it in (X-56 Q15) — and so is the fact that one never will be.
+      else if (e.type === "inbox") settled(deps.store.inbox(session.conversation.id, e.message));
+      else if (e.type === "inbox-dropped") settled(deps.store.inboxDropped(session.conversation.id, e.ids));
       else if (e.type === "title") {
         // A hand-rename can land before the first message. Records fold by id
         // rather than by order, so this only has to make the row exist.
@@ -420,6 +462,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         });
       }
     });
+    if (!opts.agent) agents.adoptRoot(session);
     return manager.add(session);
   }
 
@@ -787,7 +830,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (body.capUsd === null) cap = null;
     else if (typeof body.capUsd === "number" && body.capUsd >= 0 && Number.isFinite(body.capUsd)) cap = body.capUsd;
     else return c.json({ error: "body must include 'capUsd' as a non-negative number or null" }, 400);
-    await session.setSpendCap(cap);
+    await agents.setCap(session, cap); // the tree's cap, on every member (D-33)
     await flushDurable();
     return c.json(stateOf(session));
   });
@@ -799,7 +842,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (!session) return c.json({ error: "no such session" }, 404);
     const body = (await c.req.json().catch(() => ({}))) as { scope?: unknown };
     const scope = body.scope === "soft" ? "soft" : "hard"; // default to the big red button
-    session.stop(scope);
+    agents.stop(session, scope); // and every sub-agent below it (D-34)
     return c.json(stateOf(session));
   });
 
@@ -829,8 +872,9 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   app.post("/session/:id/close", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    session.stop("hard");
-    manager.remove(session.id);
+    // The subtree goes with it (D-34): a sub-agent with no parent left in the
+    // bag would be unreachable. Its log stays, and a message revives it.
+    for (const closed of agents.close(session)) manager.remove(closed.id);
     await flushDurable();
     return c.json({ closed: true });
   });
@@ -963,6 +1007,11 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       // tree, both appending to one log, is the X-14 hazard. Attaching also
       // makes revival idempotent, so two stale tabs converge instead of forking.
       session = manager.list().find((s) => s.conversation.id === body.conversationId);
+      if (!session && splitConversationId(body.conversationId).agent !== undefined) {
+        // A sub-agent is reached through its tree, never revived on its own —
+        // standing alone it would be a root with someone else's history (D-88).
+        return c.json({ error: "that conversation is a sub-agent; open its root thread to reach it" }, 409);
+      }
       if (!session) {
         const config = deps.resolveConfig();
         if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
@@ -1273,5 +1322,5 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     });
   }
 
-  return { app, manager };
+  return { app, manager, agents };
 }

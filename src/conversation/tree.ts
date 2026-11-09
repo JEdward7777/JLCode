@@ -9,6 +9,7 @@
  * at a sibling, without dragging them back.
  */
 import { newId } from "../util/id.js";
+import type { ToolCall } from "../llm/types.js";
 import type { Conversation, Entry, ModelSwitchEntry } from "./types.js";
 
 /** Distributive Omit so union members keep their discriminant fields. */
@@ -59,6 +60,42 @@ export function pathToLeaf(conv: Conversation, leafId: string | null = conv.acti
     cursor = entry.parent;
   }
   return path;
+}
+
+/** Entry kinds `buildWireMessages` emits no message for. Keep in step with it:
+ *  a kind the wire skips but this walk stops at would hide an open call. */
+const WIRE_SILENT: ReadonlySet<Entry["type"]> = new Set(["todo", "model-switch"]);
+
+/**
+ * The tool calls at a branch tip that have no result yet — what makes the
+ * branch unsendable (D-79's dropped call; D-84's request every backend
+ * rejects). Walk back from the leaf over the batch's results to the assistant
+ * entry that issued them; whatever it called that none of them answered is
+ * dangling. Entries that put **no message on the wire** are stepped over —
+ * `todo` (`todo_write` lands its op *before* its own result) and
+ * `model-switch` (an idle pick can land on an open tip) — because the wire
+ * steps over them too, and a call this walk cannot see still reaches the
+ * request. Anything else — a user message, a compaction (the wire restarts
+ * there), the root — means the tip is not inside a batch at all.
+ *
+ * One rule, read by every place a turn may append or come to rest (P9c): a
+ * user entry never lands, and a turn never settles, over a non-empty answer.
+ */
+export function unansweredToolCalls(conv: Conversation, leafId: string | null = conv.activeLeaf): ToolCall[] {
+  const byId = indexBy(conv.entries);
+  const answered = new Set<string>();
+  const seen = new Set<string>();
+  let cursor = leafId;
+  while (cursor !== null && !seen.has(cursor)) {
+    seen.add(cursor);
+    const entry = byId.get(cursor);
+    if (!entry) return [];
+    if (entry.type === "tool") answered.add(entry.toolCallId);
+    else if (entry.type === "assistant") return (entry.toolCalls ?? []).filter((c) => !answered.has(c.id));
+    else if (!WIRE_SILENT.has(entry.type)) return [];
+    cursor = entry.parent;
+  }
+  return [];
 }
 
 export function setActiveLeaf(conv: Conversation, leafId: string | null): Conversation {

@@ -9,13 +9,50 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import type { Conversation, Entry } from "../conversation/types.js";
+import type { Conversation, Entry, InboundMeta } from "../conversation/types.js";
 import { AppendLog, type AppendFault, type FaultListener } from "./append-log.js";
 
 export interface ConversationMeta {
   id: string;
   workingDir: string;
   configName?: string;
+}
+
+/**
+ * A sub-agent's own row in its tree's file (X-56 Q14, D-88): the whole tree
+ * lives in the **root's** JSONL, and this is what says an agent exists there,
+ * where it hangs and what it is called. Written once, when it is spawned.
+ */
+export interface AgentRecord {
+  /** The agent id — the suffix of its conversation id (`<root>~<agent>`). */
+  agentId: string;
+  /** The parent's agent id; `null` when the parent is the root thread. */
+  parentAgentId: string | null;
+  /** What other agents call it (`agent-3`); unique within the tree. */
+  name: string;
+  /** Levels below the root (a root's child is 1). */
+  depth: number;
+  createdAt: string;
+}
+
+/** Joins a root conversation id and an agent id into the agent's own
+ *  conversation id. A character `newId` never produces, so the split is exact. */
+export const AGENT_ID_SEP = "~";
+
+/** The conversation id a sub-agent's session runs under (D-88). Everything that
+ *  addresses a conversation by id — the persistence projection, the journal,
+ *  the attachment and file routes — keeps working unchanged, and the store
+ *  routes it to the root's file from the id alone, so it holds across a restart
+ *  with no lookup table to lose. */
+export function agentConversationId(rootId: string, agentId: string): string {
+  return `${rootId}${AGENT_ID_SEP}${agentId}`;
+}
+
+/** Which file a conversation id lives in, and which agent's subtree within it
+ *  (`undefined` = the root thread itself). */
+export function splitConversationId(convId: string): { file: string; agent?: string } {
+  const at = convId.indexOf(AGENT_ID_SEP);
+  return at < 0 ? { file: convId } : { file: convId.slice(0, at), agent: convId.slice(at + 1) };
 }
 
 /**
@@ -99,17 +136,82 @@ export class ConversationStore {
     return this.stalled.reduce((n, l) => n + l.discardPending(), 0);
   }
 
-  private file(convId: string): string {
-    return path.join(this.dir, `${convId}.jsonl`);
+  /** The file a conversation id is written to — the root's, for a sub-agent
+   *  (D-88). Public so the server can tell which session a fault belongs to. */
+  filePath(convId: string): string {
+    return path.join(this.dir, `${splitConversationId(convId).file}.jsonl`);
   }
 
+  /** One `AppendLog` per **file**, never per agent: every writer in a tree goes
+   *  through the same serialized queue (D-37), so interleaved agents can never
+   *  tear each other's lines. */
   private log(convId: string): AppendLog {
-    let log = this.logs.get(convId);
+    const { file } = splitConversationId(convId);
+    let log = this.logs.get(file);
     if (!log) {
-      log = this.watch(new AppendLog(this.file(convId)));
-      this.logs.set(convId, log);
+      log = this.watch(new AppendLog(this.filePath(file)));
+      this.logs.set(file, log);
     }
     return log;
+  }
+
+  /** Stamp a control or entry record with the agent it belongs to, when it
+   *  belongs to one. The root's records carry nothing, which is also exactly
+   *  what every log written before sub-agents looks like. */
+  private static tag<T extends object>(convId: string, record: T): T & { agent?: string } {
+    const { agent } = splitConversationId(convId);
+    return agent === undefined ? record : { ...record, agent };
+  }
+
+  /** Record a sub-agent in its tree's file (D-88). No index row: history lists
+   *  root threads, and an agent is reached through its root. */
+  agent(rootId: string, record: AgentRecord): Promise<void> {
+    return this.log(rootId).append({ kind: "agent", ...record });
+  }
+
+  /** Every agent ever spawned in a tree, in spawn order. */
+  agents(rootId: string): AgentRecord[] {
+    let text: string;
+    try {
+      text = fs.readFileSync(this.filePath(rootId), "utf8");
+    } catch {
+      return [];
+    }
+    const out: AgentRecord[] = [];
+    for (const r of ConversationStore.parseLines(text)) {
+      if (r.kind !== "agent" || typeof r.agentId !== "string" || typeof r.name !== "string") continue;
+      out.push({
+        agentId: r.agentId,
+        parentAgentId: typeof r.parentAgentId === "string" ? r.parentAgentId : null,
+        name: r.name,
+        depth: typeof r.depth === "number" ? r.depth : 1,
+        createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
+      });
+    }
+    return out;
+  }
+
+  /** An agent message was **sent** to this conversation (D-88, X-56 Q15) —
+   *  written now, before the receiver has taken it into its transcript, so a
+   *  message owed a reply survives a crash. Delivery is the user entry carrying
+   *  the same `inbound.id`; load pairs the two. */
+  inbox(convId: string, message: InboundMeta & { text: string }): Promise<void> {
+    const record = {
+      kind: "inbox",
+      id: message.id,
+      from: message.from,
+      // `kind` names the record; the message's own kind rides beside it.
+      msgKind: message.kind,
+      text: message.text,
+      ts: new Date().toISOString(),
+    };
+    return this.log(convId).append(ConversationStore.tag(convId, record));
+  }
+
+  /** Inbox messages that will never be delivered — a hard Stop emptied the
+   *  queue, or the person cancelled them — so load stops calling them pending. */
+  inboxDropped(convId: string, ids: string[]): Promise<void> {
+    return this.log(convId).append(ConversationStore.tag(convId, { kind: "inbox-drop", ids }));
   }
 
   /** Start a new conversation log (header + index row). Both appends are issued
@@ -133,13 +235,13 @@ export class ConversationStore {
 
   /** Persist a newly-appended tree entry. */
   entry(convId: string, entry: Entry): Promise<void> {
-    return this.log(convId).append(entry);
+    return this.log(convId).append(ConversationStore.tag(convId, entry));
   }
 
   /** Record an active-leaf move (rewind / branch switch). `null` is the point
    *  above the root, where editing the first message forks (H-05). */
   activeLeaf(convId: string, leaf: string | null): Promise<void> {
-    return this.log(convId).append({ kind: "activeLeaf", leaf });
+    return this.log(convId).append(ConversationStore.tag(convId, { kind: "activeLeaf", leaf }));
   }
 
   /** Hide a conversation from the history list (X-12b). A **masking flag**, not
@@ -161,6 +263,11 @@ export class ConversationStore {
    *  have none) simply stay untitled. Written to the conversation log *and* the
    *  index, so the history list can show labels without opening every file. */
   async title(convId: string, title: string, source: "auto" | "manual" = "auto"): Promise<void> {
+    // A sub-agent's name lives in its tree's file only — the index lists roots.
+    if (splitConversationId(convId).agent !== undefined) {
+      await this.log(convId).append(ConversationStore.tag(convId, { kind: "title", title, source, ts: new Date().toISOString() }));
+      return;
+    }
     await Promise.all([
       this.log(convId).append({ kind: "title", title, source, ts: new Date().toISOString() }),
       this.index.append({ kind: "title", id: convId, title }),
@@ -180,16 +287,30 @@ export class ConversationStore {
     return out;
   }
 
-  /** Fold a conversation's log back into an in-memory tree. */
+  /** Fold a conversation's log back into an in-memory tree — for a sub-agent's
+   *  id, only **its** records out of its tree's file (D-88). Each agent has its
+   *  own root entry, its own `activeLeaf` records and its own forks; entries
+   *  find each other by `parent` pointer, so how the writers interleaved on
+   *  disk does not matter. */
   load(convId: string): Conversation | undefined {
     let text: string;
     try {
-      text = fs.readFileSync(this.file(convId), "utf8");
+      text = fs.readFileSync(this.filePath(convId), "utf8");
     } catch {
       return undefined;
     }
-    const records = ConversationStore.parseLines(text);
-    let header: Record<string, unknown> | undefined;
+    const want = splitConversationId(convId).agent;
+    const all = ConversationStore.parseLines(text);
+    // An agent's id must name an agent this file actually records; a typo is
+    // "no such conversation", not an empty one.
+    const agentRow = want === undefined ? undefined : all.find((r) => r.kind === "agent" && r.agentId === want);
+    if (want !== undefined && !agentRow) return undefined;
+    const header = all.find((r) => r.kind === "header");
+    const records = all.filter(
+      (r) => r.kind !== "header" && r.kind !== "agent" && (typeof r.agent === "string" ? r.agent : undefined) === want,
+    );
+    const inbox = new Map<string, InboundMeta & { text: string }>();
+    const delivered = new Set<string>();
     const entries: Entry[] = [];
     let activeLeaf: string | null = null;
     let title: string | undefined;
@@ -204,8 +325,14 @@ export class ConversationStore {
     // written before H-05 replay, since their edit-fork moved the leaf silently.
     let pinned = false;
     for (const r of records) {
-      if (r.kind === "header") header = r;
-      else if (r.kind === "activeLeaf") {
+      if (r.kind === "inbox") {
+        if (typeof r.id === "string" && typeof r.from === "string" && typeof r.text === "string") {
+          const kind = r.msgKind === "task" || r.msgKind === "finished" ? r.msgKind : "message";
+          inbox.set(r.id, { id: r.id, from: r.from, kind, text: r.text });
+        }
+      } else if (r.kind === "inbox-drop") {
+        if (Array.isArray(r.ids)) for (const id of r.ids) if (typeof id === "string") delivered.add(id);
+      } else if (r.kind === "activeLeaf") {
         if (r.leaf === null || typeof r.leaf === "string") {
           activeLeaf = r.leaf;
           pinned = true;
@@ -216,8 +343,10 @@ export class ConversationStore {
           titleSource = r.source === "manual" ? "manual" : "auto";
         }
       } else {
-        const entry = r as unknown as Entry;
+        const { agent: _agent, ...rest } = r;
+        const entry = rest as unknown as Entry;
         entries.push(entry);
+        if (entry.type === "user" && entry.inbound) delivered.add(entry.inbound.id);
         if (typeof entry.id !== "string") continue;
         const follows = (entry.parent ?? null) === activeLeaf;
         if (follows || !pinned) activeLeaf = entry.id; // mirrors appendEntry
@@ -226,10 +355,17 @@ export class ConversationStore {
     }
     if (!header || typeof header.id !== "string") return undefined;
     const last = entries[entries.length - 1];
+    const pending = [...inbox.values()].filter((m) => !delivered.has(m.id));
+    // A sub-agent's name is its title unless someone renamed it since.
+    if (title === undefined && agentRow && typeof agentRow.name === "string") {
+      title = agentRow.name;
+      titleSource = "manual";
+    }
     return {
-      id: header.id,
+      id: want === undefined ? header.id : convId,
       title,
       titleSource,
+      ...(pending.length > 0 ? { inbox: pending } : {}),
       entries,
       activeLeaf,
       createdAt: typeof header.createdAt === "string" ? header.createdAt : new Date().toISOString(),

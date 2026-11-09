@@ -13,9 +13,35 @@ export interface BaseEntry {
   ts: string;
 }
 
+/**
+ * A message one agent sent another (X-56 Q5/Q6, D-88), or the notice that a
+ * sub-agent went idle. It lands as an ordinary user-side entry — the receiver
+ * reads it like anything else said to it — and this records **who** said it, so
+ * the transcript can draw it as agent traffic rather than as the human (P9e) and
+ * the log can tell an answered message from one still owed (P9f).
+ *
+ * `text` on the entry already carries the attribution line the model reads
+ * (`[Message from your parent agent "root"]` …): rendering it once, when the
+ * message is sent, keeps the wire a pure function of stored text and the cached
+ * prefix byte-identical on every replay.
+ */
+export interface InboundMeta {
+  /** The inbox id the message was recorded under when it was **sent** — before
+   *  it reached the receiver's transcript — so a crash between the two leaves a
+   *  pending message on disk rather than nothing. */
+  id: string;
+  /** The sender's agent name (`root`, `agent-2`). */
+  from: string;
+  /** `task`: the spawn's opening message; `message`: `send_message`;
+   *  `finished`: the completion notice a parent gets when a child goes idle. */
+  kind: "task" | "message" | "finished";
+}
+
 export interface UserEntry extends BaseEntry {
   type: "user";
   text: string;
+  /** Present when another agent — not the human — sent this (D-88). */
+  inbound?: InboundMeta;
 }
 
 export interface AssistantEntry extends BaseEntry {
@@ -161,4 +187,9 @@ export interface Conversation {
   activeLeaf: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Agent messages recorded as sent to this conversation but never delivered
+   *  into it (D-88) — what a crash or a restart left in flight. Folded from the
+   *  log on load; a resumed session holds them in its queue, so they land with
+   *  the next turn rather than vanishing. Absent on fresh conversations. */
+  inbox?: (InboundMeta & { text: string })[];
 }

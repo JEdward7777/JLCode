@@ -19,6 +19,7 @@ import type { ImageSupport, ModelCatalog, WindowSource } from "../llm/models.js"
 import { Session, type SessionRetarget } from "../session/session.js";
 import { ToolRegistry, defaultTools } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
+import { agentTools } from "../tools/agent-tools.js";
 import { Sandbox } from "../tools/sandbox.js";
 import { ModeApprovalGate } from "../tools/mode-gate.js";
 import type { Tool } from "../tools/types.js";
@@ -100,6 +101,9 @@ function deriveFromConfig(deps: SessionFactoryDeps, config: ModelConfig) {
     tools: new ToolRegistry([
       ...defaultTools({ watchdogMinutes, acceptsImages }),
       askUserTool(),
+      // Sub-agents (X-56, D-88). Static definitions, so the cached tool prefix
+      // never moves (D-81); the coordinator the server attaches does the work.
+      ...agentTools(),
       ...deps.mcpTools(),
     ]),
   };

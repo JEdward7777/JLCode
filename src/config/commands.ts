@@ -19,6 +19,8 @@ import {
   findModelConfig,
   projectInstructionsEnabled,
   commandWatchdogMinutes,
+  agentConcurrencyLimit,
+  agentDepthLimit,
   configuredRouting,
   routingWithOnly,
   removeModelConfig,
@@ -77,6 +79,16 @@ Fields (for add/set): --model --effort <none|low|medium|high|adaptive>
                          model is told what it can rely on. "off" removes the
                          check (only a person or a per-call timeout ends a
                          runaway); "default" clears it back to 30.
+  --agent-depth <n|default>
+                         how many levels of sub-agents may hang below a thread
+                         you started (X-56, D-89); 3 by default, 0 = this config
+                         never spawns. The ROOT thread's config governs its
+                         whole tree, read live.
+  --agent-concurrency <n|off|default>
+                         how many agents of one tree may be running at once
+                         (D-89); 4 by default, the root counts. Past it nothing
+                         is refused — the turn waits "queued" until one goes
+                         idle. "off" removes the cap.
   --provider <endpoint[,endpoint…]|none>
                          pin this config to OpenRouter endpoint(s) (D-86), e.g.
                          openai/flex — the slug a model card names. Writes
@@ -179,6 +191,32 @@ function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPat
       patch.watchdogMinutes = n;
     }
   }
+  // The sub-agent brakes (D-89), shaped like the watchdog: a number, or
+  // "default" to clear it. Depth 0 is a value (never spawn), so there is no
+  // "off" for it; concurrency's "off" is 0, i.e. no cap.
+  const depth = flagString(flags, "agent-depth");
+  if (depth !== undefined) {
+    const v = depth.trim().toLowerCase();
+    if (v === "default") patch.agentDepth = null;
+    else {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0) throw new Error(`--agent-depth must be a whole number (0 = never spawn), or "default"`);
+      patch.agentDepth = n;
+    }
+  }
+  const width = flagString(flags, "agent-concurrency");
+  if (width !== undefined) {
+    const v = width.trim().toLowerCase();
+    if (v === "default") patch.agentConcurrency = null;
+    else if (v === "off" || v === "none") patch.agentConcurrency = 0;
+    else {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(`--agent-concurrency must be a positive whole number, "off", or "default"`);
+      }
+      patch.agentConcurrency = n;
+    }
+  }
   const provider = providerFlag(flags);
   if (provider !== undefined) patch.providerOnly = provider;
   return patch;
@@ -237,6 +275,17 @@ function routingLine(config: ModelConfig): string {
   if (problem) return `    provider routing: IGNORED — ${problem}; the automatic pin applies\n`;
   if (routing) return `    provider routing: ${JSON.stringify(routing)} — replaces the automatic pin\n`;
   return "";
+}
+
+/** The sub-agent brakes this config sets when it is a tree's root (D-89). Always
+ *  printed by `which`: both are brakes on unattended spending, and a brake you
+ *  can only read by opening `config.json` is one nobody checks. */
+function agentLimitsLine(config: ModelConfig): string {
+  const depth = agentDepthLimit(config);
+  const width = agentConcurrencyLimit(config);
+  const levels = depth === 0 ? "no sub-agents (agent depth 0)" : `sub-agents up to ${depth} level${depth === 1 ? "" : "s"} below the root`;
+  const running = width === 0 ? "no cap on how many run at once" : `at most ${width} running at once (the rest wait queued)`;
+  return `    agents: ${levels}, ${running} — when this config is the root's\n`;
 }
 
 function line(c: ModelConfig, boundId: string | undefined): string {
@@ -314,6 +363,7 @@ export async function runConfig(args: string[]): Promise<number> {
       // confirm it was found, and one that has none needs to see that too.
       process.stdout.write(projectInstructionsLine(selected, cwd));
       process.stdout.write(routingLine(selected));
+      process.stdout.write(agentLimitsLine(selected));
       return 0;
     }
 
@@ -456,6 +506,9 @@ export async function runConfig(args: string[]): Promise<number> {
             ? `    run_command: no watchdog — a hung command runs until a person or a per-call timeout ends it\n`
             : `    run_command: the watchdog asks to kill or keep after ${m} min\n`,
         );
+      }
+      if (patch.agentDepth !== undefined || patch.agentConcurrency !== undefined) {
+        process.stdout.write(agentLimitsLine(updated));
       }
       // Read the threshold back whenever this command touched it — the effective
       // one, so a compactor-fit tightening (D-44a) is visible rather than silent.

@@ -68,6 +68,31 @@ function textReply(text: string): StreamEvent[] {
   return events;
 }
 
+/** Several calls in one assistant turn — one batch, as a real model sends a
+ *  fan-out (`spawn: a ;; b`). */
+function toolCalls(calls: { name: string; args: unknown }[]): StreamEvent[] {
+  const stamp = Date.now();
+  return [
+    { type: "reasoning", delta: `I should call ${calls.map((c) => c.name).join(", ")} for this.` },
+    ...calls.map(
+      (c, index): StreamEvent => ({
+        type: "tool_call",
+        index,
+        id: `fake_${stamp}_${index}`,
+        name: c.name,
+        argsDelta: JSON.stringify(c.args),
+      }),
+    ),
+    { type: "finish", reason: "tool_calls" },
+    { type: "usage", usage: { promptTokens: 1000, completionTokens: 20 } },
+  ];
+}
+
+/** An agent message's attribution line (D-88), which the prefixes below must
+ *  look past: a sub-agent's task *is* a driver command — `spawn: msg: parent |
+ *  done` has the child report back — but it arrives under its header. */
+const INBOUND_HEADER = /^\[(?:Task|Message) from [\s\S]*?\]\n\n/;
+
 function toolCall(name: string, args: unknown): StreamEvent[] {
   return [
     // Planning, then the call and **no text** — which is what a real turn looks
@@ -98,6 +123,12 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   ask: <q> [| a, b, c]        → a single-question ask_user form (D-72 escape hatch)
  *   form:                       → a multi-question ask_user form
  *   mcp: <tool> <json>          → a bridged MCP call, e.g. `mcp: srv__echo {"text":"hi"}`
+ *   spawn: <task> [;; <task>…]  → spawn_agent, one call per task in one batch (X-56).
+ *                                 The task is itself a command for the child:
+ *                                 `spawn: msg: parent | done` has it report back.
+ *   spawn@<model>: <task>       → spawn_agent on a named model config
+ *   msg: <to> | <text>          → send_message
+ *   models:                     → list_models
  *
  * It also answers the ephemeral auto-title question (X-09) with a short label
  * taken from the opening message, so labels can be peeked at offline.
@@ -152,7 +183,7 @@ let flakyLeft = 2;
  *  it arrives, before any tool result can push it out of last place. */
 function lastUserMessage(req: ChatRequest): string {
   const user = [...req.messages].reverse().find((m) => m.role === "user" && typeof m.content === "string");
-  return typeof user?.content === "string" ? stripEnvironmentDetails(user.content).trim() : "";
+  return typeof user?.content === "string" ? stripEnvironmentDetails(user.content).trim().replace(INBOUND_HEADER, "") : "";
 }
 
 function fakeAgentScript(req: ChatRequest): StreamEvent[] {
@@ -201,7 +232,8 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     // The prefixes below match on what the *user* typed, so the X-25
     // environment block comes off first — otherwise `write: a.txt | hi` would
     // write the timestamp into the file.
-    const msg = typeof last.content === "string" ? stripEnvironmentDetails(last.content).trim() : "";
+    const msg =
+      typeof last.content === "string" ? stripEnvironmentDetails(last.content).trim().replace(INBOUND_HEADER, "") : "";
     const after = (p: string) => msg.slice(p.length).trim();
 
     // The ephemeral auto-title question (X-09) — offline, answer it the way a
@@ -300,6 +332,28 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
       }
       return toolCall(name || "unknown_tool", args);
     }
+    // Sub-agents (X-56): the three agent tools, so a whole tree is drivable
+    // offline — and testable end to end without a model.
+    const spawn = /^spawn(?:@([^:]+))?:/.exec(msg);
+    if (spawn) {
+      const model = spawn[1]?.trim();
+      const tasks = msg
+        .slice(spawn[0].length)
+        .split(" ;; ")
+        .map((t) => t.trim())
+        .filter((t) => t !== "");
+      return toolCalls(
+        (tasks.length > 0 ? tasks : ["say hello"]).map((task) => ({
+          name: "spawn_agent",
+          args: model ? { task, model } : { task },
+        })),
+      );
+    }
+    if (msg.startsWith("msg:")) {
+      const [to, ...rest] = after("msg:").split("|");
+      return toolCall("send_message", { to: (to ?? "").trim() || "parent", text: rest.join("|").trim() || "hello" });
+    }
+    if (msg.startsWith("models:")) return toolCall("list_models", {});
     if (msg.startsWith("demo")) return textReply(RICH_MD);
     if (msg.startsWith("form:")) {
       return toolCall("ask_user", {

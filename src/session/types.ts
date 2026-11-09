@@ -1,7 +1,7 @@
 /** Events a session emits on its stream (the persisted/UI/bus source, §11). */
 import type { ToolKind, ToolPreview } from "../tools/types.js";
 import type { TaskView } from "../tools/task-registry.js";
-import type { Entry } from "../conversation/types.js";
+import type { Entry, InboundMeta } from "../conversation/types.js";
 import type { TodoItem } from "../conversation/todos.js";
 import type { ProviderRouting, Usage } from "../llm/types.js";
 import type { ApprovalPolicy, CompactionTrigger, Mode } from "../config/types.js";
@@ -10,6 +10,44 @@ import type { ApprovalPolicy, CompactionTrigger, Mode } from "../config/types.js
 export interface QueuedMessage {
   id: string;
   text: string;
+  /** Sent by another agent, not typed by the human (D-88). Only a human
+   *  message resets the tool-round budget (D-89), and only an agent's turn waits
+   *  for a slot under the tree's concurrency cap. */
+  inbound?: InboundMeta;
+  /** Written by JLCode itself — the parked todo nudge (X-31). Neither human
+   *  input nor agent traffic: it never opens a turn and never resets a budget. */
+  machine?: boolean;
+}
+
+/** An agent message as it travels (D-88): the attribution plus the text the
+ *  receiver will read, header line included. */
+export type InboundMessage = InboundMeta & { text: string };
+
+/** How a sub-tree stands, for the parent's "waiting for you" flag (X-56 Q10/Q11)
+ *  and the counts the rail will nest (P9e). Descendants only — not the agent itself. */
+export interface SubtreeSummary {
+  agents: number;
+  running: number;
+  queued: number;
+  /** Descendants paused on the human — an approval, a question, the round
+   *  budget. Approvals never route through agents, so this is what lights the
+   *  parent. */
+  waiting: number;
+  /** What the descendants have spent (D-33): the parent's own plus this is the
+   *  subtree's total. */
+  spendUsd: number;
+}
+
+/** Where a sub-agent sits in its tree (D-88). Absent on a session that has never
+ *  been part of one — every thread before P9c, and a root until it spawns. */
+export interface AgentInfo {
+  /** `root` for the human-started thread; `agent-N` below it. */
+  name: string;
+  /** Levels below the root; the root is 0. */
+  depth: number;
+  /** The parent session, or null for the root. */
+  parentSessionId: string | null;
+  rootSessionId: string;
 }
 
 /** A verbose per-turn record for the debug journal (D-15) — never replayed. */
@@ -66,6 +104,9 @@ export type DebugRecord =
 
 export type SessionStatus =
   | "idle"
+  // An agent's turn is ready but its tree is at its concurrency cap (D-89); it
+  // starts, FIFO, when a running agent in the tree goes idle. Never refused.
+  | "queued"
   | "running"
   | "awaiting-approval"
   | "awaiting-input"
@@ -237,6 +278,21 @@ export interface ApprovalDecision {
 
 export type SessionEvent =
   | { type: "entry"; entry: Entry } // full tree node, for the persistence projection (D-37)
+  // The session's status changed (P9c) — what the agent coordinator counts
+  // running agents by, and what the rail will draw a sub-agent's dot from (P9e).
+  | { type: "status"; status: SessionStatus }
+  // An agent message was **sent** to this session (D-88): persisted before it
+  // reaches the transcript, so a message owed a reply survives a crash.
+  | { type: "inbox"; message: InboundMessage }
+  // Inbox messages that will never be delivered (a hard Stop, a cancelled queue).
+  | { type: "inbox-dropped"; ids: string[] }
+  // The session came to rest with nothing more to do on its own — no suspended
+  // turn, nothing queued behind it (D-88). A sub-agent's parent gets its
+  // completion notice from this.
+  | { type: "settled"; outcome: "finished" | "failed" | "stopped" }
+  // This session's sub-agents changed state (X-56 Q10): the counts behind the
+  // parent's "waiting for you" flag.
+  | { type: "subtree"; summary: SubtreeSummary }
   // Rewind / branch switch — persisted so resume restores it. `null` is the
   // point above the root, where editing the first message forks (H-05).
   | { type: "active-leaf"; leaf: string | null }

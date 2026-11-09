@@ -99,6 +99,26 @@ export function toolRoundBudget(config: { commands?: CommandSettings } | undefin
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_TOOL_ROUNDS;
 }
 
+/** Levels of sub-agents below the human-started root (X-56 Q12, D-89). */
+export const DEFAULT_AGENT_DEPTH = 3;
+/** Agents of one tree running at once (X-56 Q21, D-89); the root counts. */
+export const DEFAULT_AGENT_CONCURRENCY = 4;
+
+/** How deep a tree governed by this config may nest (D-89). `0` is a value —
+ *  "this config never spawns" — so only a missing or malformed number falls back
+ *  to the default. Resolved here, like the two above, so the coordinator and
+ *  `config which` cannot disagree about the number. */
+export function agentDepthLimit(config: { commands?: CommandSettings } | undefined): number {
+  const n = config?.commands?.agentDepth;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_AGENT_DEPTH;
+}
+
+/** How many of a tree's agents may run at once (D-89); `0` = no cap. */
+export function agentConcurrencyLimit(config: { commands?: CommandSettings } | undefined): number {
+  const n = config?.commands?.agentConcurrency;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_AGENT_CONCURRENCY;
+}
+
 /** Fields a caller supplies when creating a config (id/timestamps are generated). */
 export type NewModelConfig = Omit<ModelConfig, "id" | "createdAt" | "updatedAt">;
 
@@ -173,6 +193,11 @@ export interface ModelConfigPatch {
   /** Minutes before the command watchdog asks the model to kill or keep (X-33);
    *  `0` switches the check off, `null` clears the field back to the default. */
   watchdogMinutes?: number | null;
+  /** Sub-agent levels below the root (D-89); `0` never spawns, `null` clears
+   *  back to the default. */
+  agentDepth?: number | null;
+  /** Agents of one tree running at once (D-89); `0` = no cap, `null` clears. */
+  agentConcurrency?: number | null;
   /** Endpoint slugs to pin (D-86a) — `--provider openai/flex`. Merged into any
    *  hand-edited block so its other keys survive; `null` removes the block. */
   providerOnly?: string[] | null;
@@ -228,11 +253,18 @@ export function updateModelConfig(
   // The command watchdog (X-33). `null` clears rather than writes, the same way
   // back to the default that `thresholdTokens` has — and `0` is a *value* here,
   // not an absence, since switching the check off is a deliberate choice.
+  // The two sub-agent brakes (D-89) live in the same group, and clear the same way.
   let commands: CommandSettings | undefined;
-  if (patch.watchdogMinutes !== undefined) {
-    commands = { ...(target.commands ?? {}) };
-    if (patch.watchdogMinutes === null) delete commands.watchdogMinutes;
-    else commands.watchdogMinutes = patch.watchdogMinutes;
+  const commandPatch = [
+    ["watchdogMinutes", patch.watchdogMinutes],
+    ["agentDepth", patch.agentDepth],
+    ["agentConcurrency", patch.agentConcurrency],
+  ] as const;
+  for (const [field, value] of commandPatch) {
+    if (value === undefined) continue;
+    commands ??= { ...(target.commands ?? {}) };
+    if (value === null) delete commands[field];
+    else commands[field] = value;
   }
 
   const updated: ModelConfig = {

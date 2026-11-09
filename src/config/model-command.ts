@@ -34,6 +34,8 @@ import { pickOne, readLineOr, readSecret, type PickChoice } from "../util/prompt
 import { loadConfig, saveConfig } from "./store.js";
 import { resolveBudget, shortId, thresholdLines } from "./describe.js";
 import {
+  DEFAULT_AGENT_CONCURRENCY,
+  DEFAULT_AGENT_DEPTH,
   DEFAULT_TOOL_ROUNDS,
   addModelConfig,
   DEFAULT_WATCHDOG_MINUTES,
@@ -121,6 +123,15 @@ export function nonDefaultSettings(config: ModelConfig): string[] {
   }
   const rounds = config.commands?.toolRounds;
   if (rounds !== undefined && rounds !== DEFAULT_TOOL_ROUNDS) out.push(`toolRounds:${rounds}`);
+  // The sub-agent brakes (D-89) carry with the rest of `commands` and are
+  // printed the same way — a tree that suddenly may not spawn, or may run ten
+  // agents at once, is exactly the kind of inherited setting D-82 names.
+  const depth = config.commands?.agentDepth;
+  if (depth !== undefined && depth !== DEFAULT_AGENT_DEPTH) out.push(depth <= 0 ? "agents:off" : `agentDepth:${depth}`);
+  const width = config.commands?.agentConcurrency;
+  if (width !== undefined && width !== DEFAULT_AGENT_CONCURRENCY) {
+    out.push(width <= 0 ? "agentConcurrency:off" : `agentConcurrency:${width}`);
+  }
   if (!turnTimestampsEnabled(config)) out.push("turn-timestamps:off");
   if (!projectInstructionsEnabled(config)) out.push("project-instructions:off");
   if (config.autoRetitle === true) out.push("auto-retitle:on");
