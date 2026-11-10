@@ -44,6 +44,17 @@ export function isTransientError(err: unknown): boolean {
   return TRANSIENT_NETWORK.test(text);
 }
 
+/**
+ * A rate limit (429): the one transient failure that is retried **without a
+ * cap** (D-95). It says "not now", never "not this" — so someone can walk away
+ * from a rate-limited session and trust it to go through once capacity frees
+ * up. Each attempt that hits the limit is free, the backoff tops out at
+ * `retryDelayMs`'s ceiling, and Stop still ends the wait.
+ */
+export function isRateLimitError(err: unknown): boolean {
+  return err instanceof HttpError && err.status === 429;
+}
+
 function errorCode(err: unknown): string {
   const cause = err instanceof Error ? (err.cause as { code?: unknown } | undefined) : undefined;
   return typeof cause?.code === "string" ? cause.code : "";

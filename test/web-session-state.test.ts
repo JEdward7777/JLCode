@@ -343,6 +343,18 @@ describe("retry state (D-57)", () => {
     expect(s.retryable).toBe(false);
   });
 
+  it("shows a rate-limit retry with no cap as a bare count — D-95", () => {
+    const s = reduceEvent(newSlice("s1"), {
+      type: "retrying",
+      attempt: 7,
+      of: null,
+      delayMs: 30_000,
+      message: "OpenRouter 429 (mid-stream): rate-limited upstream",
+    } as unknown as WireEvent);
+    expect(s.notice).toMatch(/retrying 7 in 30s/);
+    expect(s.notice).not.toMatch(/7\//);
+  });
+
   it("stamps a sign of life on every event, for the hung detector", () => {
     // Silence is the only symptom available: a wedged socket looks exactly like
     // a model thinking hard, so what's timed is "anything at all arriving".

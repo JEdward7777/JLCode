@@ -11,6 +11,26 @@ import type { ChatRequest, LlmDriver, StreamEvent, StreamOptions } from "./types
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
+/**
+ * A failure OpenRouter reports **inside** a stream it already answered `200` to
+ * (D-95). Once the SSE headers are out the status can't change, so an upstream
+ * rate limit arrives as a chunk carrying `error: {code: 429, message}` and no
+ * choices. Ignoring it is how a rate-limited turn used to settle as an empty
+ * assistant reply with `finishReason: "stop"` — no error, no retry, nothing.
+ * Raising it as the `HttpError` it would have been lets the session's existing
+ * transient/fatal split (D-57) decide what happens next.
+ */
+export function midStreamError(chunk: unknown): HttpError | undefined {
+  const err = (chunk as { error?: unknown } | null)?.error;
+  if (err === undefined || err === null) return undefined;
+  const e = (typeof err === "object" ? err : { message: String(err) }) as { code?: unknown; message?: unknown };
+  const code = Number(e.code);
+  // A code outside the HTTP range names no status; call it a provider failure.
+  const status = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 502;
+  const message = typeof e.message === "string" && e.message ? e.message : JSON.stringify(err);
+  return new HttpError(status, `OpenRouter ${status} (mid-stream): ${message.slice(0, 500)}`);
+}
+
 export interface OpenRouterOptions {
   apiKey: string;
   baseUrl?: string;
@@ -72,6 +92,8 @@ export class OpenRouterClient implements LlmDriver {
     if (!res.body) throw new Error("OpenRouter response had no body");
 
     for await (const chunk of streamSSE(res.body as ReadableStream<Uint8Array>)) {
+      const failure = midStreamError(chunk);
+      if (failure) throw failure;
       yield* chunkToEvents(chunk);
     }
   }

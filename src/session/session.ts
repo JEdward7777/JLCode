@@ -14,7 +14,7 @@ import type { ApprovalPolicy, Mode, ModelConfig } from "../config/types.js";
 import { DEFAULT_TOOL_ROUNDS, DEFAULT_WATCHDOG_MINUTES, configuredRouting, toolRoundsOff, turnTimestampsEnabled } from "../config/operations.js";
 import type { ChatMessage, ChatRequest, LlmDriver, StreamEvent, AssistantResult, ToolCall, ToolDef, Usage, ProviderRouting } from "../llm/types.js";
 import { accumulate } from "../llm/stream.js";
-import { isTransientError, retryDelayMs } from "../llm/errors.js";
+import { isRateLimitError, isTransientError, retryDelayMs } from "../llm/errors.js";
 import type { WindowSource } from "../llm/models.js";
 import {
   newConversation,
@@ -2888,12 +2888,15 @@ export class Session {
           this.overWindow = true;
           return undefined;
         }
-        if (attempt <= this.maxAutoRetries && isTransientError(err)) {
+        // A rate limit has no attempt cap (D-95): it is a "not now", so the
+        // session keeps backing off until capacity frees up or someone stops it.
+        const unlimited = isRateLimitError(err);
+        if ((unlimited || attempt <= this.maxAutoRetries) && isTransientError(err)) {
           const delayMs = this.autoRetryDelay(err, attempt);
           this.emit({
             type: "retrying",
             attempt,
-            of: this.maxAutoRetries,
+            of: unlimited ? null : this.maxAutoRetries,
             delayMs,
             message: (err as Error).message,
           });
@@ -2905,7 +2908,7 @@ export class Session {
               model: req.model,
               messages: req.messages.length,
               tools: toolNames,
-              error: `[transient — auto-retry ${attempt}/${this.maxAutoRetries} in ${delayMs}ms] ${(err as Error).message}`,
+              error: `[transient — auto-retry ${attempt}/${unlimited ? "∞" : this.maxAutoRetries} in ${delayMs}ms] ${(err as Error).message}`,
             },
           });
           if (await this.backOff(delayMs)) continue;

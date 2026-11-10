@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { OpenRouterClient } from "../src/llm/client";
+import { OpenRouterClient, midStreamError } from "../src/llm/client";
+import { HttpError } from "../src/llm/errors";
 import { accumulate } from "../src/llm/stream";
 import type { StreamEvent } from "../src/llm/types";
 
@@ -60,5 +61,33 @@ describe("OpenRouterClient", () => {
     await expect(async () => {
       for await (const _ of client.streamChat({ model: "m", messages: [] })) void _;
     }).rejects.toThrow(/401/);
+  });
+
+  it("raises an error OpenRouter sends inside a 200 stream as an HttpError — D-95", async () => {
+    const fakeFetch = (async () =>
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"par"}}]}\n\n',
+        'data: {"choices":[],"error":{"code":429,"message":"rate-limited upstream"}}\n\n',
+        "data: [DONE]\n\n",
+      ])) as unknown as typeof fetch;
+    const client = new OpenRouterClient({ apiKey: "sk", fetch: fakeFetch });
+    const seen: StreamEvent[] = [];
+    let thrown: unknown;
+    try {
+      for await (const ev of client.streamChat({ model: "m", messages: [] })) seen.push(ev);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(HttpError);
+    expect((thrown as HttpError).status).toBe(429);
+    expect((thrown as Error).message).toMatch(/rate-limited upstream/);
+    expect(accumulate(seen).text).toBe("par"); // what came before still streamed
+  });
+
+  it("maps a mid-stream error without an HTTP code to 502", () => {
+    expect(midStreamError({ choices: [] })).toBeUndefined();
+    expect(midStreamError({ error: { code: "server_error", message: "boom" } })?.status).toBe(502);
+    expect(midStreamError({ error: "plain string" })?.message).toMatch(/plain string/);
+    expect(midStreamError({ error: { code: 503, message: "busy" } })?.status).toBe(503);
   });
 });

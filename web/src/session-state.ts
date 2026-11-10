@@ -518,7 +518,10 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       const secs = Math.max(1, Math.round((e.delayMs as number) / 1000));
       return {
         ...s,
-        notice: `Provider failed (${e.message as string}) — retrying ${e.attempt as number}/${e.of as number} in ${secs}s…`,
+        // No cap on a rate limit (D-95): "retrying 7" rather than "7/3".
+        notice: `Provider failed (${e.message as string}) — retrying ${e.attempt as number}${
+          typeof e.of === "number" ? `/${e.of}` : ""
+        } in ${secs}s…`,
         noticeKind: "retrying",
       };
     }

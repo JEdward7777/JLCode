@@ -16,7 +16,8 @@ import { createServer } from "../src/server/server";
 import { ConversationStore } from "../src/persist/conversation-store";
 import { Session } from "../src/session/session";
 import { scriptedDriver } from "../src/session/fake";
-import { HttpError, isTransientError, retryDelayMs } from "../src/llm/errors";
+import { HttpError, isRateLimitError, isTransientError, retryDelayMs } from "../src/llm/errors";
+import { OpenRouterClient } from "../src/llm/client";
 import type { LlmDriver, StreamEvent } from "../src/llm/types";
 import type { ModelConfig } from "../src/config/types";
 import type { SessionEvent } from "../src/session/types";
@@ -383,5 +384,87 @@ describe("the /retry route (D-57)", () => {
     const tree = (await (await app.request(`/session/${id}`)).json()) as any;
     expect(tree.entries).toBeDefined(); // the tree endpoint's job
     expect(tree.retryable).toBeUndefined(); // ...and not this one's
+  });
+});
+
+describe("rate limits retry without a cap — D-95", () => {
+  it("keeps going past maxAutoRetries until the limit clears", async () => {
+    // The point of D-95: walk away from a rate-limited session and trust it to
+    // go through. A 503 gives up after the cap; a 429 does not.
+    const events: SessionEvent[] = [];
+    const s = newSession(flakyDriver(10, () => new HttpError(429, "rate-limited upstream")), { maxAutoRetries: 2 });
+    s.onEvent((e) => events.push(e));
+    await s.send("hi");
+
+    const retries = events.filter((e) => e.type === "retrying");
+    expect(retries).toHaveLength(10);
+    expect(retries.every((e) => (e as { of: number | null }).of === null)).toBe(true);
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+    const assistants = s.conversation.entries.filter((e) => e.type === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect((assistants[0] as AssistantEntry).text).toBe("recovered");
+  });
+
+  it("still lets Stop end an unbounded wait", async () => {
+    const events: SessionEvent[] = [];
+    const s = newSession(flakyDriver(Infinity, () => new HttpError(429, "rate-limited upstream")), {
+      autoRetryDelay: () => 20,
+    });
+    s.onEvent((e) => events.push(e));
+    const sent = s.send("hi");
+    await waitUntil(() => events.filter((e) => e.type === "retrying").length >= 3);
+    s.stop("hard");
+    await sent;
+
+    expect(s.status).toBe("idle");
+    expect(s.conversation.entries.filter((e) => e.type === "assistant")).toHaveLength(0);
+  });
+
+  it("classifies only 429 as uncapped", () => {
+    expect(isRateLimitError(new HttpError(429, "x"))).toBe(true);
+    expect(isRateLimitError(new HttpError(503, "x"))).toBe(false);
+    expect(isRateLimitError(new Error("fetch failed"))).toBe(false);
+  });
+
+  it("recovers from a rate limit OpenRouter reports inside a 200 stream", async () => {
+    // The reported bug, end to end through the real client: OpenRouter answered
+    // 200, then sent `error: {code: 429}` in the stream. That used to settle as
+    // an empty reply with finishReason "stop" — no error, no retry.
+    const enc = new TextEncoder();
+    const sse = (lines: string[]) =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            for (const l of lines) c.enqueue(enc.encode(l));
+            c.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    let calls = 0;
+    const fakeFetch = (async () =>
+      calls++ < 2
+        ? sse([
+            ": OPENROUTER PROCESSING\n\n",
+            'data: {"id":"gen-1","provider":"OpenAI","choices":[],"error":{"code":429,"message":"openai/gpt-6.1-sol is temporarily rate-limited upstream.","metadata":{"error_type":"rate_limit_exceeded"}}}\n\n',
+            "data: [DONE]\n\n",
+          ])
+        : sse([
+            'data: {"choices":[{"delta":{"content":"the review"}}]}\n\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            "data: [DONE]\n\n",
+          ])) as unknown as typeof fetch;
+
+    const events: SessionEvent[] = [];
+    const s = newSession(new OpenRouterClient({ apiKey: "sk", fetch: fakeFetch }));
+    s.onEvent((e) => events.push(e));
+    await s.send("review this plan");
+
+    expect(calls).toBe(3);
+    const retries = events.filter((e) => e.type === "retrying") as { message: string }[];
+    expect(retries).toHaveLength(2);
+    expect(retries[0].message).toMatch(/429.*rate-limited upstream/);
+    const assistants = s.conversation.entries.filter((e) => e.type === "assistant") as AssistantEntry[];
+    expect(assistants.map((a) => a.text)).toEqual(["the review"]);
   });
 });

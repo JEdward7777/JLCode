@@ -387,7 +387,8 @@ export type SessionEvent =
   | { type: "truncation"; message: string }
   // A transient provider failure is being re-sent automatically (D-57), so the
   // wait has a story attached instead of looking like a stall.
-  | { type: "retrying"; attempt: number; of: number; delayMs: number; message: string }
+  /** `of` is the attempt cap, or `null` when there is none — a rate limit retries until it clears (D-95). */
+  | { type: "retrying"; attempt: number; of: number | null; delayMs: number; message: string }
   // `retryable` marks a failure the Retry button can act on: nothing was
   // appended, so the same prefix can simply be sent again (D-57). Absent on the
   // errors where asking again cannot help — an over-window wall, a failed

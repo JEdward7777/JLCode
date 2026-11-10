@@ -26,7 +26,8 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 > **Resume block — 2026-11-10 (Phase 9 as the ratchet — P9a…P9e ✅, next P9f).** Same run as the
 > blocks below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
-> **Next free ids: D-95, X-58, H-23.**
+> **Next free ids: D-96, X-58, H-23.** (D-95 was taken by an out-of-band fix on 2026-11-10: in-stream
+> OpenRouter errors are surfaced, and 429s retry without a cap. P9a…P9e state below is unchanged.)
 >
 > **P9e — the rail and the transcript cards — shipped (D-94).** Two review rounds. R1: a Stop
 > fanned over a child's approval card left the card alive in the browser, so the folded ancestor
