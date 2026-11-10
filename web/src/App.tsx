@@ -8,7 +8,19 @@ import { createSpeaker, newAutoReadMemory, plainText, stepAutoRead } from "./tts
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import { needsViewResync } from "./session-state";
 import { fitModelLabel } from "./model-label";
-import { agentCard, agentStatus, buildRailTree, lineage, resolveAgent, rollup, type AgentCard, type RailNode } from "./agents";
+import {
+  agentCard,
+  agentStatus,
+  buildRailTree,
+  closedLayout,
+  lineage,
+  resolveAgent,
+  rollup,
+  subtreeWorking,
+  wakeCount,
+  type AgentCard,
+  type RailNode,
+} from "./agents";
 import {
   confirmFromRefusal,
   crossKeyQuestion,
@@ -45,6 +57,13 @@ import {
   rewind as apiRewind,
   editFork as apiEditFork,
   closeSession as apiClose,
+  reopenAgent as apiReopenAgent,
+  wakeSession as apiWake,
+  openConversation as apiOpenConversation,
+  listTreeAgents,
+  type ClosedAgent,
+  type TreeAgent,
+  type WakeReport,
   renameConversation as apiRenameConversation,
   deleteConversation as apiDeleteConversation,
   createSession,
@@ -497,6 +516,26 @@ export function App() {
       // the call. Nothing can repair it in place, so say so and offer the door.
       const unrecoverable = isUnresumable(message);
       setPeek((p) => (p?.row.id === current.row.id ? { ...p, sending: false, error: message, unrecoverable } : p));
+    }
+  }, [peek, focus]);
+
+  /** "open live" on a peek (P9f): bring the thread — the root, for a
+   *  sub-agent's peek — into the bag without sending, and hand the pane over
+   *  the way a promotion does (X-50). */
+  const openPeekLive = useCallback(async () => {
+    const current = peek;
+    if (!current) return;
+    const rootId = current.row.id.split("~")[0]!;
+    try {
+      const sessionId = await apiOpenConversation(rootId);
+      if (describedRef.current.has(sessionId)) focus(sessionId);
+      else {
+        setPromoting(sessionId);
+        focus(sessionId, { keepPeek: true });
+      }
+    } catch (err) {
+      const message = (err as Error).message;
+      setPeek((p) => (p?.row.id === current.row.id ? { ...p, error: message } : p));
     }
   }, [peek, focus]);
 
@@ -1016,6 +1055,33 @@ export function App() {
     }
   }, []);
 
+  /** Wake a rail entry's subtree (P9f). What it did is said on that card's
+   *  pane, since nothing else would show that a quiet tree was left asleep. */
+  const wakeOne = useCallback(
+    async (id: string) => {
+      try {
+        // An account of what happened, not a failure — drawn muted (`info`).
+        dispatch({ t: "patch", id, patch: { notice: wakeSummary(await apiWake(id)), noticeKind: "info" } });
+      } catch (err) {
+        notify(id, (err as Error).message);
+      }
+    },
+    [notify],
+  );
+
+  /** A closed sub-agent's row was clicked (Q18): reopen it and go to it. */
+  const reopenOne = useCallback(
+    async (parentId: string, agentId: string) => {
+      try {
+        const id = await apiReopenAgent(parentId, agentId);
+        focus(id); // its slice arrives on the `added` frame, like any session
+      } catch (err) {
+        notify(parentId, (err as Error).message);
+      }
+    },
+    [focus, notify],
+  );
+
   const rename = useCallback(
     async (id: string, title: string) => {
       try {
@@ -1060,6 +1126,8 @@ export function App() {
         onFocus={focus}
         onNew={() => void newSession()}
         onClose={(id) => void closeOne(id)}
+        onWake={(id) => void wakeOne(id)}
+        onReopen={(parentId, agentId) => void reopenOne(parentId, agentId)}
         onRename={(id, title) => void rename(id, title)}
         onPeek={openPeek}
         onRenameHistory={(id, title) => void renameHistory(id, title)}
@@ -1079,6 +1147,7 @@ export function App() {
           onSubmit={() => void promotePeek()}
           onNewThread={() => void newSession()}
           onClose={() => setPeek(null)}
+          onOpenLive={() => void openPeekLive()}
         />
       ) : focused ? (
         <ChatPane
@@ -1152,6 +1221,8 @@ function SessionRail({
   onFocus,
   onNew,
   onClose,
+  onWake,
+  onReopen,
   onRename,
   onPeek,
   onRenameHistory,
@@ -1176,6 +1247,8 @@ function SessionRail({
   onFocus: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
+  onWake: (id: string) => void;
+  onReopen: (parentId: string, agentId: string) => void;
   onRename: (id: string, title: string) => void;
   onPeek: (row: ConversationRow) => void;
   onRenameHistory: (id: string, title: string) => void;
@@ -1235,17 +1308,56 @@ function SessionRail({
       return next;
     });
   const tree = buildRailTree(sessions);
+  // Which parents' "N closed" rows the person opened (Q18) — a local shift
+  // they trigger, never a global "show closed". Per tab, like `folded`.
+  const [closedOpen, setClosedOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleClosed = (id: string) =>
+    setClosedOpen((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
+  /** A closed sub-agent's grey row (Q18): below its open siblings; a click
+   *  reopens it. Its own sub-agents fold away with it — `below` says how many. */
+  const renderClosed = (parent: SessionSlice, c: ClosedAgent, level: number): React.ReactNode => (
+    <div
+      key={`closed:${c.agentId}`}
+      className="rail-item agent closed"
+      style={{ marginLeft: Math.min(level, 4) * 12 }}
+      onClick={() => onReopen(parent.id, c.agentId)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === "Enter" && onReopen(parent.id, c.agentId)}
+      title={`${c.name} is closed — click to reopen it`}
+    >
+      <div className="rail-item-top">
+        <span className="sdot closed" />
+        <span className="rail-model">{c.name}</span>
+        {c.below > 0 && (
+          <span className="rail-closed-below" title={`${c.below} sub-agent${c.below === 1 ? "" : "s"} folded under it`}>
+            +{c.below}
+          </span>
+        )}
+        {/* One line: a closed agent has nothing running to say more about. */}
+        <span className="rail-status closed">closed</span>
+      </div>
+    </div>
+  );
 
   /** One live card and, unless folded, its sub-agents under it (X-56 Q11). */
   const renderNode = (n: RailNode<SessionSlice>): React.ReactNode => {
     const s = n.slice;
     const sub = (s.agent?.parentSessionId ?? null) !== null;
     const st = agentStatus(s, sub);
-    const hasKids = n.children.length > 0;
+    const closed = s.closedAgents;
+    const hasKids = n.children.length > 0 || closed.length > 0;
     const open = hasKids && !folded.has(s.id);
     // Folded, a parent shows the loudest thing below it — a grandchild on an
     // approval lights the root as surely as a child does.
-    const roll = hasKids && !open ? rollup(n) : null;
+    const roll = hasKids && !open && n.children.length > 0 ? rollup(n) : null;
+    const layout = closedLayout(closed, closedOpen.has(s.id));
+    const wakes = wakeCount(n);
     return (
       <Fragment key={s.id}>
         <div
@@ -1261,6 +1373,8 @@ function SessionRail({
             dotClass={st.dot}
             agentName={sub ? s.agent!.name : null}
             fold={hasKids ? { open, onToggle: () => toggleFold(s.id) } : null}
+            wakes={wakes}
+            onWake={onWake}
             onClose={onClose}
             onRename={onRename}
           />
@@ -1300,6 +1414,19 @@ function SessionRail({
           ) : null}
         </div>
         {open && n.children.map(renderNode)}
+        {open && layout.fold && (
+          <button
+            className="rail-closed-fold"
+            style={{ marginLeft: Math.min(n.level + 1, 4) * 12 }}
+            aria-expanded={layout.fold.open}
+            onClick={() => toggleClosed(s.id)}
+            title={layout.fold.open ? "fold the closed sub-agents" : "show the closed sub-agents"}
+          >
+            <span className="caret">{layout.fold.open ? "▾" : "▸"}</span>
+            {layout.fold.count} closed
+          </button>
+        )}
+        {open && layout.rows.map((c) => renderClosed(s, c, n.level + 1))}
       </Fragment>
     );
   };
@@ -1379,6 +1506,17 @@ function SessionRail({
                     onOpen={() => onPeek(row)}
                     onRename={(title) => onRenameHistory(row.id, title)}
                     onDelete={() => onDeleteHistory(row.id)}
+                    peekId={peekId}
+                    // A sub-agent peeks like any thread, read from its tree's
+                    // file — reached through the root's row (P9f).
+                    onPeekAgent={(a) =>
+                      onPeek({
+                        id: a.conversationId,
+                        workingDir: row.workingDir,
+                        createdAt: row.createdAt,
+                        title: `${row.title || row.id.slice(0, 12)} › ${a.name}`,
+                      })
+                    }
                   />
                 ))}
               </div>
@@ -1440,6 +1578,8 @@ function HistoryRow({
   onOpen,
   onRename,
   onDelete,
+  peekId,
+  onPeekAgent,
 }: {
   row: ConversationRow;
   active: boolean;
@@ -1448,7 +1588,19 @@ function HistoryRow({
   onOpen: () => void;
   onRename: (title: string) => void;
   onDelete: () => void;
+  peekId: string | null;
+  onPeekAgent: (agent: TreeAgent) => void;
 }) {
+  // A root's sub-agents, nested under it (P9f, Q14), read from its file only
+  // when the person opens the row's arrow: history lists many threads.
+  const [agentsOpen, setAgentsOpen] = useState(false);
+  const [agents, setAgents] = useState<TreeAgent[] | null>(null);
+  const toggleAgents = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const next = !agentsOpen;
+    setAgentsOpen(next);
+    if (next) void listTreeAgents(row.id).then(setAgents).catch(() => setAgents([]));
+  };
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -1514,6 +1666,7 @@ function HistoryRow({
   }
 
   return (
+    <>
     <div
       className={`rail-item history ${active ? "focused" : ""}`}
       onClick={onOpen}
@@ -1523,6 +1676,16 @@ function HistoryRow({
       title={row.title ? `${row.title} — ${row.workingDir}` : row.workingDir}
     >
       <div className="rail-item-top">
+        {row.agents && (
+          <button
+            className="rail-fold"
+            aria-expanded={agentsOpen}
+            title={agentsOpen ? "fold its sub-agents" : "show its sub-agents"}
+            onClick={toggleAgents}
+          >
+            {agentsOpen ? "▾" : "▸"}
+          </button>
+        )}
         <span className="rail-model">{label}</span>
         <button className="rail-icon" title="rename this thread" onClick={startEdit}>
           ✎
@@ -1547,7 +1710,45 @@ function HistoryRow({
         {showDir && <span className="rail-dir">{folderName(abbreviatePath(row.workingDir, homeDir))}</span>}
       </div>
     </div>
+    {agentsOpen && agents === null && <div className="rail-empty nested">loading…</div>}
+    {agentsOpen &&
+      historyAgentOrder(agents ?? []).map((a) => (
+        <div
+          key={a.agentId}
+          className={`rail-item history agent ${a.closed ? "closed" : ""} ${a.conversationId === peekId ? "focused" : ""}`}
+          style={{ marginLeft: Math.min(a.depth, 4) * 12 }}
+          onClick={() => onPeekAgent(a)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === "Enter" && onPeekAgent(a)}
+          title={`peek at ${a.name}${a.closed ? " (closed)" : ""}`}
+        >
+          <div className="rail-item-top">
+            <span className={`sdot ${a.closed ? "closed" : "idle"}`} />
+            <span className="rail-model">{a.name}</span>
+            {a.closed && <span className="rail-status closed">closed</span>}
+          </div>
+        </div>
+      ))}
+    </>
   );
+}
+
+/** A tree's agents in rail order (P9f): each under its parent, depth-first,
+ *  open ones before closed ones among siblings — as the live rail sinks them. */
+function historyAgentOrder(agents: TreeAgent[]): TreeAgent[] {
+  const out: TreeAgent[] = [];
+  const seen = new Set<string>();
+  const walk = (parent: string | null) => {
+    const kids = agents.filter((a) => a.parentAgentId === parent && !seen.has(a.agentId));
+    for (const a of [...kids.filter((k) => !k.closed), ...kids.filter((k) => k.closed)]) {
+      seen.add(a.agentId);
+      out.push(a);
+      walk(a.agentId);
+    }
+  };
+  walk(null);
+  return out;
 }
 
 /** History timestamps, at the resolution you actually scan by: a time today, a
@@ -1573,9 +1774,14 @@ function RailCardHead({
   dotClass,
   agentName,
   fold,
+  wakes,
+  onWake,
   onClose,
   onRename,
 }: {
+  /** Agents a Wake here would resume (P9f); the button shows when any. */
+  wakes: number;
+  onWake: (id: string) => void;
   session: SessionSlice;
   dotClass: string;
   /** A sub-agent's name (X-56 Q11) — its label, and not renamable: the name is
@@ -1642,6 +1848,20 @@ function RailCardHead({
       <span className="rail-model" title={session.title ? `${session.title} — ${session.model}` : session.model}>
         {label}
       </span>
+      {/* On the top line, where the label can give way: the status below must
+          keep its words (P9e), and the wake button pushed it to "o…". */}
+      {wakes > 0 && (
+        <button
+          className="rail-wake"
+          title={`Wake: resume ${wakes === 1 ? "the agent" : `the ${wakes} agents`} here that ${wakes === 1 ? "was" : "were"} cut off or owed a reply`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onWake(session.id);
+          }}
+        >
+          wake{wakes > 1 ? ` ${wakes}` : ""}
+        </button>
+      )}
       {agentName === null && (
         <button className="rail-icon" title="rename this thread" onClick={start}>
           ✎
@@ -1890,7 +2110,12 @@ function ChatPane({
             source={slice.contextWindowSource}
           />
           <SpendChip spendUsd={slice.spendUsd} capUsd={slice.capUsd} capReached={slice.capReached} onSetCap={(v) => onChangeCap(id, v)} />
-          <StopControl active={slice.working || slice.tasks.length > 0} onStop={(scope) => onStop(id, scope)} />
+          {/* Live while its subtree works too (H-22a): a root that yielded after
+              spawning is idle, and this Stop is the one that reaches its tree. */}
+          <StopControl
+            active={slice.working || slice.tasks.length > 0 || subtreeWorking(live, id)}
+            onStop={(scope) => onStop(id, scope)}
+          />
           <div className="seg" role="group" aria-label="mode">
             {MODES.map((m) => (
               <button key={m} className={m === slice.mode ? "on" : ""} onClick={() => onChangeMode(id, { mode: m })}>
@@ -2040,7 +2265,7 @@ function ChatPane({
             the turn is re-sendable. Offer it anyway with a generic line — the
             button is the point, and losing it to an F5 would be its own bug. */}
         {(slice.notice || slice.retryable) && (
-          <div className="notice">
+          <div className={`notice ${slice.noticeKind === "info" && !slice.retryable ? "info" : ""}`}>
             <span>{slice.notice ?? "The last turn failed before it was answered."}</span>
             {/* Nothing was written, so this re-sends the same prefix — the fix
                 for "I topped up my credits, now what?" (D-57). */}
@@ -2442,7 +2667,9 @@ function PeekPane({
   onSubmit,
   onNewThread,
   onClose,
+  onOpenLive,
 }: {
+  onOpenLive: () => void;
   peek: PeekState;
   homeDir?: string;
   speakingId: string | null;
@@ -2456,6 +2683,8 @@ function PeekPane({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [journal, setJournal] = useState<JournalRecord[]>([]);
   const entries = peek.conv?.entries ?? [];
+  // A sub-agent is reached through its root (D-88): read here, talked to there.
+  const subAgent = peek.row.id.includes("~");
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -2492,6 +2721,15 @@ function PeekPane({
           <span className="peek-dir" title={peek.row.workingDir}>
             {abbreviatePath(peek.row.workingDir, homeDir)}
           </span>
+          {/* Live without a word said (P9f): the thread and its open sub-agents
+              load at rest, so Wake can pick up whatever was cut off. */}
+          <button
+            className="ghost"
+            onClick={onOpenLive}
+            title={subAgent ? "open its root thread live, with its sub-agents" : "open live, with its sub-agents — nothing starts"}
+          >
+            {subAgent ? "open root live" : "open live"}
+          </button>
           <button className="ghost" onClick={onClose} title="back to the live session">
             ✕ close
           </button>
@@ -2549,7 +2787,11 @@ function PeekPane({
       <footer className="composer">
         <textarea
           value={peek.input}
-          placeholder="Continue this thread…  (sending picks it up where you’re looking)"
+          placeholder={
+            subAgent
+              ? "A sub-agent is reached through its root thread — open the root live to talk to it."
+              : "Continue this thread…  (sending picks it up where you’re looking)"
+          }
           onChange={(e) => onInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -2558,9 +2800,9 @@ function PeekPane({
             }
           }}
           rows={2}
-          disabled={peek.unrecoverable}
+          disabled={peek.unrecoverable || subAgent}
         />
-        <button onClick={onSubmit} disabled={!peek.input.trim() || peek.sending || peek.unrecoverable}>
+        <button onClick={onSubmit} disabled={!peek.input.trim() || peek.sending || peek.unrecoverable || subAgent}>
           {peek.sending ? "…" : "Send"}
         </button>
       </footer>
@@ -4019,4 +4261,16 @@ function AskForm({
       </div>
     </div>
   );
+}
+
+/** What a Wake did, in a line for the pane's notice (P9f). */
+function wakeSummary(r: WakeReport): string {
+  const part = (label: string, names: string[]) => (names.length > 0 ? `${label} ${names.join(", ")}` : null);
+  const parts = [
+    part("woke", r.woken),
+    part("queued for a slot:", r.queued),
+    part("held (cap, errors, a missing model):", r.blocked),
+    part("skipped closed:", r.closed),
+  ].filter((p): p is string => p !== null);
+  return parts.length > 0 ? `Wake — ${parts.join("; ")}.` : "Wake — nothing here was cut off or owed a reply.";
 }

@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), P9e ✅ 2026-11-10 (D-94), next P9f.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), P9e ✅ 2026-11-10 (D-94), P9f ✅ 2026-11-10 (D-96); **next P9g — paid, waiting on Joshua's level.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,24 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-10 (Phase 9 as the ratchet — P9a…P9f ✅; P9g waits on Joshua).** The
+> ratchet run Joshua asked for (P9a…P9f) is **complete**. **P9g is paid: ask Joshua which level
+> before running anything.** **Next free ids: D-97, X-58, H-24.**
+>
+> **P9f — lifecycle: close, `list_agents`, Wake, boot — shipped (D-96).** Three review rounds.
+> - **R1:** a reopen right after a close re-delivered already-answered messages (a stale inbox); a woken agent kept its Wake button; a restart during an auto compaction marked an agent "finished"; and Wake reset the failure breaker.
+> - **R2:** closing a sub-agent dropped its spend from the tree's cap. That was H-18a, but `close_agent` made it a cap bypass the model could reach. Also, a hard Stop of a cap park never showed Wake, and a fault listener leaked per close/reopen.
+> - **R3:** CLEAN.
+> - Build + free tiers green: **1239**, which includes Joshua's D-95 hotfix tests (+47 over P9e's 1192).
+> - Peeked by the implementer and by all three reviewers (VISUAL-LOG "P9f").
+> - README's "Sub-agents" section covers close, reopen, open live and Wake.
+> - Fixes H-17f, H-18a, H-22a and H-22k; H-18b partly. Filed **H-23**.
+>
+> **Next — P9g (paid, ask first):** a real tree on a cheap model: spawn on a same-key sibling, a
+> mid-task correction, a child question routed to its parent, a cross-model switch and back via fork.
+> **Also record P9c's Tier-1 fixture**: `JLCODE_LIVE=1 npx vitest run test/agents-live.test.ts`
+> (`openai/gpt-4o-mini`, override with `JLCODE_AGENTS_MODEL`).
 
 > **Resume block — 2026-11-10 (Phase 9 as the ratchet — P9a…P9e ✅, next P9f).** Same run as the
 > blocks below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
@@ -2234,7 +2252,7 @@ the rail as ordinary sessions — usable, just not nested.
   finished, styled apart from the human's messages.
 - **Peek**: a three-level tree with a child waiting on approval lighting a collapsed parent.
 
-### P9f — Lifecycle: close, `list_agents`, Wake, boot (Tier-0 + peek)
+### P9f — Lifecycle: close, `list_agents`, Wake, boot (Tier-0 + peek) ✅ *(2026-11-10, D-96 — three review rounds)*
 
 - **Closed** flag (human and agent alike): grey, sinks below open siblings, children fold; click
   reopens; >~5 closed siblings fold into an "N closed" row. Root threads close into history as
@@ -2258,7 +2276,25 @@ the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
-- **H-22 — small P9e leftovers.** Found 2026-11-10 by the P9e build and review loop; **OPEN.**
+- **H-23 — small P9f leftovers.** Found 2026-11-10 by the P9f build and review loop; **OPEN.**
+  - (a) History doesn't nest trees spawned before P9f (no index `tree` marker), and history's nested rows show a neutral dot.
+  - (b) A hard-stopped session still unwinding can append after its agent is reopened (pre-existing race). Relatedly, `unload` snapshots spend at the Stop, so an in-flight call settling afterwards reaches `offline` only on the next reopen or restart.
+  - (c) The in-memory tool-round count restarts at 0 after a server restart.
+  - (d) A `finishReason: "length"` reply that carries tool calls reads as interrupted, so Wake re-sends it.
+  - (e) A woken drain whose `queue[0]` is a person's queued message runs it as non-human.
+  - (f) The Wake summary notice isn't scrolled into view, and `rest` flickers between owes-reply and quiescent while completion notices drain.
+  - (g) `wakeAgents` reports "Woken" even when the wake's turn rejects.
+  - (h) `GET /conversation/:id/agents` and `POST /conversation/:id/open` don't validate ids (same as `/conversation/:id`).
+  - (i) `close_agent`'s description doesn't say it drops messages queued to that agent.
+  - (j) `closeChild` on a recorded-but-unloaded child marks nothing dirty, so the rail's closed list is stale until the next change.
+  - (k) A Stop-cut batch holding a successful `spawn_agent` reads quiescent, so Wake won't resume the calls the Stop cancelled. Arguably intended, but `yieldedAt` should say so.
+  - (l) After a failed `editFork`, `activeLeaf` can sit on an interior entry that reads interrupted; Wake would fork from it.
+  - (m) Stop draws in its red style on an idle root whose child waits on an approval card (unverified whether that's the resting style).
+  - (n) At materialize, `treeSpendUsd` can fold every open child's log before `loadTree`, so each child log is read twice.
+  - (o) `subtree().spendUsd`, the rail's subtree figure, still counts only loaded descendants.
+  - (p) An agent reopened onto an already-faulted tree file isn't paused by the fault that fired before its listener existed (same as a revived root).
+
+- **H-22 — small P9e leftovers.** Found 2026-11-10 by the P9e build and review loop; **OPEN** — (a) and (k) fixed 2026-11-10 by P9f (D-96).
   - (a) **No tree-wide Stop from an idle root.** `StopControl` is live only while the pane's own session works. A root that yielded after spawning is idle, so the Stop that fans down to its working subtree (D-34) can't be clicked from the root's pane. P9f should consider it alongside Wake.
   - (b) Nothing in the rail marks the focused sub-agent when it sits under a folded parent.
   - (c) An inbound user entry with forked siblings loses its ‹i/n› branch arrows when drawn as a card.
@@ -2302,12 +2338,12 @@ the models actually did with the tool descriptions.
   after recovery until the next send (`afterRecovery` drains only for inbound agent messages). (d)
   `maybeAutoTitle` runs outside the width count.
 
-- **H-18 — tree spend is incomplete.** Found 2026-11-07 by the P9c review loop; **OPEN.** (a) A
+- **H-18 — tree spend is incomplete.** Found 2026-11-07 by the P9c review loop; **OPEN** — (a) **fixed 2026-11-10 by P9f** (D-96: closed/unloaded agents count via a per-tree offline tally). (b) is **partly** fixed: entry-recorded spend now survives restart for closed agents, but spend that leaves no entry (title ask, watchdog ask) is still lost for every member, the root included. (a) A
   closed child's spend drops out of `treeSpendUsd`, so closing an agent frees spend-cap headroom.
   (b) Spend that is held only in memory is lost from the tree total after a restart.
 
 - **H-17 — Stop and settle edges in the agent tree.** Found 2026-11-07 by the P9c review loop
-  (rounds 1–7); **OPEN.** None strands a session or breaks the H-10 invariant; each is a wrong
+  (rounds 1–7); **OPEN** — (f) fixed 2026-11-10 by P9f (D-96). None strands a session or breaks the H-10 invariant; each is a wrong
   notice, a missed event, or a Stop that doesn't land where expected. (a) A soft Stop on the
   compaction or stall card, or on a non-resume queued turn, does not end it. (b) A Stop or a
   persistence fault during the tail title ask skips `settled`. (c) A queued drain that bails emits no

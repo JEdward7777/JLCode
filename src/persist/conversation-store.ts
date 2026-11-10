@@ -39,6 +39,10 @@ export interface AgentRecord {
    *  parent's. Absent = it runs at its parent's mode. */
   mode?: Mode;
   createdAt: string;
+  /** Closed (P9f, X-56 Q18–Q20): unloaded, grey in the rail, out of
+   *  `list_agents` unless asked, skipped by Wake. Folded from `agent-closed`
+   *  control records, newest wins; a message or a click reopens it. */
+  closed?: boolean;
 }
 
 /** Joins a root conversation id and an agent id into the agent's own
@@ -92,6 +96,9 @@ export interface IndexRow {
   /** A human label for the thread (X-09). Absent on rows written before titles
    *  existed, and on threads whose first exchange hasn't happened yet. */
   title?: string;
+  /** The thread has sub-agents (P9f): history can nest them under it without
+   *  opening every file to find out. Marked when an agent is spawned. */
+  agents?: boolean;
 }
 
 export class ConversationStore {
@@ -99,6 +106,9 @@ export class ConversationStore {
   private readonly index: AppendLog;
   /** Fault subscribers, applied to every log — including ones opened later (D-46). */
   private readonly faultListeners = new Set<FaultListener>();
+  /** Roots this store has marked in the index as having agents (P9f) — once
+   *  per root per process; a repeat would be harmless, only wasteful. */
+  private readonly treesMarked = new Set<string>();
 
   constructor(private readonly dir: string) {
     this.index = this.watch(new AppendLog(path.join(dir, "index.jsonl")));
@@ -172,7 +182,17 @@ export class ConversationStore {
   /** Record a sub-agent in its tree's file (D-88). No index row: history lists
    *  root threads, and an agent is reached through its root. */
   agent(rootId: string, record: AgentRecord): Promise<void> {
-    return this.log(rootId).append({ kind: "agent", ...record });
+    const written = this.log(rootId).append({ kind: "agent", ...record });
+    if (this.treesMarked.has(rootId)) return written;
+    this.treesMarked.add(rootId);
+    // The index learns the root has a tree, so history can nest it (P9f).
+    return Promise.all([written, this.index.append({ kind: "tree", id: rootId })]).then(() => {});
+  }
+
+  /** Close or reopen a sub-agent (P9f, X-56 Q18–Q20) — a control record in its
+   *  tree's file, untagged like the `agent` row it amends; newest wins. */
+  agentClosed(rootId: string, agentId: string, closed: boolean): Promise<void> {
+    return this.log(rootId).append({ kind: "agent-closed", agentId, closed, ts: new Date().toISOString() });
   }
 
   /** Every agent ever spawned in a tree, in spawn order. */
@@ -184,7 +204,12 @@ export class ConversationStore {
       return [];
     }
     const out: AgentRecord[] = [];
+    const closed = new Map<string, boolean>();
     for (const r of ConversationStore.parseLines(text)) {
+      if (r.kind === "agent-closed") {
+        if (typeof r.agentId === "string") closed.set(r.agentId, r.closed === true);
+        continue;
+      }
       if (r.kind !== "agent" || typeof r.agentId !== "string" || typeof r.name !== "string") continue;
       out.push({
         agentId: r.agentId,
@@ -195,6 +220,7 @@ export class ConversationStore {
         createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
       });
     }
+    for (const rec of out) if (closed.get(rec.agentId)) rec.closed = true;
     return out;
   }
 
@@ -227,6 +253,12 @@ export class ConversationStore {
    *  carries nothing a model reads. */
   roundsOff(convId: string): Promise<void> {
     return this.log(convId).append(ConversationStore.tag(convId, { kind: "rounds-off", ts: new Date().toISOString() }));
+  }
+
+  /** Does a conversation's file still have records queued for disk? A read
+   *  of it now would miss them (P9f: reopening an agent just closed). */
+  writesPending(convId: string): boolean {
+    return (this.logs.get(splitConversationId(convId).file)?.pending ?? 0) > 0;
   }
 
   /** Start a new conversation log (header + index row). Both appends are issued
@@ -322,7 +354,11 @@ export class ConversationStore {
     if (want !== undefined && !agentRow) return undefined;
     const header = all.find((r) => r.kind === "header");
     const records = all.filter(
-      (r) => r.kind !== "header" && r.kind !== "agent" && (typeof r.agent === "string" ? r.agent : undefined) === want,
+      (r) =>
+        r.kind !== "header" &&
+        r.kind !== "agent" &&
+        r.kind !== "agent-closed" &&
+        (typeof r.agent === "string" ? r.agent : undefined) === want,
     );
     const inbox = new Map<string, InboundMeta & { text: string }>();
     const delivered = new Set<string>();
@@ -404,6 +440,7 @@ export class ConversationStore {
     const rows: IndexRow[] = [];
     const titles = new Map<string, string>(); // later title records win (X-09)
     const deleted = new Map<string, boolean>(); // …as do later delete flags (X-12b)
+    const trees = new Set<string>(); // roots with sub-agents (P9f)
     // Compare canonical dirs, not raw strings (X-12). Rows written before
     // `create()` normalized are the reason this resolves each row rather than
     // only the filter; the cache keeps that to one syscall per distinct dir.
@@ -412,6 +449,10 @@ export class ConversationStore {
     for (const r of ConversationStore.parseLines(text)) {
       if (r.kind === "title") {
         if (typeof r.id === "string" && typeof r.title === "string") titles.set(r.id, r.title);
+        continue;
+      }
+      if (r.kind === "tree") {
+        if (typeof r.id === "string") trees.add(r.id);
         continue;
       }
       if (r.kind === "deleted") {
@@ -429,6 +470,7 @@ export class ConversationStore {
     for (const row of rows) {
       const title = titles.get(row.id);
       if (title !== undefined) row.title = title;
+      if (trees.has(row.id)) row.agents = true;
     }
     return rows.filter((row) => !deleted.get(row.id)).reverse();
   }

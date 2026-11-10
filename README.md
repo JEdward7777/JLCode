@@ -354,6 +354,26 @@ started its current turn. A question to the parent is answered by the parent's
 reply; anyone else's message waits until it is answered. You can always answer
 any question yourself from the sub-agent's thread.
 
+**Closing and reopening.** The ✕ on a sub-agent closes it: it stops, leaves
+memory, and turns into a grey row sunk below its open siblings (its own
+sub-agents fold away with it). More than five closed siblings fold into one
+"N closed" row that opens in place. Click a closed agent to reopen it. A
+message to a closed agent reopens it too, so nothing is lost. An agent can close
+its own sub-agents and list them (`list_agents`, closed ones left out unless it
+asks). Closing the thread you started puts it in history as before, and history
+nests its sub-agents under it.
+
+**After a restart, nothing starts on its own.** Open a thread from history with
+**open live** (no message needed) and its sub-agents come back with it, each
+showing how it was left: **interrupted** (cut off mid-turn), **owes a reply**
+(another agent messaged it and got no answer), or idle/finished. A **wake**
+button appears on any entry with cut-off agents in it. It resumes them, the way
+Retry would, for that entry and everything below it. Finished and closed agents
+stay asleep. The thread you started can also do this itself with `wake_agents`.
+A Wake counts as agent traffic, not as you: it waits for a free slot under the
+concurrency cap and doesn't reset any "still working?" budget. Stop also stays
+available on a thread that has gone idle while its sub-agents work.
+
 ### It knows what day it is
 
 Every message you send arrives stamped with the time you sent it, so the model

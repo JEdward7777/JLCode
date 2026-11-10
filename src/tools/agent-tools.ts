@@ -1,12 +1,13 @@
 /**
- * The agent tools (X-56, D-88): `spawn_agent`, `send_message`, `list_models`.
+ * The agent tools (X-56, D-88): `spawn_agent`, `send_message`, `list_models`,
+ * and the lifecycle three (P9f): `list_agents`, `close_agent`, `wake_agents`.
  *
  * Thin by design — every decision (depth, key, names, the concurrency queue)
  * belongs to the coordinator behind `ctx.agents`, which is the one place that
  * can see the whole tree. What lives here is what the model reads, and that is
  * the part a live model has to find legible (P9c's one Tier-1 test).
  *
- * All three are `meta` and non-mutating: they touch nothing outside the
+ * All of them are `meta` and non-mutating: they touch nothing outside the
  * conversation tree. A sub-agent's own writes are gated by its own mode and
  * approval policy, inherited from its parent, and its approvals go to the human
  * (Q10) — so spawning one cannot widen what the tree may do.
@@ -22,6 +23,9 @@ import type { Tool, ToolContext, ToolResult } from "./types.js";
 export const SPAWN_AGENT = "spawn_agent";
 export const SEND_MESSAGE = "send_message";
 export const LIST_MODELS = "list_models";
+export const LIST_AGENTS = "list_agents";
+export const CLOSE_AGENT = "close_agent";
+export const WAKE_AGENTS = "wake_agents";
 
 const NO_TREE: ToolResult = { content: "sub-agents are not available in this session", isError: true };
 
@@ -137,7 +141,81 @@ export function listModelsTool(): Tool {
   };
 }
 
-/** The three agent tools, in the order the model reads them. */
+export function listAgentsTool(): Tool {
+  return {
+    name: LIST_AGENTS,
+    kind: "meta",
+    mutates: false,
+    def: {
+      type: "function",
+      function: {
+        name: LIST_AGENTS,
+        description:
+          "List your own sub-agents by name, with the model each runs on and how it stands (working, finished, " +
+          "waiting on you, interrupted…). Closed ones are left out unless `show_closed` is true.",
+        parameters: {
+          type: "object",
+          properties: { show_closed: { type: "boolean", description: "Also list the sub-agents you or the user closed" } },
+        },
+      },
+    },
+    execute(args, ctx) {
+      return guarded(ctx, (agents) => agents.listAgents(args.show_closed === true));
+    },
+  };
+}
+
+export function closeAgentTool(): Tool {
+  return {
+    name: CLOSE_AGENT,
+    kind: "meta",
+    mutates: false,
+    def: {
+      type: "function",
+      function: {
+        name: CLOSE_AGENT,
+        description:
+          "Close one of your own sub-agents once you are done with it, to tidy your list: it stops whatever it " +
+          "is doing, its own sub-agents fold away with it, and list_agents leaves it out. Nothing is deleted — a " +
+          "send_message to it reopens it.",
+        parameters: {
+          type: "object",
+          properties: { name: { type: "string", description: "The sub-agent's name, as spawn_agent gave it" } },
+          required: ["name"],
+        },
+      },
+    },
+    execute(args, ctx) {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (!name) return Promise.resolve({ content: "close_agent needs the sub-agent's `name`", isError: true });
+      return guarded(ctx, (agents) => agents.closeAgent(name));
+    },
+  };
+}
+
+export function wakeAgentsTool(): Tool {
+  return {
+    name: WAKE_AGENTS,
+    kind: "meta",
+    mutates: false,
+    def: {
+      type: "function",
+      function: {
+        name: WAKE_AGENTS,
+        description:
+          "Resume your sub-agents after an interruption (a restart, a crash, a stop): every open agent in your " +
+          "tree that was cut off mid-turn, or has a message it never answered, carries on. Finished and closed " +
+          "ones are left alone. Only the thread the user started can call this.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    execute(_args, ctx) {
+      return guarded(ctx, (agents) => agents.wakeAgents());
+    },
+  };
+}
+
+/** The agent tools, in the order the model reads them. */
 export function agentTools(): Tool[] {
-  return [spawnAgentTool(), sendMessageTool(), listModelsTool()];
+  return [spawnAgentTool(), sendMessageTool(), listModelsTool(), listAgentsTool(), closeAgentTool(), wakeAgentsTool()];
 }

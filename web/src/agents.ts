@@ -6,7 +6,7 @@
  * Everything here is pure — slices and entries in, plain data out — so the
  * decisions are Tier-0 testable; `App.tsx` only draws what these return.
  */
-import type { EntryView, InboundMeta } from "./api";
+import type { ClosedAgent, EntryView, InboundMeta } from "./api";
 import { isAwaiting, type SessionSlice } from "./session-state";
 
 // ---- The status dot. ----
@@ -14,8 +14,10 @@ import { isAwaiting, type SessionSlice } from "./session-state";
 /** The rail's status dot for one session (X-56 Q11): `attn` is "waiting for
  *  you", `asking` a question put to its parent agent (P9d — not yours to
  *  answer, though you may), `done` a sub-agent that finished its turn (dimmed,
- *  Q18), `halt` a stalled write or a halted loop. */
-export type AgentDot = "attn" | "halt" | "busy" | "asking" | "queued" | "idle" | "done";
+ *  Q18), `halt` a stalled write or a halted loop. `wake` is at rest but cut
+ *  off — interrupted mid-turn, or owed a reply by another agent (P9f): what
+ *  Wake resumes. `closed` is a closed sub-agent's grey row (Q18). */
+export type AgentDot = "attn" | "halt" | "busy" | "asking" | "wake" | "queued" | "idle" | "done" | "closed";
 
 export interface AgentStatus {
   dot: AgentDot;
@@ -35,6 +37,7 @@ export type StatusSlice = Pick<
   | "capReached"
   | "tasks"
   | "restedAs"
+  | "rest"
 >;
 
 /**
@@ -74,14 +77,22 @@ export function agentStatus(s: StatusSlice, sub: boolean): AgentStatus {
   if (s.status === "awaiting-input") return { dot: "asking", label: "waiting…" };
   // A pause this build has no card for (D-80) — never `idle`.
   if (isAwaiting(s.status)) return { dot: "attn", label: "waiting…" };
-  if (sub && s.restedAs === "finished") return { dot: "done", label: "finished" };
+  // At rest but cut off, as its log reads (P9f) — after a restart this is
+  // the only thing that tells a stranded agent from a finished one (H-22k).
+  if (s.rest === "interrupted") return { dot: "wake", label: "interrupted" };
+  if (s.rest === "owes-reply") return { dot: "wake", label: "owes a reply" };
+  // A sub-agent loaded at rest on its own reply (after a restart, a reopen)
+  // has no `settled` to go by, but its log says it finished just the same.
+  if (sub && (s.restedAs === "finished" || (s.restedAs === null && s.rest === "quiescent"))) {
+    return { dot: "done", label: "finished" };
+  }
   return { dot: "idle", label: "idle" };
 }
 
 /** How loudly a dot calls for attention — what a collapsed parent shows the
  *  loudest of (Q11). A person's decision first, then a broken write, then work
  *  in flight, then the quiet states. */
-const URGENCY: Record<AgentDot, number> = { attn: 6, halt: 5, busy: 4, asking: 3, queued: 2, idle: 1, done: 0 };
+const URGENCY: Record<AgentDot, number> = { attn: 7, halt: 6, busy: 5, asking: 4, wake: 3, queued: 2, idle: 1, done: 0, closed: -1 };
 
 export function urgency(dot: AgentDot): number {
   return URGENCY[dot];
@@ -162,6 +173,54 @@ export function rollup<S extends TreeSlice>(node: RailNode<S>): Rollup<S> {
     if (!top || urgency(status.dot) > urgency(top.status.dot)) top = { slice: s, status };
   }
   return { count: below.length, top, waiting: below.some(waitsForYou) };
+}
+
+// ---- Lifecycle (P9f). ----
+
+/** Wake would do something with this session: at rest and cut off. */
+export function isWakeable(s: Pick<SessionSlice, "rest">): boolean {
+  return s.rest === "interrupted" || s.rest === "owes-reply";
+}
+
+/** How many sessions a Wake on this rail entry would resume — itself and its
+ *  open subtree (closed agents are not loaded, so never counted, Q20). */
+export function wakeCount<S extends TreeSlice>(node: RailNode<S>): number {
+  return [node.slice, ...descendantsOf(node)].filter(isWakeable).length;
+}
+
+/** Is anything below `id` at work — what keeps a tree-wide Stop on offer from
+ *  a root that has itself gone idle after spawning (H-22a, D-34)? */
+export function subtreeWorking(slices: readonly (StatusSlice & Pick<SessionSlice, "id" | "agent">)[], id: string): boolean {
+  const seen = new Set<string>([id]);
+  const queue = [id];
+  while (queue.length > 0) {
+    const at = queue.shift()!;
+    for (const s of slices) {
+      if (s.agent?.parentSessionId !== at || seen.has(s.id)) continue;
+      if (s.working || s.status === "running" || s.status === "queued" || s.tasks.length > 0) return true;
+      seen.add(s.id);
+      queue.push(s.id);
+    }
+  }
+  return false;
+}
+
+/** More closed siblings than this fold into one "N closed" row (Q18). */
+export const CLOSED_FOLD_AT = 5;
+
+/**
+ * A parent's closed sub-agents as its rail draws them (Q18): below the open
+ * ones, each its own grey row — unless there are more than
+ * {@link CLOSED_FOLD_AT}, when they fold into one "N closed" row the person
+ * can open in place. `fold` is that row (null when there is none); `rows` are
+ * the closed agents drawn one by one.
+ */
+export function closedLayout(
+  closed: readonly ClosedAgent[],
+  expanded: boolean,
+): { fold: { count: number; open: boolean } | null; rows: ClosedAgent[] } {
+  if (closed.length <= CLOSED_FOLD_AT) return { fold: null, rows: [...closed] };
+  return { fold: { count: closed.length, open: expanded }, rows: expanded ? [...closed] : [] };
 }
 
 // ---- Links between agents. ----

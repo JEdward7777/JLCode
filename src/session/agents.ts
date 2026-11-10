@@ -26,12 +26,13 @@
  */
 import { newId } from "../util/id.js";
 import { newConversation } from "../conversation/tree.js";
+import { computeCost } from "./spend.js";
 import { agentConcurrencyLimit, agentDepthLimit, toolRoundsOff } from "../config/operations.js";
 import { MODES, type Mode, type ModelConfig } from "../config/types.js";
 import type { Conversation } from "../conversation/types.js";
 import { agentConversationId, type AgentRecord } from "../persist/conversation-store.js";
-import type { AgentHost, Session } from "./session.js";
-import type { AskUserRequest, InboundMessage, SessionEvent, SubtreeSummary } from "./types.js";
+import type { AgentHost, Session, WakeOutcome } from "./session.js";
+import type { AskUserRequest, ClosedAgent, InboundMessage, QueuedMessage, SessionEvent, SubtreeSummary } from "./types.js";
 
 /** The root thread's name, as its sub-agents see it. */
 export const ROOT_AGENT_NAME = "root";
@@ -47,6 +48,13 @@ export interface AgentCoordinatorDeps {
   agentRecords(rootId: string): AgentRecord[];
   /** An agent's conversation from disk, for a revival. */
   loadConversation(convId: string): Conversation | undefined;
+  /** Record a sub-agent closed or reopened in its tree's file (P9f). */
+  setClosed?(rootId: string, agentId: string, closed: boolean): void;
+  /** Does the tree's file still have writes queued? A read now would miss them. */
+  writesPending?(convId: string): boolean;
+  /** Sessions a close took out of the tree — the caller drops them from the
+   *  bag (P9f: an agent closing its child has no route to do it for it). */
+  onUnloaded?(sessions: Session[]): void;
   /** Something went wrong starting a turn off the caller's stack. */
   onError?(err: unknown): void;
 }
@@ -70,6 +78,31 @@ interface Tree {
   /** The next `agent-N`; read from the tree's file the first time it is needed,
    *  so a resumed tree never re-issues a name. */
   nextIndex: number | undefined;
+  /** Every agent the tree records, closed flags folded (P9f). Read from the
+   *  file once, then kept here: the coordinator makes every change to it, and
+   *  a re-read could miss an append still in the file's queue. */
+  records: AgentRecord[] | undefined;
+  /** Spend of recorded agents that are **not loaded** — closed, or folded
+   *  under a closed one — by agent id (D-33). Set from the session's own
+   *  figure when it unloads; folded from its log, as a loaded session folds its
+   *  own, for one that was never loaded in this process. The cap is the
+   *  tree's, and closing an agent must not hand its spend back (H-18a). */
+  offline: Map<string, number>;
+}
+
+/** What a Wake did across a subtree (P9f), by agent name. */
+export interface WakeReport {
+  woken: string[];
+  queued: string[];
+  /** Quiescent — at rest on its own reply, nothing owed. */
+  asleep: string[];
+  /** Not at rest: working, or waiting on someone. */
+  busy: string[];
+  /** Held by something a person clears — the spend cap, the breaker, a
+   *  missing model, a Stop in flight. */
+  blocked: string[];
+  /** Closed below the woken entry: skipped, with everything under them (Q20). */
+  closed: string[];
 }
 
 /** Statuses a person has to act on — an approval, a question, the round
@@ -85,12 +118,47 @@ const modeRank = (m: Mode): number => MODES.indexOf(m);
 /** The stricter of two modes (X-56 Q10: the parent's mode is a ceiling). */
 const stricter = (a: Mode, b: Mode): Mode => (modeRank(a) <= modeRank(b) ? a : b);
 
+/** A conversation with its pending inbox set to the agent messages still
+ *  queued — what a reload of the file would fold (D-88). */
+function withInbox(conversation: Conversation, queue: readonly QueuedMessage[]): Conversation {
+  const inbox = queue.flatMap((m) => (m.inbound ? [{ ...m.inbound, text: m.text }] : []));
+  const { inbox: _stale, ...rest } = conversation;
+  return inbox.length > 0 ? { ...rest, inbox } : rest;
+}
+
+/** How a live sub-agent stands, in the words `list_agents` gives its parent. */
+function describeStatus(s: Session): string {
+  switch (s.status) {
+    case "running":
+      return "working";
+    case "queued":
+      return "queued (waiting for a slot under the tree's concurrency cap)";
+    case "halted":
+      return "halted on repeated errors";
+    case "awaiting-input":
+      return s.asksParent ? "waiting on your answer to its question" : "waiting on the user's answer";
+    case "idle": {
+      if (s.capReached) return "paused at the spend cap";
+      const rest = s.restState;
+      if (rest === "interrupted") return "interrupted mid-turn (the root's wake_agents resumes it)";
+      if (rest === "owes-reply") return "has a message it has not answered yet";
+      return s.restedAs === "finished" ? "finished its turn, idle" : "idle";
+    }
+    default:
+      return "waiting for the user";
+  }
+}
+
 export class AgentCoordinator implements AgentHost {
   private readonly members = new Map<string, Member>();
   private readonly inflight = new Set<Promise<void>>();
   /** Parents whose subtree changed since the last `subtree` announcement. */
   private readonly dirty = new Set<Member>();
   private flushScheduled = false;
+  /** Sessions a close unloaded whose file was still being written, by
+   *  conversation id: a reopen before those writes land reads the session's
+   *  own copy, not a file that is behind it (P9f). Pruned once written. */
+  private readonly unloadedRecently = new Map<string, Session>();
 
   constructor(private readonly deps: AgentCoordinatorDeps) {}
 
@@ -99,7 +167,7 @@ export class AgentCoordinator implements AgentHost {
   /** Make a session the root of its own tree — every thread the human starts. */
   adoptRoot(session: Session): void {
     if (this.members.has(session.id)) return;
-    const tree = { waiting: [], nextIndex: undefined } as unknown as Tree;
+    const tree = { waiting: [], nextIndex: undefined, records: undefined, offline: new Map() } as unknown as Tree;
     const root = this.attach(session, { agentId: null, name: ROOT_AGENT_NAME, depth: 0 }, undefined, tree);
     tree.root = root;
   }
@@ -112,6 +180,8 @@ export class AgentCoordinator implements AgentHost {
   ): Member {
     const member: Member = { session, ...who, parent, children: new Set(), tree, unsub: () => {} };
     this.members.set(session.id, member);
+    // Loaded again: its spend is the session's own from here.
+    if (who.agentId !== null) tree.offline.delete(who.agentId);
     parent?.children.add(member);
     session.setAgentHost(this, {
       name: who.name,
@@ -120,7 +190,43 @@ export class AgentCoordinator implements AgentHost {
       rootSessionId: tree.root?.session.id ?? session.id,
     });
     member.unsub = session.onEvent((e) => this.onEvent(member, e));
+    // A parent's closed list and counts move when a child joins (P9f).
+    for (let a = parent; a; a = a.parent) this.dirty.add(a);
+    if (parent) this.scheduleFlush();
     return member;
+  }
+
+  /** The tree's agent records, read from its file the first time (P9f). */
+  private records(tree: Tree): AgentRecord[] {
+    if (!tree.records) tree.records = this.deps.agentRecords(tree.root.session.conversation.id).map((r) => ({ ...r }));
+    return tree.records;
+  }
+
+  private rootId(tree: Tree): string {
+    return tree.root.session.conversation.id;
+  }
+
+  /** Records of `m`'s own children, spawn order. */
+  private childRecords(m: Member): AgentRecord[] {
+    return this.records(m.tree).filter((r) => r.parentAgentId === m.agentId);
+  }
+
+  /** How many agents the tree records below `agentId`. */
+  private recordedBelow(tree: Tree, agentId: string): number {
+    const all = this.records(tree);
+    let n = 0;
+    const walk = (id: string) => {
+      for (const r of all) if (r.parentAgentId === id) (n++, walk(r.agentId));
+    };
+    walk(agentId);
+    return n;
+  }
+
+  private markClosed(tree: Tree, record: AgentRecord, closed: boolean): void {
+    if ((record.closed === true) === closed) return;
+    if (closed) record.closed = true;
+    else delete record.closed;
+    this.deps.setClosed?.(this.rootId(tree), record.agentId, closed);
   }
 
   private member(session: Session): Member {
@@ -194,6 +300,7 @@ export class AgentCoordinator implements AgentHost {
     // auto-title (a billed call) would only rename it to something nobody uses.
     conversation.title = record.name;
     conversation.titleSource = "manual";
+    this.records(tree).push({ ...record });
     const child = this.attach(this.deps.startAgent({ config, conversation, rootId, record }), record, parent, tree);
     await this.inherit(child, record.mode);
     // The child's model is an entry in its own log (D-87), never the folder
@@ -298,8 +405,7 @@ export class AgentCoordinator implements AgentHost {
 
   private nextName(tree: Tree): string {
     if (tree.nextIndex === undefined) {
-      const used = this.deps
-        .agentRecords(tree.root.session.conversation.id)
+      const used = this.records(tree)
         .map((r) => /^agent-(\d+)$/.exec(r.name)?.[1])
         .filter((n): n is string => n !== undefined)
         .map(Number);
@@ -330,9 +436,9 @@ export class AgentCoordinator implements AgentHost {
     if (wanted === sender.name) throw new Error(`"${wanted}" is you — send_message goes to another agent.`);
     const live = [...sender.children].find((c) => c.name === wanted);
     if (live) return live;
-    const rootId = sender.tree.root.session.conversation.id;
-    const records = this.deps.agentRecords(rootId).filter((r) => r.parentAgentId === sender.agentId);
+    const records = this.childRecords(sender);
     const record = records.find((r) => r.name === wanted);
+    // A closed child still takes messages: delivery reopens it (Q20).
     if (record) return this.revive(sender, record);
     const reachable = [
       ...(sender.parent ? ['"parent"'] : []),
@@ -347,8 +453,45 @@ export class AgentCoordinator implements AgentHost {
   /** Bring a recorded sub-agent back from its tree's file (it was closed, or the
    *  server restarted). Its own switch entry decides its model. */
   private revive(parent: Member, record: AgentRecord): Member {
+    const child = this.load(parent, record);
+    this.markClosed(parent.tree, record, false);
+    this.loadOpenBelow(child);
+    return child;
+  }
+
+  /** Load the open agents below `m` that are not loaded yet, all the way down,
+   *  stopping at closed ones — a closed agent's subtree folds with it (Q18).
+   *  Loading is not starting: nothing here opens a turn (X-56 Q15). */
+  private loadOpenBelow(m: Member): void {
+    for (const r of this.childRecords(m)) {
+      if (r.closed || [...m.children].some((c) => c.agentId === r.agentId)) continue;
+      try {
+        this.loadOpenBelow(this.load(m, r));
+      } catch (err) {
+        this.deps.onError?.(err);
+      }
+    }
+  }
+
+  /** A root came back from history (P9f): bring its open tree into the bag
+   *  with it, at rest. What each agent was doing is read from its log
+   *  (`Session.restState`); Wake is what resumes them. */
+  loadTree(root: Session): void {
+    const m = this.members.get(root.id);
+    if (m && !m.parent) this.loadOpenBelow(m);
+  }
+
+  private load(parent: Member, record: AgentRecord): Member {
     const rootId = parent.tree.root.session.conversation.id;
-    const conversation = this.deps.loadConversation(agentConversationId(rootId, record.agentId));
+    const convId = agentConversationId(rootId, record.agentId);
+    const recent = this.unloadedRecently.get(convId);
+    this.unloadedRecently.delete(convId);
+    this.pruneUnloaded();
+    // The session's own copy is ahead of the file — but its `inbox` is the one
+    // it was loaded with, long since delivered or dropped. What is still owed is
+    // what its queue held when it was unloaded, exactly as the file will say
+    // once its writes land (a hard Stop's drops included).
+    const conversation = recent ? withInbox(recent.conversation, recent.queuedMessages) : this.deps.loadConversation(convId);
     if (!conversation) throw new Error(`Sub-agent "${record.name}" could not be loaded from disk.`);
     const session = this.deps.startAgent({ config: parent.session.config, conversation, rootId });
     const child = this.attach(session, record, parent, parent.tree);
@@ -457,7 +600,30 @@ export class AgentCoordinator implements AgentHost {
   treeSpendUsd(session: Session): number {
     const m = this.members.get(session.id);
     if (!m) return session.spendUsd;
-    return this.treeMembers(m.tree).reduce((sum, x) => sum + x.session.spendUsd, 0);
+    const loaded = this.treeMembers(m.tree);
+    return loaded.reduce((sum, x) => sum + x.session.spendUsd, 0) + this.offlineSpend(m.tree, loaded);
+  }
+
+  /** What the tree's unloaded agents spent (H-18a): every recorded agent not
+   *  in memory, closed or under a closed one. One never loaded in this process
+   *  — closed before a restart — is folded from its log once, the way a session
+   *  folds its own on load (D-33): the provider's cost per call where it was
+   *  reported, else token counts at the root's pricing. */
+  private offlineSpend(tree: Tree, loaded: Member[]): number {
+    const live = new Set(loaded.map((x) => x.agentId));
+    let sum = 0;
+    for (const r of this.records(tree)) {
+      if (live.has(r.agentId)) continue;
+      let spent = tree.offline.get(r.agentId);
+      if (spent === undefined) {
+        const conv = this.deps.loadConversation(agentConversationId(this.rootId(tree), r.agentId));
+        const pricing = this.rootConfig(tree).pricing;
+        spent = (conv?.entries ?? []).reduce((acc, e) => (e.type === "assistant" ? acc + computeCost(e.usage, pricing) : acc), 0);
+        tree.offline.set(r.agentId, spent);
+      }
+      sum += spent;
+    }
+    return sum;
   }
 
   subtree(session: Session): SubtreeSummary {
@@ -470,7 +636,21 @@ export class AgentCoordinator implements AgentHost {
       queued: count((s) => s.status === "queued"),
       waiting: count(waitsForYou),
       spendUsd: below.reduce((sum, d) => sum + d.session.spendUsd, 0),
+      closed: m ? this.closedChildren(m) : [],
     };
+  }
+
+  /** `m`'s own closed children, for its rail list (P9f). */
+  private closedChildren(m: Member): ClosedAgent[] {
+    const rootId = this.rootId(m.tree);
+    return this.childRecords(m)
+      .filter((r) => r.closed && ![...m.children].some((c) => c.agentId === r.agentId))
+      .map((r) => ({
+        agentId: r.agentId,
+        name: r.name,
+        conversationId: agentConversationId(rootId, r.agentId),
+        below: this.recordedBelow(m.tree, r.agentId),
+      }));
   }
 
   private onEvent(member: Member, e: SessionEvent): void {
@@ -505,24 +685,173 @@ export class AgentCoordinator implements AgentHost {
     if (!m) session.stop(scope);
   }
 
-  /** Hard-stop a session and its subtree and take them out of the tree.
-   *  Returns every session closed, for the caller to drop from the bag. A
-   *  closed child can still be messaged — that revives it from disk. */
+  /**
+   * Close a session (P9f, X-56 Q18–Q20): hard-stop it and everything below it
+   * and take them out of the tree — **unloaded**. A sub-agent is also marked
+   * closed in its tree's file, so it stays grey in its parent's rail list and
+   * out of `list_agents` and Wake until a click or a message reopens it; its
+   * descendants keep their own flags and fold away with it. A root closes into
+   * history, as before: its tree comes back with it.
+   *
+   * Returns every session unloaded; they are also handed to `onUnloaded`.
+   */
   close(session: Session): Session[] {
     const m = this.members.get(session.id);
     if (!m) {
       session.stop("hard");
+      this.deps.onUnloaded?.([session]);
       return [session];
     }
+    if (m.agentId !== null) {
+      const record = this.records(m.tree).find((r) => r.agentId === m.agentId);
+      if (record) this.markClosed(m.tree, record, true);
+    }
+    return this.unload(m);
+  }
+
+  private unload(m: Member): Session[] {
     const all = [m, ...this.descendants(m)];
+    // Leave the tree **before** the Stop: a closed agent is not a stopped one,
+    // and its parent must not be told it was stopped by the user (H-17f).
+    for (const x of all) x.unsub();
     for (const x of all) x.session.stop("hard");
     for (const x of all.reverse()) {
-      x.unsub();
+      if (x.agentId !== null) m.tree.offline.set(x.agentId, x.session.spendUsd);
       x.session.clearAgentHost();
       x.parent?.children.delete(x);
       this.members.delete(x.session.id);
     }
-    return all.map((x) => x.session);
+    for (let a = m.parent; a; a = a.parent) this.dirty.add(a);
+    this.scheduleFlush();
+    if (m.tree.waiting.length > 0) this.later(() => this.pump(m.tree));
+    const sessions = all.map((x) => x.session);
+    this.pruneUnloaded();
+    for (const s of sessions) {
+      if (s.agentInfo?.parentSessionId && this.deps.writesPending?.(s.conversation.id)) this.unloadedRecently.set(s.conversation.id, s);
+    }
+    this.deps.onUnloaded?.(sessions);
+    return sessions;
+  }
+
+  /** Forget unloaded sessions whose writes have landed: the file is whole again. */
+  private pruneUnloaded(): void {
+    for (const id of this.unloadedRecently.keys()) if (!this.deps.writesPending?.(id)) this.unloadedRecently.delete(id);
+  }
+
+  /** A person clicked a closed sub-agent (Q18): load it — and its own open
+   *  subtree — at rest, and clear its flag. `parent` is the live session it
+   *  hangs under. Returns the reopened session. */
+  reopen(parent: Session, agentId: string): Session {
+    const p = this.member(parent);
+    const live = [...p.children].find((c) => c.agentId === agentId);
+    if (live) return live.session;
+    const record = this.childRecords(p).find((r) => r.agentId === agentId);
+    if (!record) throw new Error(`No sub-agent ${agentId} under this session.`);
+    return this.revive(p, record).session;
+  }
+
+  /** `close_agent` (P9f, Q20): an agent closes one of its own children. */
+  closeChild(session: Session, name: string): string {
+    const m = this.member(session);
+    const wanted = name.trim();
+    const record = this.childRecords(m).find((r) => r.name === wanted);
+    if (!record) {
+      const names = this.childRecords(m).map((r) => `"${r.name}"`);
+      throw new Error(
+        `No sub-agent "${wanted}" of yours to close. ` +
+          (names.length > 0 ? `Your sub-agents: ${names.join(", ")}.` : "You have no sub-agents."),
+      );
+    }
+    const live = [...m.children].find((c) => c.agentId === record.agentId);
+    if (!live && record.closed) return `"${record.name}" is already closed.`;
+    const below = this.recordedBelow(m.tree, record.agentId);
+    if (live) this.close(live.session);
+    else this.markClosed(m.tree, record, true);
+    return (
+      `Closed "${record.name}"${below > 0 ? ` and folded the ${below} sub-agent${below === 1 ? "" : "s"} under it` : ""}. ` +
+      `Its log is kept; a send_message to it reopens it.`
+    );
+  }
+
+  /** `list_agents` (P9f, Q20): the caller's own sub-agents, how each stands,
+   *  closed ones only when asked. */
+  listAgents(session: Session, showClosed: boolean): string {
+    const m = this.member(session);
+    const records = this.childRecords(m);
+    if (records.length === 0) return "You have no sub-agents.";
+    const rows: string[] = [];
+    let hidden = 0;
+    for (const r of records) {
+      const live = [...m.children].find((c) => c.agentId === r.agentId);
+      if (!live && r.closed) {
+        if (!showClosed) {
+          hidden++;
+          continue;
+        }
+        rows.push(`- ${r.name} — closed`);
+        continue;
+      }
+      const s = live?.session;
+      rows.push(s ? `- ${r.name} — ${s.config.name} (${s.config.model}) — ${describeStatus(s)}` : `- ${r.name} — not loaded`);
+    }
+    const head = rows.length > 0 ? ["Your sub-agents:", ...rows] : ["You have no open sub-agents."];
+    if (hidden > 0) head.push(`(${hidden} closed not shown — pass show_closed: true to list them.)`);
+    return head.join("\n");
+  }
+
+  /**
+   * Wake (P9f, X-56 Q14): resume what the log says was cut off in `session`'s
+   * subtree — interrupted turns the way Retry resumes them, owed messages as
+   * delivery opens them — and leave the rest asleep. Closed agents are not
+   * loaded, so they and everything under them are skipped (Q20); they are
+   * named in the report. Top-down, and each start goes through `admit`: a
+   * Wake never takes the tree past its width cap (D-89), and it is never human
+   * input, so no tool-round budget starts over.
+   */
+  wake(session: Session): WakeReport {
+    const report: WakeReport = { woken: [], queued: [], asleep: [], busy: [], blocked: [], closed: [] };
+    const m = this.members.get(session.id);
+    const all = m ? [m, ...this.descendants(m)] : [];
+    const bucket: Record<WakeOutcome, string[]> = {
+      woken: report.woken,
+      queued: report.queued,
+      quiescent: report.asleep,
+      busy: report.busy,
+      blocked: report.blocked,
+    };
+    if (!m) {
+      const { outcome, done } = session.wake();
+      this.track(done);
+      bucket[outcome].push(session.agentInfo?.name ?? ROOT_AGENT_NAME);
+      return report;
+    }
+    for (const x of all) {
+      const { outcome, done } = x.session.wake();
+      this.track(done);
+      bucket[outcome].push(x.name);
+      for (const r of this.childRecords(x)) if (r.closed) report.closed.push(r.name);
+    }
+    return report;
+  }
+
+  /** `wake_agents` (P9f): the root wakes its own tree — itself excluded, as it
+   *  is the one calling. Only the root may: a tree has one place to wake it from. */
+  wakeAgents(session: Session): string {
+    const m = this.member(session);
+    if (m.parent) throw new Error("wake_agents is the root thread's: only the agent the user started may wake its tree.");
+    const report = this.wake(session);
+    const others = (names: string[]) => names.filter((n) => n !== m.name);
+    const line = (label: string, names: string[]) => (names.length > 0 ? [`${label}: ${names.join(", ")}`] : []);
+    const lines = [
+      ...line("Woken", others(report.woken)),
+      ...line("Waiting for a slot (the tree's concurrency cap), then woken", others(report.queued)),
+      ...line("Left asleep (finished, nothing owed)", others(report.asleep)),
+      ...line("Not at rest (working, or waiting on someone)", others(report.busy)),
+      ...line("Held (spend cap, error limit, a missing model or a Stop) — the user must clear it", others(report.blocked)),
+      ...line("Closed, not woken (a message reopens one)", report.closed),
+    ];
+    if (lines.length === 0) return "You have no sub-agents to wake.";
+    return [...lines, "Woken agents send you a notice when they finish a turn, as before."].join("\n");
   }
 
   /** The spend cap is the tree's (D-33): set on any member, it applies to all,

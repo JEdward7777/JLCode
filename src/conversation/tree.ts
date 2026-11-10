@@ -135,3 +135,73 @@ export function governingSwitch(
   }
   return undefined;
 }
+
+/**
+ * How a branch stands once nothing is running on it (X-56 Q14, P9f) — read
+ * from the log alone, so it means the same after a restart as before one:
+ *
+ *   - **interrupted** — the branch ends mid-turn: a call with no result, a tool
+ *     result the model never answered (a crash, a Stop, a failed request), or a
+ *     person's message with nothing under it. Wake re-sends it the way Retry
+ *     does, healing an open call first (H-10).
+ *   - **owes-reply** — another agent said something it has not answered: a
+ *     delivered agent message at the tip, or one sent and not yet delivered
+ *     (`pendingInbound`, the inbox the log records, D-88).
+ *   - **quiescent** — it ends on its own reply, or on nothing at all. Wake
+ *     leaves it asleep.
+ *
+ * Wire-silent entries (todo, model-switch) are stepped over, as the wire steps
+ * over them. A batch that spawned a sub-agent and drained is at rest: the
+ * parent yields there by design (Q5), waiting on its children. A reply cut
+ * off at `max_tokens` is read as at rest on purpose (the turn did end, and
+ * "continue" is a person's call, D-30). A compaction is looked through: what
+ * it stands on decides.
+ */
+export type RestState = "interrupted" | "owes-reply" | "quiescent";
+
+/** Tools whose success ends the caller's turn at its batch's drain (X-56 Q5):
+ *  `spawn_agent`. The name is spelled here rather than imported — the tree
+ *  knows nothing of tools — and `test/agents-p9f.test.ts` pins it. */
+const YIELDING_TOOLS: ReadonlySet<string> = new Set(["spawn_agent"]);
+
+/** Does the batch ending at tool result `leafId` hold a successful spawn — a
+ *  turn that ended there on purpose, waiting on its children, rather than one
+ *  cut off before its next model call? Only a **whole** batch counts: the
+ *  yield happens at the drain, so a call still open is a cut, not a yield. */
+function yieldedAt(conv: Conversation, byId: Map<string, Entry>, leafId: string): boolean {
+  if (unansweredToolCalls(conv, leafId).length > 0) return false;
+  let spawned = false;
+  for (let cursor: string | null = leafId; cursor !== null; ) {
+    const entry = byId.get(cursor);
+    if (!entry) return false;
+    if (entry.type === "tool") spawned ||= YIELDING_TOOLS.has(entry.name) && !entry.isError;
+    else if (entry.type === "assistant") return spawned;
+    else if (!WIRE_SILENT.has(entry.type)) return false;
+    cursor = entry.parent;
+  }
+  return false;
+}
+
+export function restStateOf(conv: Conversation, leafId: string | null, pendingInbound: boolean): RestState {
+  const byId = indexBy(conv.entries);
+  const seen = new Set<string>();
+  let cursor = leafId;
+  while (cursor !== null && !seen.has(cursor)) {
+    seen.add(cursor);
+    const entry = byId.get(cursor);
+    if (!entry) break;
+    // A compaction is looked through: the automatic one lands mid-turn, before
+    // the next model call, and leaves the turn exactly as cut off as the
+    // branch beneath it. The manual one (`compactNow`) runs only at rest, over
+    // a finished reply, so beneath it reads quiescent anyway.
+    if (WIRE_SILENT.has(entry.type) || entry.type === "compaction") {
+      cursor = entry.parent;
+      continue;
+    }
+    if (entry.type === "user") return entry.inbound ? "owes-reply" : "interrupted";
+    if (entry.type === "tool") return yieldedAt(conv, byId, cursor) ? (pendingInbound ? "owes-reply" : "quiescent") : "interrupted";
+    if (entry.type === "assistant" && unansweredToolCalls(conv, cursor).length > 0) return "interrupted";
+    break; // its own reply
+  }
+  return pendingInbound ? "owes-reply" : "quiescent";
+}

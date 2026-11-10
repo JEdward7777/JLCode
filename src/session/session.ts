@@ -23,7 +23,9 @@ import {
   pathToLeaf,
   setActiveLeaf as treeSetActiveLeaf,
   unansweredToolCalls,
+  restStateOf,
   type EntryInput,
+  type RestState,
 } from "../conversation/tree.js";
 import { buildWireMessages, endsWithUnansweredToolCall, pinnedProvider } from "../conversation/wire.js";
 import type { Attachment, Conversation, Entry, InboundMeta, ModelSwitchEntry, SharedFile } from "../conversation/types.js";
@@ -122,6 +124,10 @@ export interface AgentHost {
   spawn(session: Session, task: string, model?: string, mode?: Mode): Promise<string>;
   send(session: Session, to: string, text: string): string;
   listModels(session: Session): string;
+  /** `list_agents`, `close_agent`, `wake_agents` (P9f). */
+  listAgents(session: Session, showClosed: boolean): string;
+  closeChild(session: Session, name: string): string;
+  wakeAgents(session: Session): string;
   /** May this session open an **agent-started** turn now, under the tree's
    *  concurrency cap (D-89)? False → it waits `queued`, and the host starts it
    *  (`startQueued`) when a slot frees, FIFO. */
@@ -358,6 +364,15 @@ function formatAnswers(payload: string | AskUserAnswer[], questions: AskUserQues
   return [head, ...lines, ...(declines > 0 ? ["", DECLINE_NOTE] : [])].join("\n");
 }
 
+/** Events after which a session's rest state may read differently (P9f). */
+const REST_MOVERS: ReadonlySet<SessionEvent["type"]> = new Set(["status", "queue", "entry", "active-leaf"]);
+
+/** What a Wake did with one session (P9f): started it, parked it for a slot
+ *  under the width cap, or left it — asleep on its own reply, not at rest, or
+ *  held by something only a person clears (the cap, the breaker, a missing
+ *  model, a Stop in flight). */
+export type WakeOutcome = "woken" | "queued" | "quiescent" | "busy" | "blocked";
+
 export class Session {
   readonly id: string;
   /** The config this session runs under. **Not readonly since X-40**: the server
@@ -385,7 +400,7 @@ export class Session {
    *  cap. `answer`: the parent agent answered the question it was paused on
    *  (P9d) — a resume an agent caused, so it waits for a slot like any
    *  agent-started turn. */
-  private queuedResume: false | "cap" | "answer" = false;
+  private queuedResume: false | "cap" | "answer" | "wake" = false;
   /** Whether a person opened the current turn — the human, rather than an
    *  agent's message or notice. Decides who an `ask` with no `to` goes to (P9d,
    *  X-56 Q16): the person for a human-started turn, else the parent agent. */
@@ -673,6 +688,9 @@ export class Session {
     // with. A deleted config is left for `send` to refuse, where the refusal
     // has somewhere to go; `modelMissing` already says so to anyone asking.
     if (this.governingSwitch && !this.modelMissing) this.syncGoverningConfig(false);
+    // Loaded at rest, it already *is* in a rest state: seed it, so the first
+    // turn's start announces `rest: null` instead of looking like no change.
+    this.announcedRest = this.restState;
   }
 
   /** The full system prompt: the once-composed prefix plus this config's
@@ -1076,6 +1094,12 @@ export class Session {
    *  for a turn a cap raise released, resume it where the breach parked it. */
   async startQueued(): Promise<void> {
     if (this.status !== "queued") return;
+    if (this.queuedResume === "wake") {
+      this.queuedResume = false;
+      this.status = "idle";
+      await this.wake({ admitted: true }).done;
+      return;
+    }
     if (this.queuedResume) {
       this.queuedResume = false;
       await this.advance(); // `runLoop` marks it running
@@ -1156,6 +1180,9 @@ export class Session {
       },
       send: (to, text) => host.send(this, to, text),
       listModels: () => host.listModels(this),
+      listAgents: (showClosed) => host.listAgents(this, showClosed),
+      closeAgent: (name) => host.closeChild(this, name),
+      wakeAgents: () => host.wakeAgents(this),
     };
   }
 
@@ -1525,6 +1552,7 @@ export class Session {
       const ends =
         scope === "hard" ||
         resumeWasQueued === "answer" ||
+        resumeWasQueued === "wake" ||
         (this.turnLeaf !== undefined && unansweredToolCalls(this.conversation, this.turnLeaf).length > 0);
       const endsTurn = ends && this.turnLeaf !== undefined;
       if (endsTurn) this.stoppedTurn = true;
@@ -1549,6 +1577,9 @@ export class Session {
       }
     }
     // else: the running advance() loop notices stopScope and settles at a safe point.
+    // Idle to idle emits no `status`, yet a Stop can change how it stands at
+    // rest — a cap park released is now cut off, and Wake must be offered.
+    this.announceRest();
   }
 
   /** Clear the stop flag and settle — called once the loop unwinds. A stalled
@@ -1597,6 +1628,9 @@ export class Session {
         this.queuedResume = false;
         this.capReached = true;
       }
+      // A Wake waiting for a slot (P9f) is simply not taken: the agent is
+      // still interrupted or owed, and the next Wake finds it so.
+      if (this.queuedResume === "wake") this.queuedResume = false;
       return "idle";
     }
     return before;
@@ -1916,6 +1950,84 @@ export class Session {
   private emit(event: SessionEvent): void {
     if (event.type === "settled") this.restedAs = event.outcome;
     for (const listener of this.listeners) listener(event);
+    if (REST_MOVERS.has(event.type)) this.announceRest();
+  }
+
+  /** The last rest state announced, so a `rest` event goes out on a change only. */
+  private announcedRest: RestState | null = null;
+
+  /**
+   * How this session stands at rest, read from its log (P9f, X-56 Q14) —
+   * interrupted, owes-reply or quiescent; null while it is not at rest (a turn
+   * under way or waiting for a slot, a card, a fault, the breaker). The branch
+   * is the reader's (`activeLeaf`), which is the branch Wake resumes. A message
+   * owed counts only when an agent sent it: a person's queued words wait for
+   * the person.
+   */
+  get restState(): RestState | null {
+    if (this.status !== "idle" || this.capReached) return null;
+    return restStateOf(this.conversation, this.conversation.activeLeaf, this.queue.some((m) => m.inbound));
+  }
+
+  private announceRest(): void {
+    const rest = this.restState;
+    if (rest === this.announcedRest) return;
+    this.announcedRest = rest;
+    this.emit({ type: "rest", rest });
+  }
+
+  /**
+   * Wake (P9f, X-56 Q14): pick up where the log says this session stopped,
+   * without anyone saying anything new. An **interrupted** turn is re-sent the
+   * way Retry re-sends it — pinned to the reader's branch, its open calls
+   * answered first (`takeTurn`, H-10) — and an **owed** message that was never
+   * delivered opens its turn as delivery would have. A quiescent session, or
+   * one that is not at rest, is left alone.
+   *
+   * Never human input: the tool-round budget carries on (D-89). And it is an
+   * agent-like start, so it goes through the tree's width cap (`admit`) — no
+   * slot, it waits `queued` and the tree starts it FIFO (`startQueued`).
+   *
+   * Returns what happened, for the caller's summary.
+   */
+  wake(opts: { admitted?: boolean } = {}): { outcome: WakeOutcome; done: Promise<void> } {
+    const idle = Promise.resolve();
+    const rest = this.restState;
+    if (rest === null) return { outcome: this.capReached || this.status === "halted" ? "blocked" : "busy", done: idle };
+    if (rest === "quiescent") return { outcome: "quiescent", done: idle };
+    if (this.stopScope || this.modelMissing) return { outcome: "blocked", done: idle };
+    if (!opts.admitted && this.agentHost && !this.agentHost.admit(this)) {
+      this.queuedResume = "wake";
+      this.status = "queued";
+      return { outcome: "queued", done: idle };
+    }
+    // Everything below is synchronous up to the turn's first await, so the
+    // session reads `running` before the caller counts the next one (`admit`).
+    if (restStateOf(this.conversation, this.conversation.activeLeaf, false) === "quiescent") {
+      // At rest on its own reply, owed only what the inbox holds: open its turn
+      // on the queue's head, as a delivery to an idle receiver does — never as
+      // the person speaking, whatever else is waiting with it.
+      return { outcome: "woken", done: this.drainQueue({ admitted: true, woken: true }) };
+    }
+    // Mid-turn on the branch: resume it as Retry would, with no Retry needed.
+    this.turnLeaf = this.conversation.activeLeaf;
+    try {
+      this.alignToBranch();
+    } catch (err) {
+      this.turnLeaf = undefined; // a refused wake opens no turn
+      return { outcome: "blocked", done: Promise.reject(err as Error) };
+    }
+    this.takeTurn(); // heals the tip (H-10) and owns the pin from here
+    const opener = pathToLeaf(this.conversation, this.turnLeaf)
+      .reverse()
+      .find((e) => e.type === "user");
+    this.turnByHuman = !(opener?.type === "user" && opener.inbound);
+    this.retryable = false;
+    // `consecutiveFailures` is kept: a Wake is not a person's Retry, and a root
+    // waking a failing child in a loop must still reach the halt breaker.
+    this.pendingStall = undefined;
+    this.pendingToolCalls = [];
+    return { outcome: "woken", done: this.advance() };
   }
 
   private reasoningParam(): Record<string, unknown> | undefined {
@@ -2615,7 +2727,7 @@ export class Session {
    *  LLM call of a run still needs a turn opened for it, and that is this. The
    *  rest of the queue rides along: `send` → `advance` flushes it before the
    *  first LLM call, so the whole backlog lands together. */
-  private async drainQueue(opts: { admitted?: boolean } = {}): Promise<void> {
+  private async drainQueue(opts: { admitted?: boolean; woken?: boolean } = {}): Promise<void> {
     if (this.status !== "idle" || this.stopScope || this.capReached) return;
     // A thread whose model is gone keeps its queue rather than drop the head
     // into a send that refuses it (D-87); picking a model is what unblocks it.
@@ -2625,7 +2737,8 @@ export class Session {
     // Whether a person said any of this (D-89): they reset the budget, and they
     // never wait behind the tree's concurrency cap — a turn of agent traffic
     // does, `queued`, until the coordinator starts it (`startQueued`).
-    const human = this.queue.some((m) => !m.inbound && !m.machine);
+    // A Wake is never the person speaking (P9f, D-89), whatever is queued.
+    const human = !opts.woken && this.queue.some((m) => !m.inbound && !m.machine);
     if (!human && !opts.admitted && this.agentHost && !this.agentHost.admit(this)) {
       this.status = "queued";
       return;

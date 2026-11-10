@@ -8,6 +8,9 @@
  */
 import type {
   AgentInfo,
+  ClosedAgent,
+  RestState,
+  SubtreeSummary,
   ApprovalPolicy,
   ApprovalRequest,
   AskUserRequest,
@@ -63,6 +66,12 @@ export interface SessionSlice {
   /** How the last turn came to rest — `finished` is a sub-agent's dimmed
    *  "finished" dot rather than "idle" (X-56 Q18). Null mid-turn. */
   restedAs: "finished" | "failed" | "stopped" | null;
+  /** How it stands at rest, from its log (P9f): `interrupted` and
+   *  `owes-reply` are what Wake resumes. Null when not at rest. */
+  rest: RestState | null;
+  /** Its own closed sub-agents (P9f): grey rows under it in the rail, a click
+   *  reopens one. They are not loaded, so they have no slice of their own. */
+  closedAgents: ClosedAgent[];
   status: string;
   mode: Mode;
   approval: ApprovalPolicy;
@@ -139,7 +148,7 @@ export interface SessionSlice {
    *  when a turn fails**, and reading one aloud is only safe if "the provider
    *  refused the call" can be told from "you pressed Stop, and know it". The
    *  notice *text* cannot answer that; naming the event that raised it can. */
-  noticeKind: "retrying" | "stopped" | "error" | "halted" | "cap" | "truncation" | null;
+  noticeKind: "retrying" | "stopped" | "error" | "halted" | "cap" | "truncation" | "info" | null;
   input: string;
 }
 
@@ -156,6 +165,8 @@ export function newSlice(id: string, model = ""): SessionSlice {
     title: null,
     agent: null,
     restedAs: null,
+    rest: null,
+    closedAgents: [],
     status: "idle",
     mode: "code",
     approval: "manual",
@@ -228,6 +239,8 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   // linked, and must not erase an `agent` event that outran it.
   if (state.agent) next.agent = state.agent;
   if (state.restedAs !== undefined) next.restedAs = state.restedAs;
+  if (state.rest !== undefined) next.rest = state.rest;
+  if (state.subtree) next.closedAgents = state.subtree.closed ?? [];
   next.working = state.status === "running";
   next.pendingApproval = state.approvalRequest ?? null;
   next.pendingAsk = state.question ?? null;
@@ -509,6 +522,12 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
     case "agent":
       // Linked into its tree (P9e): sent just after a sub-agent's `added` frame.
       return { ...s, agent: e.info as AgentInfo };
+    case "rest":
+      // How it stands at rest, read from its log (P9f).
+      return { ...s, rest: (e.rest as RestState | null) ?? null };
+    case "subtree":
+      // Its sub-agents moved (P9e/P9f) — of which the rail keeps the closed list.
+      return { ...s, closedAgents: (e.summary as SubtreeSummary).closed ?? [] };
     case "truncation":
       return { ...s, notice: e.message as string, noticeKind: "truncation" };
     case "retrying": {

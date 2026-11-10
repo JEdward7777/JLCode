@@ -341,6 +341,55 @@ export interface SessionState {
   /** How the last turn came to rest, null mid-turn (P9e) — a sub-agent's
    *  "finished" dot. */
   restedAs?: "finished" | "failed" | "stopped" | null;
+  /** How it stands at rest, read from its log (P9f): what Wake would do with
+   *  it. Null when not at rest. */
+  rest?: RestState | null;
+  /** Its sub-agents, summed — of which the rail uses the closed list (P9f). */
+  subtree?: SubtreeSummary | null;
+}
+
+/** P9f, X-56 Q14: cut off mid-turn / owed a reply by another agent / asleep on
+ *  its own reply. */
+export type RestState = "interrupted" | "owes-reply" | "quiescent";
+
+/** A closed sub-agent, as its parent's rail lists it (P9f). Not loaded, so it
+ *  has no session; a click reopens it by `agentId` under its parent. */
+export interface ClosedAgent {
+  agentId: string;
+  name: string;
+  conversationId: string;
+  /** Agents recorded below it, folded away with it. */
+  below: number;
+}
+
+/** A session's descendants, summed (mirrors the server's `SubtreeSummary`). */
+export interface SubtreeSummary {
+  agents: number;
+  running: number;
+  queued: number;
+  waiting: number;
+  spendUsd: number;
+  closed?: ClosedAgent[];
+}
+
+/** What a Wake did, by agent name (P9f). */
+export interface WakeReport {
+  woken: string[];
+  queued: string[];
+  asleep: string[];
+  busy: string[];
+  blocked: string[];
+  closed: string[];
+}
+
+/** One agent of a tree as its file records it — what history nests (P9f). */
+export interface TreeAgent {
+  agentId: string;
+  parentAgentId: string | null;
+  name: string;
+  depth: number;
+  closed: boolean;
+  conversationId: string;
 }
 
 /** A model switch picked while the session was busy, written at the next idle
@@ -401,6 +450,8 @@ export interface ConversationRow {
   workingDir: string;
   createdAt: string;
   title?: string;
+  /** The thread has sub-agents, which history nests under it (P9f). */
+  agents?: boolean;
 }
 
 /** A conversation read from disk (X-12) — the peek's source. Distinct from
@@ -460,6 +511,33 @@ export async function createSession(): Promise<string> {
  *  so it no longer appears in the roster. The conversation stays on disk. */
 export async function closeSession(id: string): Promise<void> {
   await postJson(`/session/${id}/close`, {});
+}
+
+/** Reopen a closed sub-agent under its live parent (P9f). Resolves to the
+ *  reopened session's id. */
+export async function reopenAgent(parentId: string, agentId: string): Promise<string> {
+  const body = (await postJson(`/session/${parentId}/agent/${encodeURIComponent(agentId)}/reopen`, {})) as { sessionId: string };
+  return body.sessionId;
+}
+
+/** Wake this session's subtree (P9f): interrupted and owing agents resume. */
+export async function wakeSession(id: string): Promise<WakeReport> {
+  const body = (await postJson(`/session/${id}/wake`, {})) as { wake: WakeReport };
+  return body.wake;
+}
+
+/** Bring a history thread back live without sending anything (P9f) — its open
+ *  sub-agents load with it, at rest. Resolves to the session id. */
+export async function openConversation(id: string): Promise<string> {
+  const body = (await postJson(`/conversation/${encodeURIComponent(id)}/open`, {})) as { sessionId: string };
+  return body.sessionId;
+}
+
+/** A history thread's agents (P9f), for nesting under its row. */
+export async function listTreeAgents(id: string): Promise<TreeAgent[]> {
+  const res = await fetch(`/conversation/${encodeURIComponent(id)}/agents`);
+  if (!res.ok) throw new Error(`agents: ${res.status}`);
+  return ((await res.json()) as { agents: TreeAgent[] }).agents;
 }
 
 /** Subscribe to the instance's multiplexed event stream (D-43): all sessions'

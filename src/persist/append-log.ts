@@ -79,6 +79,11 @@ export class AppendLog {
     this.fsyncEnabled = options.fsync ?? true;
   }
 
+  /** Records accepted but not yet on disk. */
+  get pending(): number {
+    return this.queue.length;
+  }
+
   /** The stalled write, if this log is currently faulted (D-46). */
   get fault(): AppendFault | null {
     return this.currentFault;

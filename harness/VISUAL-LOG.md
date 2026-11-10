@@ -1878,3 +1878,29 @@ mean hiding a running session from the rail, which is worse.
   - The notice wording "1 of its own sub-agent" read badly.
 - **Found by the round-1 reviewer from a captured SSE stream:** a fanned Stop left the approval card alive in the client (D-94). Seen fixed in a real browser by the implementer and by the round-2 reviewer.
 - **Noticed by the coordinator, filed as H-22(l):** the live list's overflow scrollbar is a light native bar on the dark theme.
+
+## P9f — closed agents, the "N closed" fold, Wake after a restart · 2026-11-10 · ✅ looked good (two layout fixes and a red notice caught by looking; one stale Wake button found by a reviewer's peek)
+
+**Setup:** fake driver. The implementer peeked on 7861/9461, and the reviewers on 7871/9471, 7881/9481 and 7891/9491. Restarts used the new `peek.mjs up --keep`, which restarts the server against the same config and conversations. I looked at the PNGs myself.
+
+**Confirmed by eye:**
+- **`p9f-closed-sink`:** closed agents are grey dashed one-line rows below the open siblings.
+- **`p9f-closed-fold` / `-open`:** six closed fold into "▸ 6 closed", which expands in place.
+- **`p9f-reopened`:** clicking a closed row reopens it with its transcript intact, and it rises into the open list.
+- **`p9f-restart-history`:** after a restart mid-stream, nothing came back live. History marks the tree and nests agent-1…3 under it.
+- **`p9f-restart-open`:** "open live" brings the root and its children back at rest.
+- **`p9f-restart-interrupted`:** the root carries "wake 3". agent-1 reads orange "interrupted", agents 2 and 3 read "owes a reply", and each has its own wake pill.
+- **`p9f-wake-running`:** mid-wake, every child reads "working…" with its pill gone. The Wake summary is a muted grey notice. **Stop is lit on the idle root** while its children work (H-22a).
+- **`p9f-restart-woken`:** all children finished, and their notices reached the root.
+
+**Caught by looking:**
+- **Fixed by the implementer:**
+  - Closed rows were full height with an empty second line; they are now one line.
+  - The wake pill on the meta line squeezed the root's status to "o…"; it moved to the top line.
+  - The Wake summary rendered in error red; it is now a muted `info` notice.
+- **Found by the round-1 reviewer:** after Wake, agent-1 read "working…" but still showed a wake pill. A loaded session never announced `rest: null` (D-96). It was seen fixed in `p9f-wake-running`.
+- **The reviewers' own peeks** confirmed:
+  - close and sink with 6–7 closed;
+  - Wake healing an open `run_command` / `ask` call after a restart;
+  - a reopen bringing a closed grandchild's open parent back with it;
+  - the tree spend staying whole across close, restart and reopen (round 3).

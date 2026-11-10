@@ -37,6 +37,12 @@ export interface AgentAccess {
   spawn(task: string, model?: string, mode?: Mode): Promise<string>;
   send(to: string, text: string): string;
   listModels(): string;
+  /** The caller's own sub-agents and how each stands (P9f). */
+  listAgents(showClosed: boolean): string;
+  /** Close one of the caller's own sub-agents (P9f). */
+  closeAgent(name: string): string;
+  /** Wake the caller's tree — the root's alone (P9f). */
+  wakeAgents(): string;
 }
 
 export interface ToolContext {

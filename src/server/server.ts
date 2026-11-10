@@ -20,7 +20,7 @@ import type { McpServerStatus } from "../mcp/client.js";
 import type { Conversation, Entry } from "../conversation/types.js";
 import { base64Bytes, classifyFile } from "../tools/media.js";
 import { textMimeFor } from "../tools/file-url.js";
-import { splitConversationId, type ConversationStore } from "../persist/conversation-store.js";
+import { agentConversationId, splitConversationId, type ConversationStore } from "../persist/conversation-store.js";
 import { governingSwitch } from "../conversation/tree.js";
 import { groupConfigsByKey, keyFingerprint } from "../config/operations.js";
 import { ModelConfigMissingError } from "../session/types.js";
@@ -255,6 +255,9 @@ function stateOf(session: Session): Record<string, unknown> {
     // How the last turn came to rest — a sub-agent's dot reads "finished"
     // rather than "idle" from this (P9e, X-56 Q18). Null mid-turn.
     restedAs: session.restedAs,
+    // How it stands at rest, read from the log (P9f): interrupted / owes-reply
+    // / quiescent, null when not at rest. The rail's dot and Wake go by it.
+    rest: session.restState,
     treeSpendUsd: session.treeSpendUsd,
     spendCapUsd: session.spendCapUsd ?? null,
     capReached: session.capReached,
@@ -325,6 +328,16 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     },
     agentRecords: (rootId) => deps.store.agents(rootId),
     loadConversation: (convId) => deps.store.load(convId),
+    // Closed is a flag in the tree's file (P9f), written like every projection.
+    setClosed: (rootId, agentId, closed) => void deps.store.agentClosed(rootId, agentId, closed).catch(() => {}),
+    writesPending: (convId) => deps.store.writesPending(convId),
+    // A close — the person's or an agent's (`close_agent`) — unloads (Q20).
+    onUnloaded: (sessions) => {
+      for (const s of sessions) {
+        manager.remove(s.id);
+        dropFaultListener(s.id);
+      }
+    },
     onError: (err) => deps.logger?.error("agent turn failed to start", { err }),
   });
 
@@ -392,6 +405,15 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   // first so the middleware wraps all handlers below (localhost bind = no auth).
   deps.auth?.install(app);
 
+  /** Each live session's store fault subscription (D-46), dropped when the
+   *  session leaves the bag — a close, an agent's `close_agent` — so a
+   *  close/reopen cycle cannot pile up listeners that pause dead sessions. */
+  const faultListeners = new Map<string, () => void>();
+  const dropFaultListener = (id: string): void => {
+    faultListeners.get(id)?.();
+    faultListeners.delete(id);
+  };
+
   /** Build a session, register it, and wire persistence. Pass a loaded
    *  conversation to resume; otherwise a fresh conversation log is created. */
   function startSession(config: ModelConfig, conversation?: Conversation, opts: { agent?: boolean } = {}): Session {
@@ -414,7 +436,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       const base = path.basename(filePath);
       return base === ownLog || base === "index.jsonl";
     };
-    deps.store.onFault((fault) => {
+    faultListeners.set(session.id, deps.store.onFault((fault) => {
       if (!ours(fault.filePath)) return;
       deps.logger?.error("persistence write failed", {
         conversationId: session.conversation.id,
@@ -427,7 +449,7 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         message: fault.error.message,
         pending: fault.pending,
       });
-    });
+    }));
 
     // The conversation log is created **lazily, on first content** (X-12b).
     // Creating it eagerly meant opening a session and never typing into it still
@@ -471,7 +493,30 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       }
     });
     if (!opts.agent) agents.adoptRoot(session);
-    return manager.add(session);
+    manager.add(session);
+    // A root back from history brings its open sub-agents with it, at rest:
+    // nothing starts on its own (X-56 Q15) — the rail shows what each was
+    // doing, and Wake resumes them (P9f).
+    if (conversation && !opts.agent) agents.loadTree(session);
+    return session;
+  }
+
+  /**
+   * A conversation's live session: the one already in the bag (attach, never
+   * duplicate — the X-14 hazard), or a root loaded from disk with its open
+   * tree. A sub-agent is reached through its root, never on its own (D-88).
+   */
+  function materialize(convId: string): { session: Session; materialized: boolean } | { error: string; status: 404 | 409 } {
+    const live = manager.list().find((s) => s.conversation.id === convId);
+    if (live) return { session: live, materialized: false };
+    if (splitConversationId(convId).agent !== undefined) {
+      return { error: "that conversation is a sub-agent; open its root thread to reach it", status: 409 };
+    }
+    const config = deps.resolveConfig();
+    if (!config) return { error: "no model config selected for the server directory", status: 409 };
+    const loaded = deps.store.load(convId);
+    if (!loaded) return { error: "no such conversation", status: 404 };
+    return { session: startSession(config, loaded), materialized: true };
   }
 
   /** Read-your-writes flush. `store.flush()` now rejects when a write is stalled
@@ -885,9 +930,33 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     if (!session) return c.json({ error: "no such session" }, 404);
     // The subtree goes with it (D-34): a sub-agent with no parent left in the
     // bag would be unreachable. Its log stays, and a message revives it.
-    for (const closed of agents.close(session)) manager.remove(closed.id);
+    // A sub-agent is marked closed and stays in its parent's list (P9f).
+    agents.close(session); // `onUnloaded` drops each from the bag
     await flushDurable();
     return c.json({ closed: true });
+  });
+
+  // Reopen a closed sub-agent (P9f, X-56 Q18) — a click on its grey row under
+  // `:id`, its parent. Loads it (and its own open subtree) at rest.
+  app.post("/session/:id/agent/:agentId/reopen", async (c) => {
+    const parent = manager.get(c.req.param("id"));
+    if (!parent) return c.json({ error: "no such session" }, 404);
+    let reopened: Session;
+    try {
+      reopened = agents.reopen(parent, c.req.param("agentId"));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 404);
+    }
+    await flushDurable();
+    return c.json({ sessionId: reopened.id, ...stateOf(reopened) });
+  });
+
+  // Wake (P9f, X-56 Q14): resume the interrupted and owing agents in this
+  // session's subtree — itself included — and leave the rest asleep.
+  app.post("/session/:id/wake", (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json({ wake: agents.wake(session), ...stateOf(session) });
   });
 
   // Kill one background task (D-34) — the per-task Kill button.
@@ -1017,20 +1086,12 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       // reused: two Session objects over independent in-memory copies of one
       // tree, both appending to one log, is the X-14 hazard. Attaching also
       // makes revival idempotent, so two stale tabs converge instead of forking.
-      session = manager.list().find((s) => s.conversation.id === body.conversationId);
-      if (!session && splitConversationId(body.conversationId).agent !== undefined) {
-        // A sub-agent is reached through its tree, never revived on its own —
-        // standing alone it would be a root with someone else's history (D-88).
-        return c.json({ error: "that conversation is a sub-agent; open its root thread to reach it" }, 409);
-      }
-      if (!session) {
-        const config = deps.resolveConfig();
-        if (!config) return c.json({ error: "no model config selected for the server directory" }, 409);
-        const loaded = deps.store.load(body.conversationId);
-        if (!loaded) return c.json({ error: "no such conversation" }, 404);
-        session = startSession(config, loaded); // resume from disk
-        materialized = true;
-      }
+      // A sub-agent is reached through its tree, never revived on its own —
+      // standing alone it would be a root with someone else's history (D-88).
+      const got = materialize(body.conversationId);
+      if ("error" in got) return c.json({ error: got.error }, got.status);
+      session = got.session;
+      materialized = got.materialized;
     }
 
     if (!session) {
@@ -1085,6 +1146,31 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     const dir = c.req.query("dir");
     const rows = dir === "all" ? deps.store.list() : deps.store.list(dir ?? deps.workingDir);
     return c.json({ conversations: rows });
+  });
+
+  // Bring a thread from history back live without saying anything (P9f): its
+  // open sub-agents load with it, at rest, so the rail can show what each was
+  // doing and Wake can resume them. Attaches if it is already live.
+  app.post("/conversation/:id/open", (c) => {
+    const got = materialize(c.req.param("id"));
+    if ("error" in got) return c.json({ error: got.error }, got.status);
+    return c.json({ sessionId: got.session.id, ...stateOf(got.session) });
+  });
+
+  // A tree's agents as its file records them (P9f): what history nests under a
+  // root. Closed flags folded.
+  app.get("/conversation/:id/agents", (c) => {
+    const rootId = c.req.param("id");
+    if (splitConversationId(rootId).agent !== undefined) return c.json({ error: "not a root thread" }, 400);
+    const agentsOf = deps.store.agents(rootId).map((r) => ({
+      agentId: r.agentId,
+      parentAgentId: r.parentAgentId,
+      name: r.name,
+      depth: r.depth,
+      closed: r.closed === true,
+      conversationId: agentConversationId(rootId, r.agentId),
+    }));
+    return c.json({ agents: agentsOf });
   });
 
   // A persisted conversation, loaded from disk (distinct from a live /session).

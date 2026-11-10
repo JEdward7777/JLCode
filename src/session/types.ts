@@ -2,6 +2,7 @@
 import type { ToolKind, ToolPreview } from "../tools/types.js";
 import type { TaskView } from "../tools/task-registry.js";
 import type { Entry, InboundMeta } from "../conversation/types.js";
+import type { RestState } from "../conversation/tree.js";
 import type { TodoItem } from "../conversation/todos.js";
 import type { ProviderRouting, Usage } from "../llm/types.js";
 import type { ApprovalPolicy, CompactionTrigger, Mode } from "../config/types.js";
@@ -36,6 +37,20 @@ export interface SubtreeSummary {
   /** What the descendants have spent (D-33): the parent's own plus this is the
    *  subtree's total. */
   spendUsd: number;
+  /** This session's own **closed** children (P9f, X-56 Q18–Q20): not loaded,
+   *  so not in the bag, but still in the rail — grey, below the open ones, and
+   *  a click reopens them. Spawn order. */
+  closed: ClosedAgent[];
+}
+
+/** A closed sub-agent, as its parent's rail row lists it (P9f). */
+export interface ClosedAgent {
+  agentId: string;
+  name: string;
+  /** Its conversation id (`<root>~<agent>`): what a reopen names. */
+  conversationId: string;
+  /** Agents recorded below it — folded away with it (Q18). */
+  below: number;
 }
 
 /** Where a sub-agent sits in its tree (D-88). Absent on a session that has never
@@ -298,6 +313,10 @@ export type SessionEvent =
   // turn, nothing queued behind it (D-88). A sub-agent's parent gets its
   // completion notice from this.
   | { type: "settled"; outcome: "finished" | "failed" | "stopped" }
+  // How the session stands at rest, read from its log (P9f, X-56 Q14):
+  // interrupted / owes-reply / quiescent, or null while it is not at rest.
+  // Sent when it changes — what the rail's dot and its Wake button go by.
+  | { type: "rest"; rest: RestState | null }
   // This session's sub-agents changed state (X-56 Q10): the counts behind the
   // parent's "waiting for you" flag.
   | { type: "subtree"; summary: SubtreeSummary }

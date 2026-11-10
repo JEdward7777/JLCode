@@ -14,6 +14,7 @@
  *
  *   node harness/peek/peek.mjs up --ctx 4000 --buffer 1000 --trigger suggest
  *   node harness/peek/peek.mjs up --rounds 3      # then `chat "loop:"` → the D-79 card
+ *   node harness/peek/peek.mjs up --keep          # restart: same config + conversations
  *   node harness/peek/peek.mjs chat "hello there"
  *   node harness/peek/peek.mjs shot x24-normal --crop topbar
  *   node harness/peek/peek.mjs click ".tool-head" --shot x23-expanded
@@ -253,14 +254,19 @@ async function cmdUp(flags) {
   const cfgDir = path.join(RUN_DIR, "config");
   const dataDir = path.join(RUN_DIR, "data");
   const workDir = path.join(RUN_DIR, "work");
-  fs.rmSync(cfgDir, { recursive: true, force: true });
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  // `--keep`: a **restart** — the same config and conversations, a new process
+  // (P9f's "Wake after a server restart"). Everything else is a fresh instance.
+  const keep = Boolean(flags.keep) && fs.existsSync(path.join(cfgDir, "config.json"));
+  if (!keep) {
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
 
-  // An unlisted model id by default: the catalog lookup misses, so the window
-  // comes from this config and no network fetch is attempted (H-06/D-60).
-  const model = flags.model ?? "peek/model";
-  const trigger = flags.trigger ?? "suggest";
-  writeConfig({ cfgDir, workDir, ctx: flags.ctx, buffer: flags.buffer, trigger, model, mcp: flags.mcp, rounds: flags.rounds });
+    // An unlisted model id by default: the catalog lookup misses, so the window
+    // comes from this config and no network fetch is attempted (H-06/D-60).
+    const model = flags.model ?? "peek/model";
+    const trigger = flags.trigger ?? "suggest";
+    writeConfig({ cfgDir, workDir, ctx: flags.ctx, buffer: flags.buffer, trigger, model, mcp: flags.mcp, rounds: flags.rounds });
+  }
 
   const cli = path.join(REPO, "dist", "cli.js");
   if (!fs.existsSync(cli)) throw new Error(`no build at ${cli} — run \`npm run build\` first`);
