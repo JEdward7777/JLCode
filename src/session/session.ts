@@ -404,8 +404,16 @@ export class Session {
   set status(next: SessionStatus) {
     if (next === this.currentStatus) return;
     this.currentStatus = next;
+    // A turn under way (or waiting for a slot) is no longer at rest.
+    if (next === "running" || next === "queued") this.restedAs = null;
     this.emit({ type: "status", status: next });
   }
+
+  /** How the last turn came to rest (`settled`), until the next one starts —
+   *  what tells a sub-agent's "finished" dot from a plain "idle" one in the
+   *  rail (P9e, X-56 Q18). Null while a turn is under way, and on a session
+   *  that has not settled since it was loaded. */
+  restedAs: "finished" | "failed" | "stopped" | null = null;
 
   /** Live capability mode + approval policy (D-07/D-08), switchable at runtime. */
   mode: Mode;
@@ -1013,6 +1021,10 @@ export class Session {
   setAgentHost(host: AgentHost, info: AgentInfo): void {
     this.agentHost = host;
     this.agentInfo = info;
+    // A sub-agent joins the bag (and the bus announces it) before the
+    // coordinator links it, so its `session-added` frame carries no place in
+    // the tree — this is what lets the rail nest it (P9e).
+    this.emit({ type: "agent", info });
   }
 
   /** Leave it (the session was closed out of the tree). */
@@ -1902,6 +1914,7 @@ export class Session {
   }
 
   private emit(event: SessionEvent): void {
+    if (event.type === "settled") this.restedAs = event.outcome;
     for (const listener of this.listeners) listener(event);
   }
 

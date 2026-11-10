@@ -7,6 +7,7 @@
  * it's trivially testable (web-tree-style Tier-0).
  */
 import type {
+  AgentInfo,
   ApprovalPolicy,
   ApprovalRequest,
   AskUserRequest,
@@ -56,6 +57,12 @@ export interface SessionSlice {
   /** The thread's label (X-09) — auto after the first exchange, or hand-edited.
    *  Null until it has one; the rail falls back to the model name. */
   title: string | null;
+  /** Where this session sits in its agent tree (D-88): what the rail nests by
+   *  (P9e). Null until a descriptor, state or `agent` event names it. */
+  agent: AgentInfo | null;
+  /** How the last turn came to rest — `finished` is a sub-agent's dimmed
+   *  "finished" dot rather than "idle" (X-56 Q18). Null mid-turn. */
+  restedAs: "finished" | "failed" | "stopped" | null;
   status: string;
   mode: Mode;
   approval: ApprovalPolicy;
@@ -147,6 +154,8 @@ export function newSlice(id: string, model = ""): SessionSlice {
     modelMissing: null,
     inViewConfigId: null,
     title: null,
+    agent: null,
+    restedAs: null,
     status: "idle",
     mode: "code",
     approval: "manual",
@@ -201,7 +210,7 @@ export function sliceFromDescriptor(d: SessionDescriptor): SessionSlice {
  * (X-50). An empty descriptor model never clobbers a real one.
  */
 export function applyDescriptor(s: SessionSlice, d: SessionDescriptor): SessionSlice {
-  return applyState({ ...s, model: d.model || s.model }, d.state);
+  return applyState({ ...s, model: d.model || s.model, agent: d.agent ?? s.agent }, d.state);
 }
 
 /** Fold a settled-state snapshot (SSE `ready`/roster/added, or an action
@@ -215,6 +224,10 @@ export function applyState(s: SessionSlice, state: SessionState): SessionSlice {
   if (state.mode) next.mode = state.mode;
   if (state.approval) next.approval = state.approval;
   if (state.status) next.status = state.status;
+  // A null never unlinks: a sub-agent's `added` frame arrives before it is
+  // linked, and must not erase an `agent` event that outran it.
+  if (state.agent) next.agent = state.agent;
+  if (state.restedAs !== undefined) next.restedAs = state.restedAs;
   next.working = state.status === "running";
   next.pendingApproval = state.approvalRequest ?? null;
   next.pendingAsk = state.question ?? null;
@@ -472,12 +485,30 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
       return { ...s, working: false, live: null, pendingApproval: e.request as ApprovalRequest };
     case "awaiting-input":
       return { ...s, working: false, live: null, pendingAsk: e.question as AskUserRequest };
-    case "status":
-      // A question can be answered from outside this tab — by the parent agent
-      // a sub-agent asked (P9d) — so leaving `awaiting-input` for a working or
-      // resting status retires the form. (A persistence fault is a pause over
-      // it, not an answer, so that one keeps it.)
-      return ["running", "queued", "idle", "halted"].includes(e.status as string) ? { ...s, pendingAsk: null } : s;
+    case "status": {
+      // Every status move is folded (P9e): a sub-agent's rail dot has nothing
+      // else to go on — its tab is rarely the one in view, and `queued` has no
+      // event of its own. A turn starting (or waiting for a slot) is no longer
+      // at rest.
+      const status = e.status as string;
+      const next = { ...s, status, restedAs: status === "running" || status === "queued" ? null : s.restedAs };
+      // A card can be ended from outside this tab: a question by the parent
+      // agent a sub-agent asked (P9d), and any card by a Stop fanned down the
+      // tree (D-34), which emits no event of the card's own. Working or at
+      // rest, the session holds no card — every one of these statuses is set
+      // only after the session consumed or ended it — so all four retire.
+      // (A persistence fault is a pause over a card, not an end to it, so that
+      // one keeps them; recovery restores the card's own status.)
+      return ["running", "queued", "idle", "halted"].includes(status)
+        ? { ...next, pendingAsk: null, pendingApproval: null, pendingStall: null, pendingCompaction: null }
+        : next;
+    }
+    case "settled":
+      // The turn came to rest (P9c) — `finished` dims a sub-agent's dot.
+      return { ...s, restedAs: e.outcome as SessionSlice["restedAs"] };
+    case "agent":
+      // Linked into its tree (P9e): sent just after a sub-agent's `added` frame.
+      return { ...s, agent: e.info as AgentInfo };
     case "truncation":
       return { ...s, notice: e.message as string, noticeKind: "truncation" };
     case "retrying": {

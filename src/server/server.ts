@@ -140,7 +140,9 @@ function entryView(entry: Entry, convId?: string): Record<string, unknown> {
   const base = { id: entry.id, parent: entry.parent }; // ids for fork/rewind navigation
   switch (entry.type) {
     case "user":
-      return { ...base, type: "user", text: entry.text };
+      // Who sent it, when an agent did (D-88): the transcript draws agent
+      // traffic as a card rather than as the person's own message (P9e).
+      return entry.inbound ? { ...base, type: "user", text: entry.text, inbound: entry.inbound } : { ...base, type: "user", text: entry.text };
     case "assistant":
       return {
         ...base,
@@ -203,7 +205,8 @@ function wireEvent(e: SessionEvent, convId: string): unknown {
  *  current settled state, so the rail can draw a badge without loading the tree. */
 function sessionDescriptor(session: Session): Record<string, unknown> {
   // `agent` places a sub-agent under its parent (D-88) — the rail nests by it
-  // in P9e; until then children show flat, as ordinary sessions.
+  // (P9e). A child is linked just after it joins the bag, so its `added` frame
+  // has none yet; the `agent` event that follows supplies it.
   return { id: session.id, model: session.config.model, agent: session.agentInfo ?? null, state: stateOf(session) };
 }
 
@@ -249,6 +252,9 @@ function stateOf(session: Session): Record<string, unknown> {
     // and the whole tree's spend, which is what the spend cap measures (D-33).
     agent: session.agentInfo ?? null,
     subtree: session.subtree ?? null,
+    // How the last turn came to rest — a sub-agent's dot reads "finished"
+    // rather than "idle" from this (P9e, X-56 Q18). Null mid-turn.
+    restedAs: session.restedAs,
     treeSpendUsd: session.treeSpendUsd,
     spendCapUsd: session.spendCapUsd ?? null,
     capReached: session.capReached,

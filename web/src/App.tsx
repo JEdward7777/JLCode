@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
 import { fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "./tool-view";
 import { abbreviatePath, folderName, tabTitle } from "./workspace";
@@ -6,8 +6,9 @@ import { newAttentionMemory, stepAttention } from "./attention";
 import { createBlipper } from "./blip";
 import { createSpeaker, newAutoReadMemory, plainText, stepAutoRead } from "./tts";
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
-import { isAwaiting, needsViewResync } from "./session-state";
+import { needsViewResync } from "./session-state";
 import { fitModelLabel } from "./model-label";
+import { agentCard, agentStatus, buildRailTree, lineage, resolveAgent, rollup, type AgentCard, type RailNode } from "./agents";
 import {
   confirmFromRefusal,
   crossKeyQuestion,
@@ -1110,6 +1111,8 @@ export function App() {
           onOpenDrawer={openDrawer}
           onCloseDrawer={() => setDrawerOpen(false)}
           onModelState={foldState}
+          live={sessionList}
+          onOpenAgent={focus}
         />
       ) : (
         <div className="pane empty-pane">
@@ -1222,31 +1225,83 @@ function SessionRail({
     };
   }, []);
 
-  const statusLabel = (s: SessionSlice): string => {
-    if (s.persistenceFault) return "can’t save"; // outranks everything (D-46)
-    if (s.pendingApproval) return "needs approval";
-    if (s.pendingAsk) return "needs answer";
-    // A paused turn must never read as a finished one (D-79) — the rail badge is
-    // the surface a person actually scans when a session goes quiet, and "idle"
-    // there is what made the old silent stop look like the agent's own choice.
-    if (s.pendingStall) return "continue?";
-    if (s.capReached) return "cap reached";
-    if (s.working || s.status === "running") return "working…";
-    if (s.tasks.length > 0) return "task running";
-    if (s.status === "halted") return "halted";
-    // A pause this build has no card for — i.e. the server is newer than this
-    // tab (D-80). Never call it `idle`: that is what makes a stopped session
-    // look like a finished one, which is the whole of D-79.
-    if (isAwaiting(s.status)) return "waiting…";
-    return "idle";
-  };
-  const dotClass = (s: SessionSlice): string => {
-    if (s.persistenceFault) return "halt"; // a stalled write stops the session (D-46)
-    if (s.pendingApproval || s.pendingAsk || s.pendingStall || s.capReached) return "attn";
-    if (isAwaiting(s.status)) return "attn"; // an unrecognized pause is still a pause (D-80)
-    if (s.working || s.status === "running" || s.tasks.length > 0) return "busy";
-    if (s.status === "halted") return "halt";
-    return "";
+  // Which parents the person folded (Q11). Per tab and not persisted: session
+  // ids do not outlive the server, so a remembered fold would only go stale.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleFold = (id: string) =>
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  const tree = buildRailTree(sessions);
+
+  /** One live card and, unless folded, its sub-agents under it (X-56 Q11). */
+  const renderNode = (n: RailNode<SessionSlice>): React.ReactNode => {
+    const s = n.slice;
+    const sub = (s.agent?.parentSessionId ?? null) !== null;
+    const st = agentStatus(s, sub);
+    const hasKids = n.children.length > 0;
+    const open = hasKids && !folded.has(s.id);
+    // Folded, a parent shows the loudest thing below it — a grandchild on an
+    // approval lights the root as surely as a child does.
+    const roll = hasKids && !open ? rollup(n) : null;
+    return (
+      <Fragment key={s.id}>
+        <div
+          className={`rail-item ${s.id === focusedId ? "focused" : ""} ${sub ? "agent" : ""} ${roll?.waiting ? "lit" : ""}`}
+          style={n.level > 0 ? { marginLeft: Math.min(n.level, 4) * 12 } : undefined}
+          onClick={() => onFocus(s.id)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === "Enter" && onFocus(s.id)}
+        >
+          <RailCardHead
+            session={s}
+            dotClass={st.dot}
+            agentName={sub ? s.agent!.name : null}
+            fold={hasKids ? { open, onToggle: () => toggleFold(s.id) } : null}
+            onClose={onClose}
+            onRename={onRename}
+          />
+          <div className="rail-item-meta">
+            <span className={`rail-status ${st.dot}`}>{st.label}</span>
+            {sub ? (
+              // Name, model, dot (Q11) — nested, the row is too narrow for spend
+              // as well, so that rides in the tooltip; the parent's spend chip
+              // carries the tree's total (D-33).
+              <span className="rail-agent-model" title={`${s.model} · $${s.spendUsd.toFixed(4)}`}>
+                {fitModelLabel(s.model, 18)}
+              </span>
+            ) : (
+              <>
+                <span className="rail-spend">${s.spendUsd.toFixed(4)}</span>
+                <span className="rail-mode">{s.mode}</span>
+              </>
+            )}
+          </div>
+          {roll?.top ? (
+            <button
+              className={`rail-rollup ${roll.waiting ? "attn" : ""}`}
+              title={`open ${roll.top.slice.agent?.name ?? "it"}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onFocus(roll.top!.slice.id);
+              }}
+            >
+              <span className={`sdot ${roll.top.status.dot}`} />
+              <span className="rail-rollup-name">{roll.top.slice.agent?.name ?? roll.top.slice.title ?? "agent"}</span>
+              <span className={`rail-status ${roll.top.status.dot}`}>{roll.top.status.label}</span>
+              {/* A bare number: "needs approval" is the part that must fit. */}
+              <span className="rail-rollup-count" title={`${roll.count} sub-agent${roll.count === 1 ? "" : "s"} below`}>
+                {roll.count}
+              </span>
+            </button>
+          ) : null}
+        </div>
+        {open && n.children.map(renderNode)}
+      </Fragment>
+    );
   };
   return (
     <aside className="rail">
@@ -1282,23 +1337,7 @@ function SessionRail({
           {liveOpen && (
             <div className="rail-list" ref={liveListRef}>
               {sessions.length === 0 && <div className="rail-empty">no live sessions</div>}
-              {sessions.map((s) => (
-                <div
-                  key={s.id}
-                  className={`rail-item ${s.id === focusedId ? "focused" : ""}`}
-                  onClick={() => onFocus(s.id)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => e.key === "Enter" && onFocus(s.id)}
-                >
-                  <RailCardHead session={s} dotClass={dotClass(s)} onClose={onClose} onRename={onRename} />
-                  <div className="rail-item-meta">
-                    <span className={`rail-status ${dotClass(s)}`}>{statusLabel(s)}</span>
-                    <span className="rail-spend">${s.spendUsd.toFixed(4)}</span>
-                    <span className="rail-mode">{s.mode}</span>
-                  </div>
-                </div>
-              ))}
+              {tree.map(renderNode)}
             </div>
           )}
         </section>
@@ -1532,17 +1571,24 @@ function formatWhen(iso: string): string {
 function RailCardHead({
   session,
   dotClass,
+  agentName,
+  fold,
   onClose,
   onRename,
 }: {
   session: SessionSlice;
   dotClass: string;
+  /** A sub-agent's name (X-56 Q11) — its label, and not renamable: the name is
+   *  what agents address it by, so a new label would only mislead. */
+  agentName: string | null;
+  /** The disclosure arrow, on a card with sub-agents under it. */
+  fold: { open: boolean; onToggle: () => void } | null;
   onClose: (id: string) => void;
   onRename: (id: string, title: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const label = session.title || session.model || "session";
+  const label = agentName ?? (session.title || session.model || "session");
 
   const start = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1579,13 +1625,28 @@ function RailCardHead({
   }
   return (
     <div className="rail-item-top">
+      {fold ? (
+        <button
+          className="rail-fold"
+          aria-expanded={fold.open}
+          title={fold.open ? "fold its sub-agents" : "show its sub-agents"}
+          onClick={(e) => {
+            e.stopPropagation();
+            fold.onToggle();
+          }}
+        >
+          {fold.open ? "▾" : "▸"}
+        </button>
+      ) : null}
       <span className={`sdot ${dotClass}`} />
       <span className="rail-model" title={session.title ? `${session.title} — ${session.model}` : session.model}>
         {label}
       </span>
-      <button className="rail-icon" title="rename this thread" onClick={start}>
-        ✎
-      </button>
+      {agentName === null && (
+        <button className="rail-icon" title="rename this thread" onClick={start}>
+          ✎
+        </button>
+      )}
       <button
         className="rail-close"
         title="close session (stops it)"
@@ -1631,8 +1692,14 @@ function ChatPane({
   onOpenDrawer,
   onCloseDrawer,
   onModelState,
+  live,
+  onOpenAgent,
 }: {
   slice: SessionSlice;
+  /** Every live session — what an agent card's link resolves against (P9e). */
+  live: SessionSlice[];
+  /** Open another session in the main pane (an agent card's link). */
+  onOpenAgent: (id: string) => void;
   journal: JournalRecord[];
   drawerOpen: boolean;
   speakingId: string | null;
@@ -1809,6 +1876,7 @@ function ChatPane({
   return (
     <div className="pane">
       <header className="topbar">
+        {slice.agent?.parentSessionId ? <AgentCrumb slice={slice} live={live} onOpen={onOpenAgent} /> : null}
         <ModelChip slice={slice} onState={(state) => onModelState(id, state)} />
         <div className="controls">
           <button className="ghost" title="debug journal (D-15)" onClick={onOpenDrawer}>
@@ -1880,9 +1948,14 @@ function ChatPane({
             );
           }
           if (entry.type === "model-switch") return <SwitchMark key={entry.id} entry={entry} />;
-          if (entry.type === "tool") {
-            return <ToolBlock key={entry.id} entry={entry} args={entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined} />;
+          const args = entry.type === "tool" && entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined;
+          // Agent traffic is a card, not a message from the person (X-56 Q11).
+          const card = agentCard(entry, args);
+          if (card) {
+            const target = card.peer ? resolveAgent(live, slice, card.peer) : undefined;
+            return <AgentCardView key={entry.id} card={card} onOpen={target ? () => onOpenAgent(target) : undefined} />;
           }
+          if (entry.type === "tool") return <ToolBlock key={entry.id} entry={entry} args={args} />;
           const siblings = childrenOf(slice.entries, entry.parent);
           const branch =
             siblings.length > 1
@@ -2052,6 +2125,59 @@ function ChatPane({
 
       {drawerOpen && <JournalDrawer records={journal} entries={slice.entries} onClose={onCloseDrawer} onRefresh={onLoadJournal} />}
     </div>
+  );
+}
+
+/**
+ * Agent traffic in a transcript (X-56 Q11): spawned / → sent / ← received /
+ * finished, compact and styled apart from the person's own messages. The peer's
+ * name links to that agent while it is live; a long body folds to two lines.
+ */
+function AgentCardView({ card, onOpen }: { card: AgentCard; onOpen?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const long = card.body.length > 160 || card.body.split("\n").length > 2;
+  return (
+    <div className={`agent-card ${card.kind} ${card.tone ?? ""}`}>
+      <div className="agent-card-head">
+        <span className="agent-card-kind">{card.head}</span>
+        {card.peer ? (
+          onOpen ? (
+            <button className="agent-link" title={`open ${card.peer}`} onClick={onOpen}>
+              {card.peer}
+            </button>
+          ) : (
+            <span className="agent-peer" title="not live — open its root thread to reach it">
+              {card.peer}
+            </span>
+          )
+        ) : null}
+        {card.detail ? <span className="agent-card-detail">{card.detail}</span> : null}
+        {long ? (
+          <button className="agent-card-more" onClick={() => setOpen((o) => !o)}>
+            {open ? "less" : "more"}
+          </button>
+        ) : null}
+      </div>
+      {card.body ? <div className={`agent-card-body ${open ? "open" : ""}`}>{card.body}</div> : null}
+    </div>
+  );
+}
+
+/** A sub-agent's place, above its pane: its ancestors, each one click away. */
+function AgentCrumb({ slice, live, onOpen }: { slice: SessionSlice; live: SessionSlice[]; onOpen: (id: string) => void }) {
+  const chain = lineage(live, slice);
+  return (
+    <nav className="agent-crumb" aria-label="agent tree">
+      {chain.map((a) => (
+        <Fragment key={a.id}>
+          <button className="agent-link" title={a.title ?? undefined} onClick={() => onOpen(a.id)}>
+            {a.agent?.parentSessionId ? a.agent.name : a.title || "root thread"}
+          </button>
+          <span className="agent-crumb-sep">›</span>
+        </Fragment>
+      ))}
+      <span className="agent-crumb-here">{slice.agent?.name}</span>
+    </nav>
   );
 }
 
@@ -2377,9 +2503,12 @@ function PeekPane({
         {peek.conv && rendered.length === 0 && <div className="empty">This thread is empty.</div>}
         {rendered.map((entry) => {
           if (entry.type === "model-switch") return <SwitchMark key={entry.id} entry={entry} />;
-          if (entry.type === "tool") {
-            return <ToolBlock key={entry.id} entry={entry} args={entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined} />;
-          }
+          const args = entry.type === "tool" && entry.toolCallId ? argsByCall.get(entry.toolCallId) : undefined;
+          // Agent traffic reads the same in history, minus the links: nothing
+          // here is live to open (P9e).
+          const card = agentCard(entry, args);
+          if (card) return <AgentCardView key={entry.id} card={card} />;
+          if (entry.type === "tool") return <ToolBlock key={entry.id} entry={entry} args={args} />;
           const siblings = childrenOf(entries, entry.parent);
           const branch =
             siblings.length > 1

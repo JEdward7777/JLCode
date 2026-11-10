@@ -2387,3 +2387,208 @@ button.model-chip.missing {
   font-style: normal;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* Sub-agents in the rail (P9e, X-56 Q11): nested under their parent by a left
+   indent, each with its own dot. `asking` (a question put to its parent agent,
+   P9d) and `queued` (waiting for a slot under the width cap, D-89) are rings —
+   something is pending, but not on you. `done` is a finished sub-agent, dimmed
+   (Q18). */
+.sdot.asking {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px #e0b44a;
+}
+.sdot.queued {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.sdot.done {
+  opacity: 0.45;
+}
+.rail-status.asking {
+  color: #c9a24a;
+}
+.rail-status.queued {
+  color: var(--accent);
+}
+.rail-item.agent {
+  padding: 6px 8px;
+  gap: 3px;
+  border-style: solid;
+  border-left: 2px solid #3b4560;
+}
+.rail-item.agent.focused {
+  border-left-color: var(--accent);
+}
+/* A folded parent with someone below it waiting on you (D-93's rule). */
+.rail-item.lit {
+  border-color: #e0b44a;
+}
+.rail-fold {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  width: 14px;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.rail-fold:hover {
+  color: var(--text);
+}
+/* The status keeps its words; the model is already front-elided in code
+   (D-71) to a budget that fits, so neither is cut by CSS. */
+.rail-item.agent .rail-item-meta {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+.rail-item.agent .rail-item-meta .rail-status {
+  flex: 0 0 auto;
+}
+.rail-item {
+  min-width: 0;
+}
+.rail-agent-model {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+/* What a folded parent shows of its subtree: the loudest agent below it. */
+.rail-rollup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
+  width: 100%;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 5px;
+  cursor: pointer;
+  text-align: left;
+}
+.rail-rollup:hover {
+  border-color: #3b4560;
+}
+.rail-rollup.attn {
+  border-color: #e0b44a;
+  border-style: solid;
+}
+.rail-rollup-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+/* The status is the part that must be read, at any depth: it keeps its words
+   and the row wraps under the name when a nested card is too narrow, rather
+   than ellipsize it. The count sits at the right of whichever line it lands. */
+.rail-rollup .rail-status {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.rail-rollup-count {
+  margin-left: auto;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Agent traffic in a transcript (P9e, X-56 Q11): compact, left-aligned, in
+   monospace with a dashed edge — never the person's blue bubble on the right. */
+.agent-card {
+  align-self: flex-start;
+  max-width: 85%;
+  border: 1px dashed #3b4560;
+  border-left: 3px solid #7f6df2;
+  border-radius: 8px;
+  padding: 5px 10px;
+  background: var(--panel);
+  font-size: 13px;
+}
+.agent-card.sent {
+  border-left-color: var(--accent);
+}
+.agent-card.finished {
+  border-left-color: #4caf7d;
+}
+.agent-card.warn,
+.agent-card.refused {
+  border-left-color: var(--danger);
+}
+.agent-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.agent-card-kind {
+  color: var(--muted);
+}
+.agent-link,
+.agent-peer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.agent-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+.agent-link:hover {
+  text-decoration: underline;
+}
+.agent-peer {
+  color: var(--text);
+}
+.agent-card-detail {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.agent-card-more {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.agent-card-body {
+  margin-top: 3px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.agent-card-body.open {
+  display: block;
+}
+/* A sub-agent's ancestors above its pane, each one click away. */
+.agent-crumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.agent-crumb .agent-link {
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-crumb-sep {
+  color: var(--muted);
+}
+.agent-crumb-here {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}

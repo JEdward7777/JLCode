@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), next P9e.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), P9e ✅ 2026-11-10 (D-94), next P9f.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,23 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-10 (Phase 9 as the ratchet — P9a…P9e ✅, next P9f).** Same run as the
+> blocks below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
+> **Next free ids: D-95, X-58, H-23.**
+>
+> **P9e — the rail and the transcript cards — shipped (D-94).** Two review rounds. R1: a Stop
+> fanned over a child's approval card left the card alive in the browser, so the folded ancestor
+> stayed falsely lit. Now every resting or working status retires all pending cards. R2 CLEAN.
+> The implementer's peek caught five layout cuts and fixed them. Both reviewers peeked too. Build +
+> free tiers green (**1192**, +34 over P9d). README's "Sub-agents" section now describes the nested
+> rail. Fixes H-16(a). Filed **H-22** (incl. no tree-wide Stop from an idle root, for P9f to
+> weigh).
+>
+> **Resume checklist if interrupted:** P9e committed + pushed → start **P9f** (lifecycle: close,
+> `list_agents`, Wake, boot — Tier-0 + peek; fresh implementer; peek pair 7861/9461, reviewers
+> upward), its own commit. **Stop before P9g** and ask Joshua the level; P9g also records P9c's
+> Tier-1 fixture.
 
 > **Resume block — 2026-11-09 (Phase 9 as the ratchet — P9a…P9d ✅, next P9e).** Same run as the
 > blocks below (scope P9a…P9f, stop before P9g and ask Joshua the paid level).
@@ -2205,7 +2222,7 @@ the rail as ordinary sessions — usable, just not nested.
 - Tests: default-addressee rule; wrong-sender answer queues instead of answering; human always
   answers; looser `mode` refused; off switch survives restart via the log.
 
-### P9e — The rail and the transcript cards (Tier-0 + peek)
+### P9e — The rail and the transcript cards (Tier-0 + peek) ✅ *(2026-11-10, D-94 — two review rounds)*
 
 - Sub-agents **nest under their parent in the existing rail** (no new pane): name, model, status
   dot (running / queued / idle / finished / waiting for you); disclosure arrow; collapsed parent
@@ -2239,6 +2256,20 @@ child question routed to its parent, a cross-model switch mid-thread and back vi
 the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-22 — small P9e leftovers.** Found 2026-11-10 by the P9e build and review loop; **OPEN.**
+  - (a) **No tree-wide Stop from an idle root.** `StopControl` is live only while the pane's own session works. A root that yielded after spawning is idle, so the Stop that fans down to its working subtree (D-34) can't be clicked from the root's pane. P9f should consider it alongside Wake.
+  - (b) Nothing in the rail marks the focused sub-agent when it sits under a folded parent.
+  - (c) An inbound user entry with forked siblings loses its ‹i/n› branch arrows when drawn as a card.
+  - (d) The root blips "idle" when it yields after a spawn, even while its children work.
+  - (e) The server-side `subtree.waiting` is still sent but the rail doesn't use it. The browser's `waitsForYou` deliberately also counts the cap and a persistence fault (D-94), and its doc comment should say so.
+  - (f) A long breadcrumb wraps the pane's topbar onto two rows.
+  - (g) `agentCard`'s spawn regex drops the tail of a config name that itself contains " (".
+  - (h) A `spawn_agent` cut off by Stop renders as "spawn refused".
+  - (i) `attentionOf` silences a sub-agent at rest even on a turn the person typed in that child's pane.
+  - (j) `folded` keeps ids after a parent loses its children.
+  - (k) A stopped sub-agent reads "idle". P9f's derived states should surface it.
+  - (l) The live list's overflow scrollbar renders as a light native bar on the dark theme (seen in `p9e-tree-expanded.png`).
 
 - **H-21 — small P9d leftovers.** Found 2026-11-09 by the P9d review loop; **OPEN.**
   - (a) A parent reply is matched to the child's *current* parent-addressed question, not to the question it was written about. So a reply about Q1 (already answered by the person) can answer a newer Q2.
@@ -2286,7 +2317,7 @@ the models actually did with the tool descriptions.
   same fault, is overridden on recovery (the order of the person's actions is lost).
 
 - **H-16 — UI rot seen during P9b, not P9b's own.** Found 2026-11-05 by the P9b implementer and reviewers;
-  **OPEN.** (a) After approving from the card, the rail keeps saying "waiting…" while the session is
+  **OPEN** — (a) fixed 2026-11-10 by P9e (D-94: the reducer folds every `status`). (a) After approving from the card, the rail keeps saying "waiting…" while the session is
   idle: `status` moves only through a state fold, and none follows the approval. (b) X-46 in the
   **rail**: an untitled live row reads `anthropic/claud…`, because the rail never got `fitModelLabel`.
   (c) The disabled Send button looks the same as the enabled one. (d) Any edit refusal closes the edit

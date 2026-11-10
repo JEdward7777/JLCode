@@ -41,6 +41,25 @@ export interface EntryView {
   by?: "agent" | "user"; // todo — who changed the list at this point (X-31)
   configId?: string; // model-switch — the config it names, resolved live (X-56, D-87)
   snapshot?: { name: string; model: string }; // model-switch — what it was at switch time
+  inbound?: InboundMeta; // user — sent by another agent, not typed by the person (D-88)
+}
+
+/** Who sent a user-side entry, when an agent did (D-88) — mirrors the server's
+ *  `InboundMeta`. The transcript draws these as agent cards (P9e). */
+export interface InboundMeta {
+  id: string;
+  /** The sender's agent name (`root`, `agent-2`). */
+  from: string;
+  kind: "task" | "message" | "finished" | "question";
+}
+
+/** Where a session sits in its agent tree (D-88) — mirrors the server's
+ *  `AgentInfo`. Every live thread is a root (`depth` 0); sub-agents hang below. */
+export interface AgentInfo {
+  name: string;
+  depth: number;
+  parentSessionId: string | null;
+  rootSessionId: string;
 }
 
 /** The tree snapshot from GET /session/:id — entries + the viewed leaf. */
@@ -317,6 +336,11 @@ export interface SessionState {
    *  current. Mid-turn `configId` is the running turn's, which may belong to a
    *  sibling the reader left (H-05). Null when that config was deleted. */
   inViewConfigId?: string | null;
+  /** Where this session sits in its agent tree (D-88), null outside one. */
+  agent?: AgentInfo | null;
+  /** How the last turn came to rest, null mid-turn (P9e) — a sub-agent's
+   *  "finished" dot. */
+  restedAs?: "finished" | "failed" | "stopped" | null;
 }
 
 /** A model switch picked while the session was busy, written at the next idle
@@ -356,6 +380,9 @@ export interface WireEvent {
 export interface SessionDescriptor {
   id: string;
   model: string;
+  /** Where it sits in its agent tree (D-88). Null on a sub-agent's `added`
+   *  frame — it is linked a beat later, and an `agent` event says where. */
+  agent?: AgentInfo | null;
   state: SessionState;
 }
 

@@ -317,10 +317,21 @@ The model can hand work to **sub-agents**: other agents that run in the
 background, in the same workspace, with the same permissions. They can use the
 same model or another config on the **same key**. A sub-agent's approvals come
 to you, never to the agent that started it. The parent learns when a child goes
-quiet, and the two talk by message. For now each sub-agent shows in the thread
-list as a thread of its own, named `agent-1`, `agent-2`, …. You can open one and
-type to it like any other thread. Stop or close a thread and everything it
+quiet, and the two talk by message. Stop or close a thread and everything it
 started stops with it. Its spend counts toward the thread's spend cap.
+
+In the browser, sub-agents **nest under the thread that started them** in the
+live list, named `agent-1`, `agent-2`, …, each with its model and a status dot:
+working, queued (waiting for a free slot), idle, finished (dimmed), or waiting
+for you. The arrow beside a thread folds its sub-agents away. A folded thread
+shows the most urgent agent below it, and its card turns yellow when one of them
+needs you, such as an approval three levels down. A question an agent put to its
+parent shows as a ring and doesn't light anything, because that question is the
+parent's to answer. Click a sub-agent to open it like any thread, with its own
+model picker and composer. What you type there counts as you, so it starts that
+agent's "still working?" budget over. In a thread's transcript, agent traffic
+shows as compact cards (spawned, → sent, ← received, finished) rather than as
+your own messages. Each card's agent name links to that agent.
 
 Two limits keep a tree of agents from running away. Both come from the config
 of the thread **you** started:

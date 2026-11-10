@@ -301,6 +301,10 @@ export type SessionEvent =
   // This session's sub-agents changed state (X-56 Q10): the counts behind the
   // parent's "waiting for you" flag.
   | { type: "subtree"; summary: SubtreeSummary }
+  // This session took its place in an agent tree (P9e): sent when the
+  // coordinator links it, which for a sub-agent is just after its
+  // `session-added` frame — the rail nests it by this.
+  | { type: "agent"; info: AgentInfo }
   // Rewind / branch switch — persisted so resume restores it. `null` is the
   // point above the root, where editing the first message forks (H-05).
   | { type: "active-leaf"; leaf: string | null }

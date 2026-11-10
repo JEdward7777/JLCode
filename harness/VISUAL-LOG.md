@@ -1855,3 +1855,26 @@ mean hiding a running session from the rail, which is worse.
 - The server stayed responsive: a `state` request and then a Stop over HTTP both landed.
 
 **Caught by looking:** the first click, before the fix, hung the server. With the pause off, the fake driver's loop never yielded, so no Stop request, log write or timer could run. The loop now yields once per round past the budget (D-93). A real driver always does network I/O, but a run with no brake must never lock out Stop.
+
+## P9e — sub-agents nested in the rail, and agent cards in the transcript · 2026-11-10 · ✅ looked good (five cuts caught by looking; one stale-card defect found by a reviewer)
+
+**Setup:** fake driver. The root script was `spawn: spawn: write: deep.txt | hi from the grandchild ;; msg: parent | hello from agent-2`, which builds root → agent-1 → agent-3 (waiting on approval), plus agent-2. The implementer peeked on 7831/9431, and the reviewers on 7841/9441 and 7851/9451. I looked at the PNGs myself.
+
+**Confirmed by eye:**
+- **Expanded** (`p9e-tree-expanded.png`): three indented levels. agent-1 reads dimmed "finished", and agent-3 reads yellow "needs approval".
+- **Folded root** (`p9e-collapsed-lit.png`): the card is lit yellow, and its rollup reads "● agent-3 needs approval (3)".
+- **Folded at depth 1** (`p9e-nested-fold-lit.png`): the status wraps whole under the name instead of being cut.
+- **The rollup opens agent-3** (`p9e-open-grandchild.png`): a breadcrumb "Spawn: write… › agent-1 › agent-3", agent-3's own picker, a "← task from agent-1" card, the approval card, and the composer.
+- **After Approve** (`p9e-approved.png`): agent-3 flips to "finished" live, and the lit border clears.
+- **A child asking its parent** (`p9e-asks-parent.png`): an amber ring reading "asks parent". The folded root is *not* lit, and the parent's transcript shows "← question from agent-1".
+- **A hard Stop over HTTP** with the tab open (`p9e-stop-retires-card.png`): the lit root drops to "agent-3 idle" with no reload.
+
+**Caught by looking:**
+- **Fixed by the implementer:**
+  - Status labels were squeezed to "fi…" and "n".
+  - A level-2 row caused a horizontal scrollbar.
+  - The rollup cut "needs approval", first at the top level, then (round 1) at depth 1.
+  - "asked its parent" was cut.
+  - The notice wording "1 of its own sub-agent" read badly.
+- **Found by the round-1 reviewer from a captured SSE stream:** a fanned Stop left the approval card alive in the client (D-94). Seen fixed in a real browser by the implementer and by the round-2 reviewer.
+- **Noticed by the coordinator, filed as H-22(l):** the live list's overflow scrollbar is a light native bar on the dark theme.

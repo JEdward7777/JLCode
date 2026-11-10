@@ -32,13 +32,18 @@ export type AttentionReason = "fault" | "approval" | "input" | "compaction" | "c
 export function attentionOf(s: SessionSlice): AttentionReason | null {
   if (s.persistenceFault) return "fault";
   if (s.pendingApproval) return "approval";
-  if (s.pendingAsk) return "input";
+  // A sub-agent's question to its parent agent is the parent's to answer
+  // (P9d's `waitsForYou`) — the person may, but nothing calls them to it.
+  if (s.pendingAsk) return s.pendingAsk.to === "parent" ? null : "input";
   if (s.pendingCompaction) return "compaction";
   // The tool-round pause (D-79) is a demand like the others: the turn is held
   // open and goes nowhere until someone answers it.
   if (s.pendingStall) return "continue";
   if (s.capReached) return "cap";
   if (s.working) return null;
+  // A sub-agent at rest has handed its turn to its parent agent, not to you
+  // (P9e): its parent hears of it, and a tree of them must not chirp per turn.
+  if (s.agent?.parentSessionId) return null;
   return "idle";
 }
 

@@ -1019,3 +1019,97 @@ describe("a Stop on a turn a cap raise has queued (queued resume)", () => {
     expect(t.seenStopping).toEqual([]);
   });
 });
+
+describe("what the browser needs to nest the tree (P9e)", () => {
+  /** Every frame the bag's bus delivers, in order. */
+  function record(manager: SessionManager) {
+    const frames: { kind: string; sessionId?: string; type?: string; agent?: unknown }[] = [];
+    manager.subscribe((f) => {
+      if (f.kind === "added") frames.push({ kind: "added", sessionId: f.session.id, agent: f.session.agentInfo ?? null });
+      else if (f.kind === "event") frames.push({ kind: "event", sessionId: f.sessionId, type: f.event.type, ...(f.event.type === "agent" ? { agent: f.event.info } : {}) });
+    });
+    return frames;
+  }
+
+  it("a child's place in the tree follows its `added` frame as an `agent` event", async () => {
+    seed();
+    const { app, manager, agents } = makeServer();
+    const frames = record(manager);
+    const first = await post(app, "/chat", { text: "spawn: say hi" });
+    await agents.idle();
+    const root = manager.get(first.json.sessionId as string)!;
+    const child = childrenOf(manager, root)[0]!;
+    const added = frames.findIndex((f) => f.kind === "added" && f.sessionId === child.id);
+    const linked = frames.findIndex((f) => f.type === "agent" && f.sessionId === child.id);
+    expect(added).toBeGreaterThanOrEqual(0);
+    expect(linked).toBeGreaterThan(added);
+    expect(frames[linked]!.agent).toMatchObject({ name: "agent-1", depth: 1, parentSessionId: root.id, rootSessionId: root.id });
+    // The root was linked before it joined the bag: its descriptor carries it.
+    expect(frames.find((f) => f.kind === "added" && f.sessionId === root.id)!.agent).toMatchObject({ name: "root", depth: 0 });
+  });
+
+  it("states how a turn came to rest, so a finished sub-agent reads finished", async () => {
+    seed();
+    const { app, manager, agents } = makeServer();
+    const first = await post(app, "/chat", { text: "spawn: say hi" });
+    await agents.idle();
+    const root = manager.get(first.json.sessionId as string)!;
+    const child = childrenOf(manager, root)[0]!;
+    const state = await app.request(`/session/${child.id}/state`);
+    expect(((await state.json()) as Record<string, unknown>).restedAs).toBe("finished");
+
+    // A turn under way is not at rest.
+    const held = await post(app, "/chat", { text: "spawn: hold:p9e" });
+    const heldRoot = manager.get(held.json.sessionId as string)!;
+    await until(manager, () => childrenOf(manager, heldRoot)[0]?.status === "running");
+    expect(childrenOf(manager, heldRoot)[0]!.restedAs).toBeNull();
+    gateFor("p9e").open();
+    await agents.idle();
+    expect(childrenOf(manager, heldRoot)[0]!.restedAs).toBe("finished");
+  });
+
+  it("ships who sent an agent's message on the entry, for the transcript's cards", async () => {
+    seed();
+    const { app, agents } = makeServer();
+    const first = await post(app, "/chat", { text: "spawn: msg: parent | hello" });
+    await agents.idle();
+    const res = await app.request(`/session/${first.json.sessionId as string}`);
+    const entries = ((await res.json()) as { entries: { type: string; inbound?: unknown; text?: string }[] }).entries;
+    const users = entries.filter((e) => e.type === "user");
+    expect(users[0]!.inbound).toBeUndefined(); // the person's own message
+    expect(users.map((e) => e.inbound).filter(Boolean)).toEqual([
+      expect.objectContaining({ from: "agent-1", kind: "message" }),
+      expect.objectContaining({ from: "agent-1", kind: "finished" }),
+    ]);
+  });
+
+  it("typing in a sub-agent's own pane is human input: its tool-round budget starts over", async () => {
+    seed({ toolRounds: 3 });
+    const { app, manager, agents } = makeServer();
+    const first = await post(app, "/chat", { text: "spawn: read: notes.txt" }); // the child spends 2 of 3
+    await agents.idle();
+    const child = childrenOf(manager, manager.get(first.json.sessionId as string)!)[0]!;
+    expect(child.status).toBe("idle");
+    // Another two rounds would cross 3 on an agent's message; from the person
+    // in the child's own pane (`/chat` with its session id) they run through.
+    const typed = await post(app, "/chat", { sessionId: child.id, text: "read: notes.txt" });
+    expect(typed.status).toBe(200);
+    await agents.idle();
+    expect(child.status).toBe("idle");
+    expect(child.awaitingContinue).toBeUndefined();
+  });
+});
+
+describe("the control for the pane's budget reset (P9e)", () => {
+  it("the same work sent by the parent agent instead pauses on the budget", async () => {
+    seed({ toolRounds: 3 });
+    const { app, manager, agents } = makeServer();
+    const first = await post(app, "/chat", { text: "spawn: read: notes.txt" });
+    await agents.idle();
+    const root = manager.get(first.json.sessionId as string)!;
+    const child = childrenOf(manager, root)[0]!;
+    await post(app, "/chat", { sessionId: root.id, text: "msg: agent-1 | read: notes.txt" });
+    await agents.idle();
+    expect(child.status).toBe("awaiting-continue");
+  });
+});
