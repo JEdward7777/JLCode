@@ -36,7 +36,9 @@ export interface AgentRecord {
   depth: number;
   /** The mode it was spawned in when that was stricter than its parent's
    *  (P9d, X-56 Q10) — kept so a revival does not loosen it back to the
-   *  parent's. Absent = it runs at its parent's mode. */
+   *  parent's — or the one its parent last set with `set_agent_mode` (P9f2),
+   *  folded from `agent-mode` control records, newest wins. Absent = it runs
+   *  at its parent's mode. A revival still caps it at the parent's mode then. */
   mode?: Mode;
   createdAt: string;
   /** Closed (P9f, X-56 Q18–Q20): unloaded, grey in the rail, out of
@@ -195,6 +197,12 @@ export class ConversationStore {
     return this.log(rootId).append({ kind: "agent-closed", agentId, closed, ts: new Date().toISOString() });
   }
 
+  /** A parent changed a sub-agent's mode (P9f2, X-58) — a control record in
+   *  its tree's file, untagged like `agent-closed`; newest wins. */
+  agentMode(rootId: string, agentId: string, mode: Mode): Promise<void> {
+    return this.log(rootId).append({ kind: "agent-mode", agentId, mode, ts: new Date().toISOString() });
+  }
+
   /** Every agent ever spawned in a tree, in spawn order. */
   agents(rootId: string): AgentRecord[] {
     let text: string;
@@ -205,9 +213,15 @@ export class ConversationStore {
     }
     const out: AgentRecord[] = [];
     const closed = new Map<string, boolean>();
+    const modes = new Map<string, Mode>();
+    const isMode = (m: unknown): m is Mode => typeof m === "string" && (MODES as readonly string[]).includes(m);
     for (const r of ConversationStore.parseLines(text)) {
       if (r.kind === "agent-closed") {
         if (typeof r.agentId === "string") closed.set(r.agentId, r.closed === true);
+        continue;
+      }
+      if (r.kind === "agent-mode") {
+        if (typeof r.agentId === "string" && isMode(r.mode)) modes.set(r.agentId, r.mode);
         continue;
       }
       if (r.kind !== "agent" || typeof r.agentId !== "string" || typeof r.name !== "string") continue;
@@ -216,11 +230,15 @@ export class ConversationStore {
         parentAgentId: typeof r.parentAgentId === "string" ? r.parentAgentId : null,
         name: r.name,
         depth: typeof r.depth === "number" ? r.depth : 1,
-        ...(typeof r.mode === "string" && (MODES as readonly string[]).includes(r.mode) ? { mode: r.mode as Mode } : {}),
+        ...(isMode(r.mode) ? { mode: r.mode } : {}),
         createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
       });
     }
-    for (const rec of out) if (closed.get(rec.agentId)) rec.closed = true;
+    for (const rec of out) {
+      if (closed.get(rec.agentId)) rec.closed = true;
+      const mode = modes.get(rec.agentId);
+      if (mode) rec.mode = mode;
+    }
     return out;
   }
 
@@ -358,6 +376,7 @@ export class ConversationStore {
         r.kind !== "header" &&
         r.kind !== "agent" &&
         r.kind !== "agent-closed" &&
+        r.kind !== "agent-mode" &&
         (typeof r.agent === "string" ? r.agent : undefined) === want,
     );
     const inbox = new Map<string, InboundMeta & { text: string }>();

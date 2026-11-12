@@ -320,6 +320,11 @@ to you, never to the agent that started it. The parent learns when a child goes
 quiet, and the two talk by message. Stop or close a thread and everything it
 started stops with it. Its spend counts toward the thread's spend cap.
 
+A parent can also **change a sub-agent's mode** after starting it (`set_agent_mode`),
+say from ask to code once the child needs to write, without a card and never
+looser than the parent's own mode. The child keeps its context, is told before
+its next step, and the new mode shows on its rail row and its pane's mode toggle.
+
 In the browser, sub-agents **nest under the thread that started them** in the
 live list, named `agent-1`, `agent-2`, …, each with its model and a status dot:
 working, queued (waiting for a free slot), idle, finished (dimmed), or waiting

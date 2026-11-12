@@ -1,6 +1,7 @@
 /**
  * The agent tools (X-56, D-88): `spawn_agent`, `send_message`, `list_models`,
- * and the lifecycle three (P9f): `list_agents`, `close_agent`, `wake_agents`.
+ * the lifecycle three (P9f): `list_agents`, `close_agent`, `wake_agents`, and
+ * `set_agent_mode` (P9f2, X-58).
  *
  * Thin by design — every decision (depth, key, names, the concurrency queue)
  * belongs to the coordinator behind `ctx.agents`, which is the one place that
@@ -26,6 +27,7 @@ export const LIST_MODELS = "list_models";
 export const LIST_AGENTS = "list_agents";
 export const CLOSE_AGENT = "close_agent";
 export const WAKE_AGENTS = "wake_agents";
+export const SET_AGENT_MODE = "set_agent_mode";
 
 const NO_TREE: ToolResult = { content: "sub-agents are not available in this session", isError: true };
 
@@ -215,7 +217,51 @@ export function wakeAgentsTool(): Tool {
   };
 }
 
+export function setAgentModeTool(): Tool {
+  return {
+    name: SET_AGENT_MODE,
+    kind: "meta",
+    mutates: false,
+    def: {
+      type: "function",
+      function: {
+        name: SET_AGENT_MODE,
+        description:
+          "Change one of your own sub-agents' mode — e.g. one you started in \"ask\" that now needs \"code\" to do " +
+          "the work. Any mode up to your own (ask < plan < code), never looser than you. It applies from the " +
+          "sub-agent's next step and it is told; its context is kept. It does not start it working: if it is " +
+          "idle, follow with send_message.",
+        parameters: {
+          type: "object",
+          properties: {
+            to: { type: "string", description: "The sub-agent's name, as spawn_agent gave it" },
+            mode: { type: "string", enum: [...MODES], description: "ask < plan < code. At most your own mode" },
+          },
+          required: ["to", "mode"],
+        },
+      },
+    },
+    execute(args, ctx) {
+      const to = typeof args.to === "string" ? args.to.trim() : "";
+      if (!to) return Promise.resolve({ content: "set_agent_mode needs the sub-agent's name in `to`", isError: true });
+      const mode = typeof args.mode === "string" ? args.mode.trim().toLowerCase() : "";
+      if (!(MODES as readonly string[]).includes(mode)) {
+        return Promise.resolve({ content: `set_agent_mode: \`mode\` is one of ${MODES.join(", ")}, not ${JSON.stringify(args.mode)}`, isError: true });
+      }
+      return guarded(ctx, (agents) => agents.setAgentMode(to, mode as Mode));
+    },
+  };
+}
+
 /** The agent tools, in the order the model reads them. */
 export function agentTools(): Tool[] {
-  return [spawnAgentTool(), sendMessageTool(), listModelsTool(), listAgentsTool(), closeAgentTool(), wakeAgentsTool()];
+  return [
+    spawnAgentTool(),
+    sendMessageTool(),
+    listModelsTool(),
+    listAgentsTool(),
+    closeAgentTool(),
+    wakeAgentsTool(),
+    setAgentModeTool(),
+  ];
 }

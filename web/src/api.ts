@@ -50,7 +50,7 @@ export interface InboundMeta {
   id: string;
   /** The sender's agent name (`root`, `agent-2`). */
   from: string;
-  kind: "task" | "message" | "finished" | "question";
+  kind: "task" | "message" | "finished" | "question" | "mode";
 }
 
 /** Where a session sits in its agent tree (D-88) — mirrors the server's

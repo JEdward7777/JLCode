@@ -132,6 +132,7 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   spawn#<mode>: <task>        → spawn_agent with a stricter `mode` (P9d);
  *                                 `spawn@<model>#<mode>:` combines the two
  *   msg: <to> | <text>          → send_message
+ *   mode@<agent>#<mode>:        → set_agent_mode (P9f2), e.g. `mode@agent-1#code:`
  *   models:                     → list_models
  *
  * It also answers the ephemeral auto-title question (X-09) with a short label
@@ -366,6 +367,8 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
       const [to, ...rest] = after("msg:").split("|");
       return toolCall("send_message", { to: (to ?? "").trim() || "parent", text: rest.join("|").trim() || "hello" });
     }
+    const setMode = /^mode@([^:#]+)#(\w+):/.exec(msg);
+    if (setMode) return toolCall("set_agent_mode", { to: setMode[1]!.trim(), mode: setMode[2] });
     if (msg.startsWith("models:")) return toolCall("list_models", {});
     if (msg.startsWith("demo")) return textReply(RICH_MD);
     if (msg.startsWith("form:")) {

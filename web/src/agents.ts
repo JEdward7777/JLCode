@@ -263,17 +263,18 @@ export function lineage<S extends LinkSlice>(slices: readonly S[], s: LinkSlice)
 /**
  * A transcript entry drawn as agent traffic (Q11): **spawned** (a
  * `spawn_agent` result), **→ sent** (a `send_message` result), **← received**
- * (a message, task or question from another agent) and **finished** (a
- * completion notice). `peer` is the other agent's name — what the card links
+ * (a message, task or question from another agent), **finished** (a
+ * completion notice) and **mode** (P9f2: a parent's `set_agent_mode`, on both
+ * sides — "→ set agent-1 to code" in the parent, "mode set by root" in the child). `peer` is the other agent's name — what the card links
  * to — and `body` what was said, its attribution header removed.
  */
 export interface AgentCard {
-  kind: "spawned" | "sent" | "received" | "finished" | "refused";
+  kind: "spawned" | "sent" | "received" | "finished" | "refused" | "mode";
   peer: string | null;
   /** The card's head, without the peer: "spawned", "→", "task from" … */
   head: string;
   body: string;
-  /** A model or a mode worth naming beside the peer (spawned only). */
+  /** A model or a mode worth naming beside the peer (spawned, mode). */
   detail?: string;
   /** The notice said it stopped on an error or was stopped, not finished. */
   tone?: "warn";
@@ -321,6 +322,14 @@ export function agentCard(entry: EntryView, args?: string): AgentCard | null {
     const answer = /as the answer to its question/.test(result);
     return { kind: "sent", peer: to, head: answer ? "→ answered" : "→", body: text };
   }
+  if (entry.name === "set_agent_mode") {
+    const to = str(a.to) ?? null;
+    const mode = str(a.mode);
+    if (entry.isError) return { kind: "refused", peer: to, head: "→ mode not set for", body: result };
+    // "→ set agent-1 to code"; the result says what it was before.
+    const was = /\(was (ask|plan|code)\)/.exec(result)?.[1];
+    return { kind: "mode", peer: to, head: "→ set", body: was ? `was ${was}` : "", ...(mode ? { detail: `to ${mode}` } : {}) };
+  }
   return null;
 }
 
@@ -331,6 +340,18 @@ function inboundCard(meta: InboundMeta, text: string): AgentCard {
       return { kind: "received", peer: meta.from, head: "← task from", body };
     case "question":
       return { kind: "received", peer: meta.from, head: "← question from", body };
+    case "mode": {
+      // The note a parent's `set_agent_mode` left (P9f2): one bracketed line.
+      const mode = /\b(?:set your mode to|capped at) (ask|plan|code)\b/.exec(text)?.[1];
+      const capped = /^\[Your mode was capped/.test(text);
+      return {
+        kind: "mode",
+        peer: meta.from,
+        head: capped ? "mode capped by" : "mode set by",
+        body: "",
+        ...(mode ? { detail: `to ${mode}` } : {}),
+      };
+    }
     case "finished": {
       // The notice names who, never what (Q6); its wording says how it ended.
       const failed = /stopped on an error/.test(text);

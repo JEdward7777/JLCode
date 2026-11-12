@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), P9e ✅ 2026-11-10 (D-94), P9f ✅ 2026-11-10 (D-96); **next P9g — paid, waiting on Joshua's level.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), P9e ✅ 2026-11-10 (D-94), P9f ✅ 2026-11-10 (D-96), P9f2 ✅ 2026-11-12 (X-58, D-97); **next P9g — paid, waiting on Joshua's level.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,21 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-12 (Phase 9 — P9a…P9f2 ✅; next P9g, approved).** **Next free ids:
+> D-98, X-59, H-25.**
+>
+> **P9f2 — a parent changes a child's mode — shipped (D-97, X-58).** This was Joshua's feedback
+> from using sub-agents: a child spawned in Ask that needs Code could only complain. Two review
+> rounds. R1 found that a child could loosen its own child while its own tightening was held,
+> leaving a code grandchild under an ask parent (ceilings now read `modeAhead`, and a landed mode
+> caps below). It also found that the mode note cancelled the spawn yield at the cost of an extra
+> billed call. R2 CLEAN. Build + free tiers green (**1265**). Peeked (VISUAL-LOG "P9f2"). Filed **H-24**.
+>
+> **Next — P9g, approved by Joshua 2026-11-12:** ≈$0.50–2 on `openai/gpt-4o-mini`, with a $2
+> per-tree spend cap. Record P9c's Tier-1 fixture first, then the live scenarios: a same-key
+> sibling spawn, a mid-task correction, a child question to its parent, a cross-model switch and
+> back via fork, and **a child spawned in ask, loosened by its parent with `set_agent_mode`**.
 
 > **Resume block — 2026-11-10 (Phase 9 as the ratchet — P9a…P9f ✅; P9g waits on Joshua).** The
 > ratchet run Joshua asked for (P9a…P9f) is **complete**. **P9g is paid: ask Joshua which level
@@ -2266,7 +2281,7 @@ the rail as ordinary sessions — usable, just not nested.
 - Tests: state derivation from crafted logs; Wake scope and skips; reopen-on-message; `list_agents`
   filtering. **Peek**: closed sinking + the "N closed" fold, Wake after a server restart.
 
-### P9f2 — A parent changes a child's mode (X-58, Tier-0 + small peek)
+### P9f2 — A parent changes a child's mode (X-58, Tier-0 + small peek) ✅ *(2026-11-12, D-97 — two review rounds)*
 
 - **Tool:** `set_agent_mode(to, mode)` on the caller's **direct children only**.
   - Any mode up to the caller's own; above it is refused. No approval card (Joshua, X-58).
@@ -2287,10 +2302,20 @@ the rail as ordinary sessions — usable, just not nested.
 **Also record P9c's Tier-1 fixture** (`test/agents-live.test.ts`, see the P9c re-cut).
 
 A real tree on a cheap model: spawn on a same-key sibling config, a mid-task correction landing, a
-child question routed to its parent, a cross-model switch mid-thread and back via fork. Record what
+child question routed to its parent, a cross-model switch mid-thread and back via fork, and a child
+spawned in ask then loosened by its parent (`set_agent_mode`, P9f2). Record what
 the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-24 — small P9f2 leftovers.** Found 2026-11-12 by the P9f2 build and review loop; **OPEN.**
+  - (a) A note held for a child is lost on restart or on close. The mode itself survives on the record.
+  - (b) A person's mode toggle on a parent doesn't cascade to looser children (pre-existing). `modeLanded`'s doc should say the invariant covers agent-made changes.
+  - (c) A held parent change isn't visible in the child's pane. Clicking the already-selected mode silently cancels it and its note.
+  - (d) When `capBelow` overrides a held *loosening* of a grandchild, the note says "capped" even though the agent moved up (ask → plan).
+  - (e) A note landed by `flushPendingUser` can become a branch's tip if the next step isn't a model call. `restStateOf` then reads owes-reply rather than interrupted (Wake still resumes it).
+  - (f) `capBelow` doesn't write capped descendants' records, so a later loosening plus a restart revives them looser than the cap they were told about. That direction is harmless.
+  - (g) `list_agents` doesn't show each child's mode.
 
 - **H-23 — small P9f leftovers.** Found 2026-11-10 by the P9f build and review loop; **OPEN.**
   - (a) History doesn't nest trees spawned before P9f (no index `tree` marker), and history's nested rows show a neutral dot.

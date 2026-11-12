@@ -35,8 +35,10 @@ export interface InboundMeta {
   /** `task`: the spawn's opening message; `message`: `send_message`;
    *  `finished`: the completion notice a parent gets when a child goes idle;
    *  `question`: a child's `ask(to: "parent")`, which its parent answers by
-   *  replying with `send_message` (P9d, X-56 Q16). */
-  kind: "task" | "message" | "finished" | "question";
+   *  replying with `send_message` (P9d, X-56 Q16); `mode`: the note that its
+   *  parent agent changed its mode (`set_agent_mode`, P9f2) — never recorded in
+   *  the inbox, since it is owed no reply. */
+  kind: "task" | "message" | "finished" | "question" | "mode";
 }
 
 export interface UserEntry extends BaseEntry {

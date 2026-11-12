@@ -50,6 +50,8 @@ export interface AgentCoordinatorDeps {
   loadConversation(convId: string): Conversation | undefined;
   /** Record a sub-agent closed or reopened in its tree's file (P9f). */
   setClosed?(rootId: string, agentId: string, closed: boolean): void;
+  /** Record the mode a parent set on a sub-agent in its tree's file (P9f2). */
+  setMode?(rootId: string, agentId: string, mode: Mode): void;
   /** Does the tree's file still have writes queued? A read now would miss them. */
   writesPending?(convId: string): boolean;
   /** Sessions a close took out of the tree — the caller drops them from the
@@ -117,6 +119,13 @@ const waitsForYou = (s: Session): boolean => WAITING_FOR_YOU.has(s.status) && !(
 const modeRank = (m: Mode): number => MODES.indexOf(m);
 /** The stricter of two modes (X-56 Q10: the parent's mode is a ceiling). */
 const stricter = (a: Mode, b: Mode): Mode => (modeRank(a) <= modeRank(b) ? a : b);
+
+/** What a mode lets an agent do, in the words its mode note uses (P9f2). */
+const MODE_MEANS: Record<Mode, string> = {
+  ask: "read-only: you may read and search, but not write files or run commands",
+  plan: "you may write markdown files and run git add/commit/status/diff/log, and nothing else",
+  code: "you may edit files and run commands",
+};
 
 /** A conversation with its pending inbox set to the agent messages still
  *  queued — what a reload of the file would fold (D-88). */
@@ -275,15 +284,17 @@ export class AgentCoordinator implements AgentHost {
       );
     }
     // The parent's mode is a ceiling (X-56 Q10): `mode` may only tighten it.
-    if (mode !== undefined && modeRank(mode) > modeRank(session.mode)) {
+    // The mode it is headed for, if its own parent's change is held (P9f2).
+    const own = session.modeAhead;
+    if (mode !== undefined && modeRank(mode) > modeRank(own)) {
       throw new Error(
-        `spawn_agent refused: you are in ${session.mode} mode, and a sub-agent may only be as strict or stricter ` +
-          `(${MODES.slice(0, modeRank(session.mode) + 1).join(", ")}). Nothing was started.`,
+        `spawn_agent refused: you are in ${own} mode, and a sub-agent may only be as strict or stricter ` +
+          `(${MODES.slice(0, modeRank(own) + 1).join(", ")}). Nothing was started.`,
       );
     }
     const config = this.pickConfig(session, model);
     const rootId = tree.root.session.conversation.id;
-    const tighter = mode !== undefined && mode !== session.mode;
+    const tighter = mode !== undefined && mode !== own;
     const record: AgentRecord = {
       agentId: newId("ag"),
       parentAgentId: parent.agentId,
@@ -419,7 +430,9 @@ export class AgentCoordinator implements AgentHost {
    *  spend cap, measured against the whole tree (D-33). */
   private async inherit(child: Member, mode?: Mode): Promise<void> {
     const parent = child.parent!.session;
-    child.session.setModeApproval(mode ? stricter(mode, parent.mode) : parent.mode, parent.approval);
+    // `modeAhead`: a tightening held for the parent's batch is already its
+    // ceiling (P9f2) — a child spawned in that batch must not outlive it.
+    child.session.setModeApproval(mode ? stricter(mode, parent.modeAhead) : parent.modeAhead, parent.approval);
     await child.session.setSpendCap(child.tree.root.session.spendCapUsd ?? null);
   }
 
@@ -497,7 +510,8 @@ export class AgentCoordinator implements AgentHost {
     const child = this.attach(session, record, parent, parent.tree);
     // A child spawned stricter stays stricter (P9d); the parent's mode, as it
     // stands now, is still the ceiling.
-    const mode = record.mode ? stricter(record.mode, parent.session.mode) : parent.session.mode;
+    const ceiling = parent.session.modeAhead;
+    const mode = record.mode ? stricter(record.mode, ceiling) : ceiling;
     child.session.setModeApproval(mode, parent.session.approval);
     this.track(child.session.setSpendCap(parent.tree.root.session.spendCapUsd ?? null));
     return child;
@@ -771,6 +785,94 @@ export class AgentCoordinator implements AgentHost {
       `Closed "${record.name}"${below > 0 ? ` and folded the ${below} sub-agent${below === 1 ? "" : "s"} under it` : ""}. ` +
       `Its log is kept; a send_message to it reopens it.`
     );
+  }
+
+  /**
+   * `set_agent_mode` (P9f2, X-58): an agent changes one of its own children's
+   * mode — any mode up to its own, with no card (Joshua's ruling: it grants
+   * nothing the caller could not spawn). Recorded on the child's `AgentRecord`,
+   * so a revival keeps it (still capped at the parent's mode then). It lands
+   * between the child's batches and the child is told by a note before its
+   * next model call; it starts no turn. A closed child is refused — a message
+   * reopens it, and then it can be told. Tightening caps the child's live
+   * descendants now (never loosens them); their own records are untouched, and
+   * a revival caps them against their parent's mode as always.
+   */
+  setAgentMode(session: Session, name: string, mode: Mode): string {
+    const m = this.member(session);
+    const wanted = name.trim();
+    const records = this.childRecords(m);
+    const record = records.find((r) => r.name === wanted);
+    if (!record) {
+      const names = records.map((r) => `"${r.name}"`);
+      throw new Error(
+        `set_agent_mode refused: no sub-agent "${wanted}" of yours — it acts on your own sub-agents only. ` +
+          (names.length > 0 ? `Yours: ${names.join(", ")}.` : "You have no sub-agents."),
+      );
+    }
+    // Against the mode the caller is headed for: a tightening of its own held
+    // for its batch is already its ceiling (P9f2, round 1).
+    const own = session.modeAhead;
+    if (modeRank(mode) > modeRank(own)) {
+      throw new Error(
+        `set_agent_mode refused: you are in ${own} mode, and a sub-agent may be at most as loose as you ` +
+          `(${MODES.slice(0, modeRank(own) + 1).join(", ")}). "${record.name}" is unchanged.`,
+      );
+    }
+    const live = [...m.children].find((c) => c.agentId === record.agentId);
+    if (!live) {
+      throw new Error(
+        `set_agent_mode refused: "${record.name}" is closed. A send_message to it reopens it; set its mode after that.`,
+      );
+    }
+    const was = live.session.modeAhead;
+    // Recorded even when unchanged, as spawn does: it names a fixed mode from
+    // here on, so a revival does not read it off a parent loosened since.
+    record.mode = mode;
+    this.deps.setMode?.(this.rootId(m.tree), record.agentId, mode);
+    const also = (capped: string[]) => (capped.length > 0 ? ` Also capped (below it): ${capped.map((n) => `"${n}"`).join(", ")}.` : "");
+    // Unchanged, but a person may have tightened it by hand without passing that
+    // on: what is below it is still held to it.
+    if (was === mode) return `"${record.name}" is already in ${mode} mode.${also(this.capBelow(live))}`;
+    this.tellMode(live, mode, `[Your parent agent "${m.name}" set your mode to ${mode} — ${MODE_MEANS[mode]}.]`);
+    const capped = modeRank(mode) < modeRank(was) ? this.capBelow(live) : [];
+    return (
+      `Set "${record.name}" to ${mode} mode (was ${was}). It applies from its next step — a call already under way ` +
+      `finishes as it began — and it is told so. This starts no work: if it is idle, send_message it to carry on.` +
+      also(capped)
+    );
+  }
+
+  /** A parent's change held for a batch just landed on `session` (P9f2): hold
+   *  everything below it to it. The invariant: a live sub-agent is never looser
+   *  than its parent's current or pending mode. */
+  modeLanded(session: Session): void {
+    const m = this.members.get(session.id);
+    if (m) this.capBelow(m);
+  }
+
+  private tellMode(m: Member, mode: Mode, text: string): void {
+    m.session.setModeFromParent(mode, { id: newId("msg"), from: m.parent!.name, kind: "mode", text });
+  }
+
+  /** A child was tightened (P9f2): any live agent below it now looser than its
+   *  own parent is capped there, top-down, and told. Never loosened. */
+  private capBelow(m: Member): string[] {
+    const capped: string[] = [];
+    const ceiling = m.session.modeAhead;
+    for (const c of m.children) {
+      if (modeRank(c.session.modeAhead) > modeRank(ceiling)) {
+        this.tellMode(
+          c,
+          ceiling,
+          `[Your mode was capped at ${ceiling} — ${MODE_MEANS[ceiling]}. Your parent agent "${m.name}" was set to ` +
+            `${ceiling} mode, and a sub-agent is never looser than its parent.]`,
+        );
+        capped.push(c.name);
+      }
+      capped.push(...this.capBelow(c));
+    }
+    return capped;
   }
 
   /** `list_agents` (P9f, Q20): the caller's own sub-agents, how each stands,

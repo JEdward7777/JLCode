@@ -1384,9 +1384,13 @@ function SessionRail({
               // Name, model, dot (Q11) — nested, the row is too narrow for spend
               // as well, so that rides in the tooltip; the parent's spend chip
               // carries the tree's total (D-33).
-              <span className="rail-agent-model" title={`${s.model} · $${s.spendUsd.toFixed(4)}`}>
-                {fitModelLabel(s.model, 18)}
-              </span>
+              <>
+                <span className="rail-agent-model" title={`${s.model} · $${s.spendUsd.toFixed(4)}`}>
+                  {fitModelLabel(s.model, 14)}
+                </span>
+                {/* Its mode, live: a parent can change it (P9f2, X-58). */}
+                <span className="rail-mode">{s.mode}</span>
+              </>
             ) : (
               <>
                 <span className="rail-spend">${s.spendUsd.toFixed(4)}</span>

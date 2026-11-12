@@ -330,6 +330,8 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     loadConversation: (convId) => deps.store.load(convId),
     // Closed is a flag in the tree's file (P9f), written like every projection.
     setClosed: (rootId, agentId, closed) => void deps.store.agentClosed(rootId, agentId, closed).catch(() => {}),
+    // So is a mode a parent set (P9f2): a revival reads it back.
+    setMode: (rootId, agentId, mode) => void deps.store.agentMode(rootId, agentId, mode).catch(() => {}),
     writesPending: (convId) => deps.store.writesPending(convId),
     // A close — the person's or an agent's (`close_agent`) — unloads (Q20).
     onUnloaded: (sessions) => {

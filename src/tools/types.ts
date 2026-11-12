@@ -43,6 +43,8 @@ export interface AgentAccess {
   closeAgent(name: string): string;
   /** Wake the caller's tree — the root's alone (P9f). */
   wakeAgents(): string;
+  /** Change one of the caller's own sub-agents' mode (P9f2, X-58). */
+  setAgentMode(name: string, mode: Mode): string;
 }
 
 export interface ToolContext {

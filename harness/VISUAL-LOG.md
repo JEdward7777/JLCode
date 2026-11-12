@@ -1904,3 +1904,15 @@ mean hiding a running session from the rail, which is worse.
   - Wake healing an open `run_command` / `ask` call after a restart;
   - a reopen bringing a closed grandchild's open parent back with it;
   - the tree spend staying whole across close, restart and reopen (round 3).
+
+## P9f2 — a parent changes a child's mode · 2026-11-12 · ✅ looked good (one wrap caught by looking)
+
+**Setup:** fake driver. The implementer peeked on 7901/9501, and the reviewers on 7911/9511 and 7921/9521. I looked at `p9f2-child-pane.png` myself.
+
+**Confirmed by eye:**
+- **`p9f2-before`:** under a CODE root, agent-1's rail row reads "finished · peek/model · ASK".
+- **`p9f2-after`:** after `mode@agent-1#code:`, the row reads CODE, and the root's transcript shows an amber "→ set agent-1 to code / was ask" card.
+- **`p9f2-child-pane`:** the child's mode toggle shows **code**. Its transcript reads "← task from root", then the amber "mode set by root to code" card, then "← root write: hello.txt…". The write reaches a manual-approval card, not an Ask refusal.
+- **Live update (round-2 reviewer):** with a tab left open and no reload, agent-1's row went from CODE to PLAN when the root set it.
+
+**Caught by looking:** with "needs approval" showing, the mode label wrapped to a third line. The model label now gives way first (`p9f2-rail-mode` reads "needs approval · peek/… · CODE" on one line).

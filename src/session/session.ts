@@ -128,6 +128,11 @@ export interface AgentHost {
   listAgents(session: Session, showClosed: boolean): string;
   closeChild(session: Session, name: string): string;
   wakeAgents(session: Session): string;
+  /** `set_agent_mode` (P9f2, X-58): change a direct child's mode. */
+  setAgentMode(session: Session, name: string, mode: Mode): string;
+  /** A parent's mode change held for a batch landed on this session (P9f2):
+   *  the host caps the agents below it to the mode now in force. */
+  modeLanded?(session: Session): void;
   /** May this session open an **agent-started** turn now, under the tree's
    *  concurrency cap (D-89)? False → it waits `queued`, and the host starts it
    *  (`startQueued`) when a slot frees, FIFO. */
@@ -557,6 +562,15 @@ export class Session {
    *  follow their assistant message unbroken, so a user message wedged between
    *  two of them would be malformed on the wire. */
   private pendingNote?: string;
+  /** A mode a parent agent set while a batch was in flight (P9f2, X-58),
+   *  applied at the next point between batches — never mid-batch: the calls
+   *  already issued run under the mode they were issued under. */
+  private pendingMode?: Mode;
+  /** The note telling the model its parent changed its mode (P9f2): a user
+   *  entry it reads before its next model call. Lands where a queued message
+   *  would — at the next tool-loop pass, or ahead of the next turn's opening
+   *  message — so it is never said over an unanswered call (H-10). Newest wins. */
+  private modeNote?: InboundMessage;
   /** Per-task watchdog timers (30-min out-of-band kill prompt, D-34). */
   private readonly watchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** The tip this turn appends to, pinned when the turn opens and advanced by
@@ -1183,6 +1197,7 @@ export class Session {
       listAgents: (showClosed) => host.listAgents(this, showClosed),
       closeAgent: (name) => host.closeChild(this, name),
       wakeAgents: () => host.wakeAgents(this),
+      setAgentMode: (name, mode) => host.setAgentMode(this, name, mode),
     };
   }
 
@@ -1573,6 +1588,7 @@ export class Session {
         this.turnGen++;
         this.resyncModel();
         this.applyPendingSwitch();
+        this.applyPendingMode();
         if (endsTurn) this.emit({ type: "settled", outcome: "stopped" });
       }
     }
@@ -1855,10 +1871,64 @@ export class Session {
    *  re-gate future tool calls (D-07/D-08). Persisting the config default is the
    *  caller's concern; the session just re-gates and announces the change. */
   setModeApproval(mode?: Mode, approval?: ApprovalPolicy): void {
+    // A person's choice outranks a parent agent's change still waiting to land
+    // (P9f2) — and the note that would announce it is no longer true.
+    if (mode !== undefined) {
+      this.pendingMode = undefined;
+      this.modeNote = undefined;
+    }
+    this.regate(mode, approval);
+  }
+
+  private regate(mode?: Mode, approval?: ApprovalPolicy): void {
     if (mode !== undefined) this.mode = mode;
     if (approval !== undefined) this.approval = approval;
     if (this.buildGate) this.gate = this.buildGate(this.mode, this.approval);
     this.emit({ type: "mode", mode: this.mode, approval: this.approval });
+  }
+
+  /**
+   * A parent agent changed this session's mode (P9f2, X-58). Between batches
+   * — idle, parked, or at a pause with nothing left to run — it applies now
+   * and announces itself (`mode` event) like the person's toggle. With calls
+   * issued and not yet all run, it waits for the batch to drain: a call keeps
+   * the mode it was issued under. `note` tells the model, at its next model
+   * call; it opens no turn of its own.
+   */
+  setModeFromParent(mode: Mode, note: InboundMessage): void {
+    this.modeNote = note;
+    if (this.status !== "running" && this.pendingToolCalls.length === 0) {
+      this.pendingMode = undefined;
+      if (mode !== this.mode) this.regate(mode);
+    } else {
+      this.pendingMode = mode;
+    }
+  }
+
+  /** The mode this session is at, or will be at once a parent's change waiting
+   *  on a batch lands (P9f2) — what a sub-agent's own children are capped by. */
+  get modeAhead(): Mode {
+    return this.pendingMode ?? this.mode;
+  }
+
+  /** Land a parent's mode change held for the batch to drain (P9f2). */
+  private applyPendingMode(): void {
+    const mode = this.pendingMode;
+    if (mode === undefined) return;
+    this.pendingMode = undefined;
+    if (mode === this.mode) return;
+    this.regate(mode);
+    this.agentHost?.modeLanded?.(this);
+  }
+
+  /** Write the mode note into the transcript (P9f2) — only where a user entry
+   *  is legal: a turn being opened, or a drained batch. */
+  private landModeNote(): boolean {
+    const note = this.modeNote;
+    if (!note) return false;
+    this.modeNote = undefined;
+    this.appendUserText(note.text, { id: note.id, from: note.from, kind: note.kind });
+    return true;
   }
 
   /** Rewind / switch branches: point the active leaf at an existing entry (null
@@ -2222,6 +2292,10 @@ export class Session {
     }
     this.turnByHuman = opts.human;
     this.pendingStall = undefined;
+    // A turn's top is between batches (P9f2): a parent's mode change lands, and
+    // its note goes ahead of the message that opens the turn.
+    this.applyPendingMode();
+    this.landModeNote();
     this.appendUserText(text, opts.inbound);
     this.pendingToolCalls = [];
     await this.advance();
@@ -2350,6 +2424,9 @@ export class Session {
       }
       this.closeDanglingCalls(STOPPED_CALL);
     }
+    // Between batches: a parent's mode change held for this one lands now, so
+    // the next request is made under it (P9f2).
+    this.applyPendingMode();
     let landed = false;
     if (this.pendingNote) {
       const text = this.pendingNote;
@@ -2357,12 +2434,19 @@ export class Session {
       this.appendUserText(text);
       landed = true;
     }
-    if (this.stopScope || this.queue.length === 0) return landed;
-    const pending = this.queue;
-    this.queue = [];
-    this.emit({ type: "queue", queue: [] });
-    for (const m of pending) this.appendUserText(m.text, m.inbound);
-    return true;
+    if (!this.stopScope && this.queue.length > 0) {
+      const pending = this.queue;
+      this.queue = [];
+      this.emit({ type: "queue", queue: [] });
+      for (const m of pending) this.appendUserText(m.text, m.inbound);
+      landed = true;
+    }
+    // The mode note (P9f2) lands only where a model call follows: not on a
+    // stopped loop, and not on a turn about to yield after a spawn with nothing
+    // else said — it is never `spoken` itself, so it cannot keep a yielding
+    // turn going (an extra billed call). It waits for the next turn's top.
+    if (!this.stopScope && (!this.yieldTurn || landed)) this.landModeNote();
+    return landed;
   }
 
   /** Run the loop, then release the turn's branch pin unless the turn is merely
@@ -2378,6 +2462,9 @@ export class Session {
       // A newer turn opened while this one ran its tail: the pin, the status
       // and the settle are that turn's now (see `turnGen`).
       const stale = gen !== this.turnGen;
+      // Every issued call has run (or none was issued): a mode a parent set
+      // during the turn's last model call applies here, at rest (P9f2).
+      if (!stale && this.pendingToolCalls.length === 0) this.applyPendingMode();
       const suspended =
         this.status === "awaiting-approval" ||
         this.status === "awaiting-input" ||
