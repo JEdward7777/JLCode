@@ -26,7 +26,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 > **Resume block — 2026-11-10 (Phase 9 as the ratchet — P9a…P9f ✅; P9g waits on Joshua).** The
 > ratchet run Joshua asked for (P9a…P9f) is **complete**. **P9g is paid: ask Joshua which level
-> before running anything.** **Next free ids: D-97, X-59, H-24.** Joshua approved P9g's spend on 2026-11-12 (estimate ≈$0.50–2 on gpt-4o-mini, with a $2 per-tree cap). **X-58** was filed the same day: a parent can't change a child's mode.
+> before running anything.** **Next free ids: D-97, X-59, H-24.** Joshua approved P9g's spend on 2026-11-12 (estimate ≈$0.50–2 on gpt-4o-mini, with a $2 per-tree cap). **X-58** was filed the same day: a parent can't change a child's mode. Joshua ruled loosening free, up to the parent's mode, and asked for it to be built **before P9g** as **P9f2**.
 >
 > **P9f — lifecycle: close, `list_agents`, Wake, boot — shipped (D-96).** Three review rounds.
 > - **R1:** a reopen right after a close re-delivered already-answered messages (a stale inbox); a woken agent kept its Wake button; a restart during an auto compaction marked an agent "finished"; and Wake reset the failure breaker.
@@ -2265,6 +2265,22 @@ the rail as ordinary sessions — usable, just not nested.
   turns don't reset budgets.
 - Tests: state derivation from crafted logs; Wake scope and skips; reopen-on-message; `list_agents`
   filtering. **Peek**: closed sinking + the "N closed" fold, Wake after a server restart.
+
+### P9f2 — A parent changes a child's mode (X-58, Tier-0 + small peek)
+
+- **Tool:** `set_agent_mode(to, mode)` on the caller's **direct children only**.
+  - Any mode up to the caller's own; above it is refused. No approval card (Joshua, X-58).
+  - Recorded on the `AgentRecord`, so a revival keeps it. The revival ceiling (`stricter()` against the parent's mode then) still applies.
+  - Takes effect at the child's next model call or idle point, without breaking a turn in flight, and the child's next request reflects the new tool set.
+  - The child is told in its log (a wire-visible note), so it knows it may now do the work.
+- **Rail and pane:** the child's mode shows the new value live.
+- **Tests:**
+  - loosening up to the ceiling, and refusal above it;
+  - tightening;
+  - non-child refused;
+  - survives close and revival;
+  - takes effect at the next call, not mid-batch;
+  - H-10 holds.
 
 ### P9g — Live validation (paid tier — **ask Joshua which level first**)
 
