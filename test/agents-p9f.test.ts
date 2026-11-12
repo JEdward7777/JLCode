@@ -233,7 +233,9 @@ beforeEach(() => {
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, "notes.txt"), "the notes\n");
   convDir = path.join(dir, "conversations");
-  store = new ConversationStore(convDir);
+  // No fsync: these are logic tests, and fsync made their run time scale with
+  // disk contention (records still land in the file; only crash-durability goes).
+  store = new ConversationStore(convDir, { fsync: false });
   catalog = new ModelCatalog({ file: paths.modelsCacheFile });
   requests = [];
 });

@@ -112,8 +112,18 @@ export class ConversationStore {
    *  per root per process; a repeat would be harmless, only wasteful. */
   private readonly treesMarked = new Set<string>();
 
-  constructor(private readonly dir: string) {
-    this.index = this.watch(new AppendLog(path.join(dir, "index.jsonl")));
+  /** Whether every log this store opens fsyncs each record (D-37). Production
+   *  always does; logic-only tests turn it off so their run time stops scaling
+   *  with disk contention — the records still land in the file, only the
+   *  crash-durability guarantee goes. */
+  private readonly fsync: boolean;
+
+  constructor(
+    private readonly dir: string,
+    options: { fsync?: boolean } = {},
+  ) {
+    this.fsync = options.fsync ?? true;
+    this.index = this.watch(new AppendLog(path.join(dir, "index.jsonl"), { fsync: this.fsync }));
   }
 
   /** Route a log's write failures to this store's subscribers (D-46). */
@@ -167,7 +177,7 @@ export class ConversationStore {
     const { file } = splitConversationId(convId);
     let log = this.logs.get(file);
     if (!log) {
-      log = this.watch(new AppendLog(this.filePath(file)));
+      log = this.watch(new AppendLog(this.filePath(file), { fsync: this.fsync }));
       this.logs.set(file, log);
     }
     return log;

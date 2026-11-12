@@ -24,7 +24,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-12, later (Phase 9 complete — P9a…P9g ✅).** **Next free ids: D-98, X-61,
+> **Resume block — 2026-11-12, later (Phase 9 complete — P9a…P9g ✅).** **Next free ids: D-99, X-61,
 > H-25.**
 >
 > **P9g, the live validation, is done:** **$0.0082** for 60 calls on `openai/gpt-4o-mini` (sibling
@@ -42,10 +42,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 >   and recovered from the error; and **X-60**, where the finished notice's wording made the root ask
 >   for results it already had (about 3 extra calls per tree).
 >
-> **Open while this was written:** one-off failure of `test/agents-p9f2.test.ts` "tightening > caps
-> the child's live sub-agents now…" under heavy load (load average about 7 on 6 cores). It passed
-> in every rerun. An agent is root-causing it; if this block still says so, nothing landed. Re-run
-> that test under CPU stress and fix the wait or the race (CLAUDE.md: root-cause flakes).
+> **The P9f2 flake is closed (D-98).** "tightening > caps the child's live sub-agents now…" failed
+> once under heavy load. The hunt found no product race: `capBelow` / `modeLanded` run synchronously,
+> and an `idle()` probe held 287/287 times. The likely cause was found, though: fsync per record makes
+> agent tests disk-bound, and another p9f2 test hit 22s against the 20s timeout under fsync stress.
+> The agent suites now use `ConversationStore({ fsync: false })`, which cuts them from about 63s to
+> about 2s, or from 2 minutes to 2s under stress. Production still fsyncs.
 >
 > **Next:** the post-v1 backlog; see "Later", H-items and X-items. Natural candidates from Phase 9:
 > X-59/X-60 (wording fixes, needing a cent of re-recording), X-57 and H-17…H-24.

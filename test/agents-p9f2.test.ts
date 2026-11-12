@@ -189,7 +189,9 @@ beforeEach(() => {
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, "notes.txt"), "the notes\n");
   convDir = path.join(dir, "conversations");
-  store = new ConversationStore(convDir);
+  // No fsync: these are logic tests, and fsync made their run time scale with
+  // disk contention (records still land in the file; only crash-durability goes).
+  store = new ConversationStore(convDir, { fsync: false });
   catalog = new ModelCatalog({ file: paths.modelsCacheFile });
   requests = [];
   onHook = () => {};
@@ -299,6 +301,28 @@ describe("tightening", () => {
     expect(modeNotes(s.child)[0]!.text).toMatch(/set your mode to ask — read-only/);
   });
 
+  // Flake note (one unexplained red in a full `npm test` at load ~7, error not
+  // captured; not reproduced since). Ruled out: every wait here is
+  // `say`/`tree` → `post` (which awaits the whole turn, then `flushDurable`)
+  // then `agents.idle()`. Neither has a timer. The coordinator tracks every
+  // background start (`later`/`track`), and a probe asserting "every session
+  // idle" after each `idle()` held for 287 runs under CPU stress, 6 copies at
+  // once. `store.agents()` reads the file, but agent-2's row is flushed by the
+  // step-2 post. Nothing is pending at `store.close()`. Tool-call ids
+  // (`fake_${Date.now()}`) only pair within one batch. The `capBelow` /
+  // `setModeFromParent` path is synchronous. Hunch: the 20s `testTimeout`.
+  // Wall time here was roughly records × fsync (every `AppendLog` write fsyncs),
+  // and it scaled with disk contention, not CPU: 2.3s alone, ~6s in a normal
+  // full suite, ~12s with two suites running together, and 18.3s under heavy
+  // synthetic fsync load. In that last run its neighbour "a child cannot loosen
+  // its own child…" timed out at 22s against the 20s ceiling.
+  // Done: this file's store (and the other agent suites') now runs with
+  // `fsync: false` (`ConversationStore` option; production still fsyncs), so
+  // run time no longer tracks the disk. Measured after, same fsync stress:
+  // this test 10.0s → 0.02s, this file 121s → 0.4s, the four agent suites
+  // 2m02s → 1.9s wall (unstressed: 6.2s → 0.02s, 63s → 1.7s). That
+  // the original red was this timeout is still a hunch — the message was never
+  // captured. If it recurs, capture the message.
   it("caps the child's live sub-agents now and tells them; their records keep their own mode", async () => {
     seed();
     const s = await tree("spawn: say hi");
@@ -391,7 +415,7 @@ describe("persistence — close, revival, restart", () => {
     expect(store.load(rootId)!.entries.some((e) => (e as any).kind === "agent-mode")).toBe(false);
 
     await store.close();
-    store = new ConversationStore(convDir);
+    store = new ConversationStore(convDir, { fsync: false });
     const again = makeServer();
     const opened = await post(again.app, `/conversation/${rootId}/open`);
     expect(opened.status).toBe(200);
