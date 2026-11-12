@@ -26,7 +26,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 > **Resume block — 2026-11-10 (Phase 9 as the ratchet — P9a…P9f ✅; P9g waits on Joshua).** The
 > ratchet run Joshua asked for (P9a…P9f) is **complete**. **P9g is paid: ask Joshua which level
-> before running anything.** **Next free ids: D-97, X-58, H-24.**
+> before running anything.** **Next free ids: D-97, X-59, H-24.** Joshua approved P9g's spend on 2026-11-12 (estimate ≈$0.50–2 on gpt-4o-mini, with a $2 per-tree cap). **X-58** was filed the same day: a parent can't change a child's mode.
 >
 > **P9f — lifecycle: close, `list_agents`, Wake, boot — shipped (D-96).** Three review rounds.
 > - **R1:** a reopen right after a close re-delivered already-answered messages (a stale inbox); a woken agent kept its Wake button; a restart during an auto compaction marked an agent "finished"; and Wake reset the failure breaker.
