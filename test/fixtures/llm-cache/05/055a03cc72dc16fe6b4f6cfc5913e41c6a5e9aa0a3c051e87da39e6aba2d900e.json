@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_994FP0Yg2KeEgyYoellnCE8I","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"agent-1\",\"text\":\"The secret word is PINEAPPLE.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1132,"completionTokens":27,"totalTokens":1159,"cachedTokens":1024,"costUsd":0.0001092}}

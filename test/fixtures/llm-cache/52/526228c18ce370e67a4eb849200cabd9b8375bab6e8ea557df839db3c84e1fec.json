@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_9LyJLfIHoJtCuJ1n6laZvhjN","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"Checkpoint recorded. Color is BLUE.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1377,"completionTokens":24,"totalTokens":1401,"cachedTokens":1280,"costUsd":0.00012495}}

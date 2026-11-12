@@ -1,0 +1,1 @@
+{"text":"I sent the color GREEN back to the parent agent.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1305,"completionTokens":12,"totalTokens":1317,"cachedTokens":1152,"costUsd":0.00011655}}

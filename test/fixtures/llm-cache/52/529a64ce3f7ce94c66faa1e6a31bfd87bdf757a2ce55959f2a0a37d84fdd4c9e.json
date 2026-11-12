@@ -1,0 +1,1 @@
+{"text":"The sub-agent has confirmed it sent the 'READY' message and is awaiting further instructions.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1611,"completionTokens":19,"totalTokens":1630,"cachedTokens":1536,"costUsd":0.00013785}}

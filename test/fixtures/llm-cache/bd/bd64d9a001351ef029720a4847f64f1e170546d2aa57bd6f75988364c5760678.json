@@ -1,0 +1,1 @@
+{"text":"If you need to retrieve the results from sub-agent \"agent-1,\" please let me know what you'd like to ask!","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1556,"completionTokens":26,"totalTokens":1582,"cachedTokens":1408,"costUsd":0.0001434}}

@@ -10,7 +10,7 @@ validation (P6c). Stack: **React + Vite** (D-39); serving/auth is a **CLI serve-
 **Phase 7 — MCP client** (X-01) and **Phase 8 — images** (X-37, live-validated in P8f). **Next:
 post-v1 backlog** (see "Later" + the H-01 hardening item). *`observed_items_needing_filed_in_harness.txt`
 is empty — its fifteen observations were triaged and filed 2026-09-13 as **X-46 … X-55**.* **X-40 — `config model`, switching a folder's
-model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), P9e ✅ 2026-11-10 (D-94), P9f ✅ 2026-11-10 (D-96), P9f2 ✅ 2026-11-12 (X-58, D-97); **next P9g — paid, waiting on Joshua's level.** *Off the backlog since:
+model without moving its key — is built and shipped (D-82/D-82a/D-82b, SPEC §4).** **Building: Phase 9 — per-thread model switching + background sub-agents (X-56, D-87/D-88/D-89), designed 2026-10-20; P9a ✅ 2026-11-04 (D-90), P9b ✅ 2026-11-05 (D-91), P9c ✅ 2026-11-07 (D-92), P9d ✅ 2026-11-09 (D-93), P9e ✅ 2026-11-10 (D-94), P9f ✅ 2026-11-10 (D-96), P9f2 ✅ 2026-11-12 (X-58, D-97), P9g ✅ 2026-11-12 (live, $0.008) — **Phase 9 complete.** ~~next P9g — paid, waiting on Joshua's level.** *Off the backlog since:
 **X-55** and **X-50(2)** (D-85/D-85a, 2026-09-15).*
 
 Principle: **bottom-up, runnable early.** Each phase leaves something that works and is
@@ -23,6 +23,32 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > a phase that changes *how a user runs or drives JLCode* (new command, new flag, a different
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
+
+> **Resume block — 2026-11-12, later (Phase 9 complete — P9a…P9g ✅).** **Next free ids: D-98, X-61,
+> H-25.**
+>
+> **P9g, the live validation, is done:** **$0.0082** for 60 calls on `openai/gpt-4o-mini` (sibling
+> `openai/gpt-4.1-nano`). Approved by Joshua 2026-11-12. P9c's Tier-1 test and five P9g scenarios
+> are recorded and replay free. Three review rounds removed the "is it recorded?" skip gates, so a
+> changed request now fails loudly instead of skipping quietly, and tightened (b), the mid-task
+> correction, so it proves the correction lands before the child's next call.
+>
+> **What the model did with the tools:**
+> - It spawned and ended its turn, named children correctly, routed a child's `ask(to: parent)` and
+>   answered it with `send_message`, and passed a mid-task correction on.
+> - It loosened a stuck Ask child with `set_agent_mode` unprompted, then nudged it with `send_message`.
+> - It passed `mode` to `spawn_agent` freely.
+> - **Two wastes, filed:** **X-59**, where it guessed `spawn_agent`'s `model` as "default" or a raw slug
+>   and recovered from the error; and **X-60**, where the finished notice's wording made the root ask
+>   for results it already had (about 3 extra calls per tree).
+>
+> **Open while this was written:** one-off failure of `test/agents-p9f2.test.ts` "tightening > caps
+> the child's live sub-agents now…" under heavy load (load average about 7 on 6 cores). It passed
+> in every rerun. An agent is root-causing it; if this block still says so, nothing landed. Re-run
+> that test under CPU stress and fix the wait or the race (CLAUDE.md: root-cause flakes).
+>
+> **Next:** the post-v1 backlog; see "Later", H-items and X-items. Natural candidates from Phase 9:
+> X-59/X-60 (wording fixes, needing a cent of re-recording), X-57 and H-17…H-24.
 
 > **Resume block — 2026-11-12 (Phase 9 — P9a…P9f2 ✅; next P9g, approved).** **Next free ids:
 > D-98, X-59, H-25.**
@@ -2297,7 +2323,13 @@ the rail as ordinary sessions — usable, just not nested.
   - takes effect at the next call, not mid-batch;
   - H-10 holds.
 
-### P9g — Live validation (paid tier — **ask Joshua which level first**)
+### P9g — Live validation (paid tier — **ask Joshua which level first**) ✅ *(2026-11-12 — approved by Joshua; $0.0082 spent; three review rounds)*
+
+> **Done.** `test/agents-live.test.ts` (P9c) and `test/agents-p9g-live.test.ts` (scenarios a–e) are
+> recorded: 60 fixtures, all on `openai/gpt-4o-mini` plus `openai/gpt-4.1-nano` as the sibling. They replay free in
+> `npm test`. There is **no skip gate**: a stale fixture fails loudly ("stale fixture … re-record (paid)"), so editing a
+> tool description or the system prompt means re-recording, at about a cent. What the models did is in the 2026-11-12
+> resume block; X-59 and X-60 came out of it.
 
 **Also record P9c's Tier-1 fixture** (`test/agents-live.test.ts`, see the P9c re-cut).
 

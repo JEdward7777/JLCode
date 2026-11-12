@@ -1,0 +1,1 @@
+{"text":"I sent back the secret word: PINEAPPLE.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":960,"completionTokens":12,"totalTokens":972,"cachedTokens":0,"costUsd":0.0001512}}

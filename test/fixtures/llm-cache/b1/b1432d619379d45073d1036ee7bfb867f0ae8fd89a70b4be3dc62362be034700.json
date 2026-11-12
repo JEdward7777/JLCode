@@ -1,0 +1,1 @@
+{"text":"I have sent the initial 'READY' message. Awaiting further instructions or results.","toolCalls":[],"finishReason":"stop","provider":"Azure","usage":{"promptTokens":1315,"completionTokens":19,"totalTokens":1334,"cachedTokens":1152,"costUsd":0.00005846}}

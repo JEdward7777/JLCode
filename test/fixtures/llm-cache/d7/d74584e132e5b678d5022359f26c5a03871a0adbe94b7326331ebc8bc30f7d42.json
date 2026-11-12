@@ -1,0 +1,1 @@
+{"text":"ONE","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1174,"completionTokens":2,"totalTokens":1176,"cachedTokens":1024,"costUsd":0.0001005}}

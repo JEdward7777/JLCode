@@ -1,0 +1,1 @@
+{"text":"No further action needed. The word has been successfully retrieved.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1270,"completionTokens":13,"totalTokens":1283,"cachedTokens":1152,"costUsd":0.0001119}}

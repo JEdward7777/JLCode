@@ -1,0 +1,1 @@
+{"text":"The secret word has been sent to the sub-agent \"agent-1\".","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1174,"completionTokens":16,"totalTokens":1190,"cachedTokens":1024,"costUsd":0.0001089}}

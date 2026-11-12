@@ -1,0 +1,1 @@
+{"text":"I've requested results from the sub-agent. Waiting for a response.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1562,"completionTokens":14,"totalTokens":1576,"cachedTokens":1408,"costUsd":0.0001371}}

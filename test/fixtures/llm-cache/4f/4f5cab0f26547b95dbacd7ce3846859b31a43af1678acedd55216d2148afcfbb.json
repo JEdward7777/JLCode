@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_gPuTWn7e1wmECTU9IMeEoeCU","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"PINEAPPLE\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":927,"completionTokens":20,"totalTokens":947,"cachedTokens":0,"costUsd":0.00015105}}

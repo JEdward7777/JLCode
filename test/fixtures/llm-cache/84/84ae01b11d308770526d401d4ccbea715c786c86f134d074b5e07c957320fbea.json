@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_9LdWXkqmbuBSoYJnSqPyRNNp","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"Ready to receive the secret word.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":857,"completionTokens":24,"totalTokens":881,"cachedTokens":0,"costUsd":0.00014295}}

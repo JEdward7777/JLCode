@@ -1,0 +1,1 @@
+{"text":"The sub-agent \"agent-1\" has received the color \"GREEN\" and will continue its task.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1439,"completionTokens":22,"totalTokens":1461,"cachedTokens":1280,"costUsd":0.00013305}}

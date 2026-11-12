@@ -1,0 +1,1 @@
+{"text":"The request for results has been sent to the sub-agent.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1556,"completionTokens":13,"totalTokens":1569,"cachedTokens":1408,"costUsd":0.0001356}}

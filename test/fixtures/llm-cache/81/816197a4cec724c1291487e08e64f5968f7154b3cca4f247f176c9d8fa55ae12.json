@@ -1,0 +1,1 @@
+{"text":"Waiting for the sub-agent \"agent-1\" to complete the writing task.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1706,"completionTokens":17,"totalTokens":1723,"cachedTokens":1664,"costUsd":0.0001413}}

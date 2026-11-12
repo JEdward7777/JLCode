@@ -1,0 +1,1 @@
+{"text":"Please provide the secret word to send to \"agent-1\".","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1098,"completionTokens":14,"totalTokens":1112,"cachedTokens":1024,"costUsd":0.0000963}}

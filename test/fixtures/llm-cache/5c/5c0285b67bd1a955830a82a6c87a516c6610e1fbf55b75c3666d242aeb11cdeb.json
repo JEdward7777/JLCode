@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_xnbuOzo37pi1c8NyTJYTLLXw","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"note.txt\",\"content\":\"DONE\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1544,"completionTokens":19,"totalTokens":1563,"cachedTokens":1408,"costUsd":0.0001374}}

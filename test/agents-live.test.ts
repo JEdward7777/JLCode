@@ -11,11 +11,13 @@
  * reply. The assertions are deliberately weak properties (TESTING.md) — which
  * calls happened, where the word arrived — never wording.
  *
- * ## Recorded through the request-keyed cache (D-24) — and NOT YET RECORDED
+ * ## Recorded through the request-keyed cache (D-24)
  *
- * Recording is a paid live run, and P9c had no grant for it: the fixture is
- * P9g's to record, at the level Joshua picks. Until then this **skips** — see
- * `RECORDED` below — so `npm test` stays free and green. Record with
+ * Recorded in P9g (paid, approved 2026-11-12); every run since replays free.
+ * It always runs: there is no "is it recorded?" gate, because a gate hides a
+ * stale fixture — an edited tool description or system prompt would turn this
+ * into a quiet skip. A request the cache does not hold fails loudly instead
+ * (`noMiss` below), the cue to re-record with
  * `JLCODE_LIVE=1 npx vitest run test/agents-live.test.ts` and a key.
  *
  * ## Two things that keep a recorded replay replayable
@@ -34,14 +36,12 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import { Session, type SessionRetarget } from "../src/session/session";
 import { AgentCoordinator } from "../src/session/agents";
 import { ToolRegistry } from "../src/tools/registry";
 import { agentTools } from "../src/tools/agent-tools";
 import { Sandbox } from "../src/tools/sandbox";
-import { LlmCache } from "../src/llm/cache";
-import type { ChatRequest, LlmDriver } from "../src/llm/types";
+import type { LlmDriver } from "../src/llm/types";
 import type { ModelConfig } from "../src/config/types";
 import type { Conversation, Entry } from "../src/conversation/types";
 import { liveDriver, LIVE, CACHE_DIR } from "./helpers/live";
@@ -111,29 +111,33 @@ function tree(driver: () => LlmDriver) {
   return { root, agents, sessions };
 }
 
-/**
- * Has the run been recorded? Probed by building the root's **first** request
- * exactly as the test will and asking the committed cache for it. "Any fixture
- * exists" — the other recorded suites' gate — is not enough here: the cache
- * already holds other suites' fixtures, so that gate would run this test and
- * fail on a miss instead of skipping it.
- */
-async function firstRequestRecorded(): Promise<boolean> {
-  let first: ChatRequest | undefined;
-  const capture: LlmDriver = {
-    // eslint-disable-next-line require-yield
-    async *streamChat(req) {
-      first ??= req;
-      throw new Error("probe");
-    },
+/** `liveDriver`, noting every cache miss. A session turns a driver error into
+ *  its own error state, so without this a stale fixture would surface as a
+ *  confusing assertion ("never spawned") rather than as what it is. */
+function watched(misses: string[]): () => LlmDriver {
+  return () => {
+    const d = liveDriver();
+    return {
+      async *streamChat(req, o) {
+        try {
+          yield* d.streamChat(req, o);
+        } catch (err) {
+          if (err instanceof Error && err.message.includes("live-cache MISS")) misses.push(err.message);
+          throw err;
+        }
+      },
+    };
   };
-  const { root } = tree(() => capture);
-  await root.send(FIRST).catch(() => {});
-  return first !== undefined && new LlmCache(CACHE_DIR).get(first) !== undefined;
 }
 
-const RECORDED = await firstRequestRecorded();
-const RUN = LIVE || RECORDED;
+function noMiss(misses: string[]): void {
+  if (misses.length > 0) {
+    throw new Error(
+      `stale fixture: ${misses.length} request(s) not in the recording — something on the wire changed (a tool ` +
+        `description, the system prompt…). Re-record with JLCODE_LIVE=1 npx vitest run test/agents-live.test.ts (paid).`,
+    );
+  }
+}
 
 const calls = (s: Session, name: string) =>
   s.conversation.entries.flatMap((e) =>
@@ -144,13 +148,15 @@ const results = (s: Session, name: string) =>
 const inbound = (s: Session) =>
   s.conversation.entries.filter((e): e is Extract<Entry, { type: "user" }> => e.type === "user" && e.inbound !== undefined);
 
-describe.skipIf(!RUN)("a live model runs a sub-agent (Tier 1, P9c)", () => {
+describe("a live model runs a sub-agent (Tier 1, P9c)", () => {
   it("spawns a child, messages it by name, and gets the answer back by message", { timeout: 300_000 }, async () => {
     expect(fs.existsSync(CACHE_DIR) || LIVE).toBe(true);
-    const { root, agents, sessions } = tree(liveDriver);
+    const misses: string[] = [];
+    const { root, agents, sessions } = tree(watched(misses));
 
     await root.send(FIRST);
     await agents.idle();
+    noMiss(misses);
     // It spawned, and its turn ended on the spawn: the child exists by name.
     expect(results(root, "spawn_agent").some((r) => !r.isError)).toBe(true);
     const child = sessions.find((s) => s.agentInfo?.name === "agent-1");
@@ -158,6 +164,7 @@ describe.skipIf(!RUN)("a live model runs a sub-agent (Tier 1, P9c)", () => {
 
     await root.send(SECOND);
     await agents.idle();
+    noMiss(misses);
 
     // The parent addressed the child by the name spawn_agent returned…
     const sent = calls(root, "send_message").map((c) => JSON.parse(c.function.arguments) as { to?: string; text?: string });
@@ -173,10 +180,4 @@ describe.skipIf(!RUN)("a live model runs a sub-agent (Tier 1, P9c)", () => {
     expect(root.status).toBe("idle");
     expect(child.status).toBe("idle");
   });
-});
-
-// A skipped suite still reports *why* it skipped, so "unrecorded" is never
-// mistaken for "passed".
-describe.skipIf(RUN)("a live model runs a sub-agent (Tier 1, P9c) — not recorded yet", () => {
-  it.skip(`no fixture for the first request in ${path.relative(process.cwd(), CACHE_DIR)} — P9g records it (paid, ask Joshua)`, () => {});
 });

@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_wmNj4mroMYRgNzRw7YmN5ANX","type":"function","function":{"name":"spawn_agent","arguments":"{\"task\":\"send_message to parent with text 'READY'\",\"model\":\"openai/gpt-4.1-nano\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1276,"completionTokens":35,"totalTokens":1311,"cachedTokens":1152,"costUsd":0.000126}}

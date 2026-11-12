@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_U3zy5AeiaEglqne0IgjltmeU","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"The color has been changed to BLUE.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1296,"completionTokens":25,"totalTokens":1321,"cachedTokens":0,"costUsd":0.0002094}}

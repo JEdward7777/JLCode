@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_uCsTis3aXutqFIElR3FoTcwX","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"READY\"}"}}],"finishReason":"tool_calls","provider":"Azure","usage":{"promptTokens":1217,"completionTokens":19,"totalTokens":1236,"cachedTokens":0,"costUsd":0.0001293}}

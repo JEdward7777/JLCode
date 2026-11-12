@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_mP1aVnKtw3txlVGZZieLIOpP","type":"function","function":{"name":"ask","arguments":"{\"to\":\"parent\",\"question\":\"What color does the project use?\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1228,"completionTokens":23,"totalTokens":1251,"cachedTokens":1024,"costUsd":0.0001212}}
