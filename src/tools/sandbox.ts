@@ -47,6 +47,13 @@ export class Sandbox {
     if (!this.roots.includes(real)) this.roots.push(real);
   }
 
+  /** Put the fence back to a snapshot of `roots` — undoing a widening whose
+   *  approval was refused before its call ran (D-99). In place, so anything
+   *  holding `roots` keeps seeing the live list. */
+  restoreRoots(snapshot: readonly string[]): void {
+    this.roots.splice(0, this.roots.length, ...snapshot);
+  }
+
   /** Allow a specific resolved path for the next operation(s), until cleared. */
   allowOnce(realPath: string): void {
     this.once.add(realPath);

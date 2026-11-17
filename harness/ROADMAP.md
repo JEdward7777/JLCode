@@ -24,6 +24,23 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-11-17 (H-25 ✅ — closes H-11).** **Next free ids: D-100, X-61, H-26.**
+>
+> **What happened:** a sub-agent hung forever in a real session. Its turn read `config.json` again (D-87)
+> mid hand-edit, the `SyntaxError` escaped to the coordinator's log, and the agent sat `running` with
+> nothing told to anyone.
+>
+> **What was built (D-99), through the ratchet in four rounds (R4 CLEAN):**
+> - **Layer 1:** an unreadable config store is not a deleted config. The session keeps its last good
+>   config and logs one warning per streak.
+> - **Layer 2:** a backstop in `Session.advance`. Any throw becomes a retryable error with
+>   `settled` "failed", so a parent hears.
+> - **The rule on `advance`:** entry points only decide before it; all writes happen inside it.
+>
+> Build + free tiers green (**1295**). Leftovers are filed as **H-25**.
+>
+> **Next:** unchanged from the block below.
+
 > **Resume block — 2026-11-12, later (Phase 9 complete — P9a…P9g ✅).** **Next free ids: D-99, X-61,
 > H-25.**
 >
@@ -2342,6 +2359,25 @@ the models actually did with the tool descriptions.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
+- **H-25 — a turn that throws can't leave a session silently stuck.** Found 2026-11-17 in a real
+  session (a sub-agent hung on a `config.json` mid hand-edit). **Built 2026-11-17 (D-99), closing H-11.**
+  These leftovers are **OPEN**:
+  - (a) A throw from `tool.execute` fails the whole turn, with the calls answered `FAILED_CALL`. An `isError`
+    tool result would let the model carry on. That was H-11's original suggestion.
+  - (b) `Session.emit` doesn't isolate listener throws. The backstop now contains them, but they still
+    end a turn.
+  - (c) Some live config reads are still unguarded: the spawn tools' `pickConfig`/`listModels`, the
+    server's `branchKey`, `/configs`, and the constructor's `syncGoverningConfig` for a resumed switched
+    thread whose id was never read. They fail visibly, as a tool error or an HTTP error, not silently.
+  - (d) `drainQueue`'s head check (`modelMissing` / `heldForMissingModel`) can throw for an id that was
+    never read. The message stays queued, but the log line is the generic "agent turn failed to start".
+  - (e) A message requeued after a failed opening is not re-driven by itself. It waits for the next
+    trigger (a settle, a send, a model pick, Wake, Retry). That is visible but passive.
+  - (f) On `approve`'s deny path the status reads `awaiting-approval` with no card for one microtask.
+    Every caller awaits, so nothing observes it.
+  - (g) The coordinator's `configStoreFailing` streak flag is shared across trees. This costs only extra
+    log lines.
+
 - **H-24 — small P9f2 leftovers.** Found 2026-11-12 by the P9f2 build and review loop; **OPEN.**
   - (a) A note held for a child is lost on restart or on close. The mode itself survives on the record.
   - (b) A person's mode toggle on a parent doesn't cascade to looser children (pre-existing). `modeLanded`'s doc should say the invariant covers agent-made changes.
@@ -2466,7 +2502,9 @@ the models actually did with the tool descriptions.
   confirm from acknowledging a key change the person didn't see; this is about the display.
 
 - **H-11 — a resume that throws after marking itself `running` strands the session.** Found
-  2026-11-04 by the P9a review loop (rounds 8–10); **OPEN, nothing built.**
+  2026-11-04 by the P9a review loop (rounds 8–10); **CLOSED 2026-11-17 by H-25 (D-99):** a backstop
+  in `advance` behind a `turnGen` check, with open calls answered `FAILED_CALL`, plus a guarded config
+  read. The `isError` conversion it proposed is still open as H-25(a).
   - **Symptom.** A throw from `tool.execute` inside `approve()`, or from `compact()` internals
     inside `resolveCompaction()`, leaves `status: "running"` with no loop behind it; Stop waits for
     a loop that doesn't exist and send refuses "busy" — stuck until restart. Unreachable with today's

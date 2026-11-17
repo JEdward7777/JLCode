@@ -239,6 +239,12 @@ export interface SessionOptions {
    *  every user turn the session opens for itself (a drained queue, a retry off
    *  a switched branch), so a branch never inherits a sibling branch's switch. */
   bindingConfig?: () => ModelConfig | undefined;
+  /** Something went wrong that the person may never see in the transcript —
+   *  for the embedder's diagnostic log (D-99). Called with what was being done,
+   *  the error (its stack is the point), and how bad it is: `warn` for a fault
+   *  the session rode out (an unreadable config store mid-turn), `error` for one
+   *  that ended a turn (the backstop in `advance`). Never thrown out of. */
+  onInternalError?: (context: string, err: unknown, level: "warn" | "error") => void;
 }
 
 /** Default watchdog interval — 30 minutes (D-34), stated once in the config
@@ -318,6 +324,10 @@ const STOPPED_CALL = "stopped by the user — this call was not run";
 /** …and when the conversation simply moved on past it: a rewind onto a call,
  *  a `length` cut-off mid-call, a log written before this rule. */
 const SKIPPED_CALL = "not run — the conversation continued";
+/** …and when the turn died on an unexpected error before this call's result
+ *  was written (D-99). Worded for both cases, since the throw may have landed
+ *  after the call ran but before its result was recorded. */
+const FAILED_CALL = "no result — the turn stopped on an internal error before this call's result was recorded (it may not have run)";
 
 /** Nothing was said here — an explicit decline, or a blank that amounts to one. */
 export function isBlankAnswer(a: AskUserAnswer): boolean {
@@ -597,6 +607,18 @@ export class Session {
   private readonly lookupConfig: ((id: string) => ModelConfig | undefined) | undefined;
   private readonly deriveRetarget: ((config: ModelConfig) => SessionRetarget) | undefined;
   private readonly bindingConfig: (() => ModelConfig | undefined) | undefined;
+  /** The last answer each live config read gave (D-99) — what a read that
+   *  *throws* falls back to. Keyed by config id; `undefined` value = deleted. */
+  private readonly lastGoodLookup = new Map<string, ModelConfig | undefined>();
+  private lastGoodBinding: ModelConfig | undefined;
+  /** Whether `lastGoodBinding` is an answer (a binding can read `undefined`). */
+  private bindingRead = false;
+  /** Inside a streak of failed config-store reads: noted once, not per read. */
+  private configStoreFailing = false;
+  /** Every error the read guard handled — by identity, so only *those* are
+   *  known to be on the record already. */
+  private readonly storeReadErrors = new WeakSet<object>();
+  private readonly onInternalError: SessionOptions["onInternalError"];
   /** Whether `config` came from a `model-switch` entry rather than the binding —
    *  what tells a retry on a branch with no switch that the config it holds
    *  belongs to some other branch (D-87). */
@@ -673,9 +695,15 @@ export class Session {
     this.triggerMode = activeTriggerMode(options.config.compaction);
     this.watchdogMs = options.watchdogMs ?? WATCHDOG_MS;
     this.tasks = options.tasks ?? new TaskRegistry();
-    this.lookupConfig = options.lookupConfig;
+    this.onInternalError = options.onInternalError;
+    // Both live reads go through one guard, here, so every caller — the
+    // per-request re-resolve, the turn top, `modelMissing`, a pick — gets the
+    // same answer to "the store could not be read" (D-99).
+    const lookup = options.lookupConfig;
+    this.lookupConfig = lookup && ((id) => this.readLiveLookup(lookup, id));
     this.deriveRetarget = options.deriveRetarget;
-    this.bindingConfig = options.bindingConfig;
+    const binding = options.bindingConfig;
+    this.bindingConfig = binding && (() => this.readLiveBinding(binding));
     // Forward task lifecycle to subscribers (UI list) and arm/disarm the
     // per-task watchdog (D-34).
     this.tasks.onEvent((e) => {
@@ -947,7 +975,14 @@ export class Session {
     try {
       this.alignToBranch();
     } catch (err) {
-      if (!(err instanceof ModelConfigMissingError)) throw err;
+      // Anything else is left the same way (D-99): `send` re-resolves and
+      // refuses visibly if it still fails. Thrown from here it would break
+      // callers that only wanted an idle point tidied — Stop among them. An
+      // unreadable store was already noted by the read guard; the rest is new.
+      const noted = typeof err === "object" && err !== null && this.storeReadErrors.has(err);
+      if (!(err instanceof ModelConfigMissingError) && !noted) {
+        this.reportInternal("could not re-align the idle session's model", err, "warn");
+      }
     }
   }
 
@@ -1010,6 +1045,86 @@ export class Session {
     this.configFromSwitch = true;
   }
 
+  /*
+   * AN UNREADABLE STORE IS NOT A DELETED CONFIG (D-99). The live reads above
+   * (D-87) parse the config file on every request, and that file is one a
+   * person hand-edits: mid-save it is briefly not JSON at all. `undefined` from
+   * a read means "deleted" and refuses to send; a read that *throws* means
+   * "can't tell right now", and as far as anyone can know the model has not
+   * changed — so the session keeps running under what it last read, and says
+   * so once in the diagnostic log. Before this, the SyntaxError escaped the
+   * turn and left a sub-agent `running` forever with nobody told.
+   *
+   * Guarded here, around the injected readers, rather than in the factory's
+   * closures: the Session is the one that knows what it already holds (its
+   * config, and the last answer each read gave), so this is the single point
+   * every caller passes through, and any embedder's reader is covered. The
+   * factory stays a plain "read the file" closure. Parsing is not loosened —
+   * a file that is really broken is still broken for every other reader.
+   */
+
+  /** `lookupConfig` through the D-99 guard: a throw answers with the last
+   *  thing this id resolved to (or the held config, if that is the one asked
+   *  for); with nothing known about the id, the error stands. */
+  private readLiveLookup(read: (id: string) => ModelConfig | undefined, id: string): ModelConfig | undefined {
+    let found: ModelConfig | undefined;
+    try {
+      found = read(id);
+    } catch (err) {
+      const known = this.lastGoodLookup.has(id);
+      const held = known ? this.lastGoodLookup.get(id) : this.config.id === id ? this.config : undefined;
+      this.noteConfigStoreUnreadable(err);
+      if (!known && !held) throw err; // nothing to keep running under
+      return held;
+    }
+    this.configStoreFailing = false;
+    this.lastGoodLookup.set(id, found);
+    return found;
+  }
+
+  /** `bindingConfig` through the D-99 guard: a throw answers with the last
+   *  binding read; with none, with the held config **only if it is the
+   *  binding's own** (`configFromSwitch` false). A held config that came from a
+   *  switched sibling branch is not an answer to "what does the binding say" —
+   *  keeping it would run an unswitched branch on another model, replaying its
+   *  signed reasoning (D-87/D-82a) — so then the error stands and the send
+   *  refuses visibly. Never `undefined` for a throw: callers read that as "keep
+   *  what you hold", which is exactly the wrong answer in that case. */
+  private readLiveBinding(read: () => ModelConfig | undefined): ModelConfig | undefined {
+    let found: ModelConfig | undefined;
+    try {
+      found = read();
+    } catch (err) {
+      this.noteConfigStoreUnreadable(err);
+      if (!this.bindingRead && this.configFromSwitch) throw err;
+      return this.bindingRead ? this.lastGoodBinding : this.config;
+    }
+    this.configStoreFailing = false;
+    this.bindingRead = true;
+    this.lastGoodBinding = found;
+    return found;
+  }
+
+  /** Once per failing streak: a turn re-reads before every request, and a
+   *  half-saved file would otherwise log a line per round. */
+  private noteConfigStoreUnreadable(err: unknown): void {
+    // Marked whether or not it is the one logged, so a caller further up that
+    // swallows a store fault can tell it from a fault of its own (`resyncModel`).
+    if (typeof err === "object" && err !== null) this.storeReadErrors.add(err);
+    if (this.configStoreFailing) return;
+    this.configStoreFailing = true;
+    this.reportInternal("config store unreadable — keeping the config this session already holds", err, "warn");
+  }
+
+  /** The `onInternalError` hook, which must never become a second failure. */
+  private reportInternal(context: string, err: unknown, level: "warn" | "error"): void {
+    try {
+      this.onInternalError?.(context, err, level);
+    } catch {
+      // A broken logger is not this session's problem to die of.
+    }
+  }
+
   /** Set / raise / clear the spend cap (D-33). Raising above current spend after
    *  a breach clears the block and resumes the paused loop; nothing is killed. */
   async setSpendCap(capUsd: number | null): Promise<void> {
@@ -1028,8 +1143,12 @@ export class Session {
    *  agent-started turn does, and waits `queued` for one. */
   private async resumeFromCap(): Promise<void> {
     if (!this.capReached || this.capBlocked()) return;
+    // Asked before the park is released (the rule on `advance`, D-99): a
+    // throwing `admit` leaves the turn parked on the cap, where the next raise
+    // finds it, rather than unparked with nothing resuming it.
+    const admitted = !this.agentHost || this.agentHost.admit(this);
     this.capReached = false;
-    if (this.agentHost && !this.agentHost.admit(this)) {
+    if (!admitted) {
       this.queuedResume = "cap";
       this.status = "queued";
       return;
@@ -1153,14 +1272,37 @@ export class Session {
       this.status === "awaiting-input" ||
       (this.status === "awaiting-persistence" && this.statusBeforeFault === "awaiting-input");
     if (!paused) return false;
-    this.pendingQuestion = undefined;
-    // Answers the call (H-10): nothing more is said over it, and the rest of
-    // the batch — if the question was not its last call — runs on resume.
-    this.appendToolResult(pending.call, `[Answer from your parent agent "${from}"]\n\n${text}`, false);
+    // Synchronous, and its resume deferred, so `advance` cannot guard this
+    // write: the equivalent guard is here (D-99). A throw before the answer
+    // landed puts the card back and returns false — the reply then queues as
+    // an ordinary message, never lost. One after it landed keeps the answered
+    // resume: the call has its result, so the only honest state is `queued`.
+    const entriesBefore = this.conversation.entries.length;
+    let landed = false;
+    try {
+      this.pendingQuestion = undefined;
+      // Answers the call (H-10): nothing more is said over it, and the rest of
+      // the batch — if the question was not its last call — runs on resume.
+      this.appendToolResult(pending.call, `[Answer from your parent agent "${from}"]\n\n${text}`, false);
+      landed = true;
+    } catch (err) {
+      landed = this.conversation.entries.length > entriesBefore;
+      this.reportInternal("could not record the parent's answer", err, "error");
+      if (!landed) {
+        this.pendingQuestion = pending;
+        return false;
+      }
+    }
     this.pendingToolCalls.shift();
     this.queuedResume = "answer";
-    if (this.pendingPersistence) this.statusBeforeFault = "queued";
-    else this.status = "queued";
+    // The status setter assigns before it announces, so a listener throwing on
+    // the announcement still leaves `queued` in place — reported, not thrown.
+    try {
+      if (this.pendingPersistence) this.statusBeforeFault = "queued";
+      else this.status = "queued";
+    } catch (err) {
+      this.reportInternal("could not announce the answered resume", err, "error");
+    }
     return true;
   }
 
@@ -1405,19 +1547,23 @@ export class Session {
   async resolveCompaction(skip: boolean): Promise<void> {
     const pending = this.pendingCompaction;
     if (!pending) throw new Error("No pending compaction");
-    this.pendingCompaction = undefined;
-    // Running from here, as in `approve`: a Stop during the summary call takes
-    // the running path, and `advance` below settles the stop with the pin.
-    this.status = "running";
-    if (skip && pending.cancelable) {
-      this.needsCompaction = false; // proceed uncompacted this turn (accepted overshoot)
-    } else {
-      const ok = await this.compact();
-      if (!ok) this.needsCompaction = false;
-    }
-    // A stop that landed during the compaction is honored by the loop's first
-    // check, and `advance`'s tail releases the pin — no model call is made.
-    await this.advance();
+    // The card consumed, and the compaction run, as `advance`'s prelude —
+    // under its backstop (D-99): a throw there must not leave the turn
+    // `running` (or card-less) with nobody told. A stop that landed during the
+    // compaction is honored by the loop's first check, and `advance`'s tail
+    // releases the pin — no model call is made.
+    await this.advance(async () => {
+      this.pendingCompaction = undefined;
+      // Running from here, as in `approve`: a Stop during the summary call takes
+      // the running path, and `advance` settles the stop with the pin.
+      this.status = "running";
+      if (skip && pending.cancelable) {
+        this.needsCompaction = false; // proceed uncompacted this turn (accepted overshoot)
+      } else {
+        const ok = await this.compact();
+        if (!ok) this.needsCompaction = false;
+      }
+    });
   }
 
   get awaitingContinue(): StallRequest | undefined {
@@ -1460,13 +1606,15 @@ export class Session {
   async continueRun(opts: { dontAskAgain?: boolean } = {}): Promise<void> {
     const pending = this.pendingStall;
     if (!pending) throw new Error("No pending continue");
-    this.pendingStall = undefined;
-    this.iterationBudget = pending.nextBudget;
-    if (opts.dontAskAgain && !this.conversation.roundsOff) {
-      this.conversation.roundsOff = true;
-      this.emit({ type: "rounds-off" });
-    }
-    await this.advance();
+    // The card is consumed and the mark written under the backstop (D-99).
+    await this.advance(() => {
+      this.pendingStall = undefined;
+      this.iterationBudget = pending.nextBudget;
+      if (opts.dontAskAgain && !this.conversation.roundsOff) {
+        this.conversation.roundsOff = true;
+        this.emit({ type: "rounds-off" });
+      }
+    });
   }
 
   /** Whether the tool-round pause is off for this session (P9d, D-89): in a
@@ -1518,6 +1666,43 @@ export class Session {
    *  "soft" is loop-only: leave running commands to finish but take no further
    *  LLM turn. If the loop is running it observes the flag and settles itself. */
   stop(scope: "hard" | "soft"): void {
+    try {
+      this.stopNow(scope);
+    } catch (err) {
+      // The equivalent guard for Stop (the rule on `advance`, D-99): Stop is
+      // the way out of every stuck state, so it must not become one. A running
+      // turn already has `stopScope` (set first thing) and its loop settles it;
+      // anything else is brought to rest here as the stop it was.
+      this.reportInternal("stop did not complete cleanly", err, "error");
+      if (this.status !== "running") this.forceStoppedRest();
+    }
+  }
+
+  /** What `stop`'s tail would have left, reached from wherever it broke. */
+  private forceStoppedRest(): void {
+    this.stopScope = null;
+    this.pendingToolCalls = [];
+    this.pendingApproval = undefined;
+    this.pendingQuestion = undefined;
+    this.pendingCompaction = undefined;
+    this.pendingStall = undefined;
+    this.queuedResume = false;
+    const ended = this.turnLeaf !== undefined;
+    this.turnLeaf = undefined;
+    this.capReached = false;
+    this.turnGen++;
+    try {
+      this.status = this.pendingPersistence ? "awaiting-persistence" : "idle";
+      if (ended) {
+        this.stoppedTurn = true;
+        this.emit({ type: "settled", outcome: "stopped" });
+      }
+    } catch (err) {
+      this.reportInternal("could not announce the stopped rest", err, "error");
+    }
+  }
+
+  private stopNow(scope: "hard" | "soft"): void {
     this.stopScope = scope;
     // A stop outranks a Retry that was mid-flight: the user changed their mind
     // about wanting this turn at all, so don't let the restart flag resurrect it.
@@ -1586,9 +1771,16 @@ export class Session {
         this.turnLeaf = undefined;
         this.capReached = false;
         this.turnGen++;
-        this.resyncModel();
-        this.applyPendingSwitch();
-        this.applyPendingMode();
+        // Guarded like `advance`'s settle tail (D-99): the pin is already
+        // released, so a throw here would cost the `settled` below — and with
+        // it the parent's only word that this turn ended (D-88).
+        try {
+          this.resyncModel();
+          this.applyPendingSwitch();
+          this.applyPendingMode();
+        } catch (err) {
+          this.reportInternal("stop's idle-point tail failed", err, "error");
+        }
         if (endsTurn) this.emit({ type: "settled", outcome: "stopped" });
       }
     }
@@ -2087,17 +2279,22 @@ export class Session {
       this.turnLeaf = undefined; // a refused wake opens no turn
       return { outcome: "blocked", done: Promise.reject(err as Error) };
     }
-    this.takeTurn(); // heals the tip (H-10) and owns the pin from here
-    const opener = pathToLeaf(this.conversation, this.turnLeaf)
-      .reverse()
-      .find((e) => e.type === "user");
-    this.turnByHuman = !(opener?.type === "user" && opener.inbound);
-    this.retryable = false;
-    // `consecutiveFailures` is kept: a Wake is not a person's Retry, and a root
-    // waking a failing child in a loop must still reach the halt breaker.
-    this.pendingStall = undefined;
-    this.pendingToolCalls = [];
-    return { outcome: "woken", done: this.advance() };
+    this.takeTurn(); // owns the pin from here
+    // Healed (H-10) and set up under the backstop (D-99), synchronously, so
+    // the session still reads `running` before this returns.
+    const done = this.advance(() => {
+      this.healTip();
+      const opener = pathToLeaf(this.conversation, this.turnLeaf)
+        .reverse()
+        .find((e) => e.type === "user");
+      this.turnByHuman = !(opener?.type === "user" && opener.inbound);
+      this.retryable = false;
+      // `consecutiveFailures` is kept: a Wake is not a person's Retry, and a root
+      // waking a failing child in a loop must still reach the halt breaker.
+      this.pendingStall = undefined;
+      this.pendingToolCalls = [];
+    });
+    return { outcome: "woken", done };
   }
 
   private reasoningParam(): Record<string, unknown> | undefined {
@@ -2226,16 +2423,24 @@ export class Session {
    * The bookkeeping every turn opening shares, once its branch is pinned —
    * `openTurn` and `retry` both, so a future way of opening a turn cannot
    * forget a piece of it. The turn takes the pin and its settle (`turnGen`),
-   * starts with no stale Stop, yield or queued resume, and **heals** its tip:
-   * a branch can reach a new turn with a call still open — a rewind onto it,
-   * a `length` cut-off mid-call, an idle pick written over one, a log older
-   * than the rule — and nothing may be sent or said under it (P9c).
+   * starts with no stale Stop, yield or queued resume — and then (`healTip`,
+   * first thing in its `advance` prelude) **heals** its tip: a branch can
+   * reach a new turn with a call still open — a rewind onto it, a `length`
+   * cut-off mid-call, an idle pick written over one, a log older than the
+   * rule — and nothing may be sent or said under it (P9c).
    */
   private takeTurn(): void {
     this.turnGen++;
     this.stoppedTurn = false;
     this.yieldTurn = false;
     this.queuedResume = false; // a parked turn a raise had queued is abandoned
+  }
+
+  /** The heal half of taking a turn — split from `takeTurn` because it writes
+   *  to the tree, and so can throw: every caller runs it first thing in its
+   *  `advance` prelude, under the backstop (D-99), where a throw ends the turn
+   *  it just took as a failure rather than leaving it pinned and unsettled. */
+  private healTip(): void {
     this.closeDanglingCalls(SKIPPED_CALL);
   }
 
@@ -2253,7 +2458,10 @@ export class Session {
    * keeps waking itself up still pauses at the same budget a single unattended
    * turn would.
    */
-  private async openTurn(text: string, opts: { human: boolean; inbound?: InboundMeta }): Promise<void> {
+  private async openTurn(
+    text: string,
+    opts: { human: boolean; inbound?: InboundMeta; unsent?: QueuedMessage },
+  ): Promise<void> {
     this.assertCanSend();
     // A send always opens a **new** turn on the reader's branch. A pin still
     // held here belongs to a turn that is not coming back as such — one parked
@@ -2282,98 +2490,163 @@ export class Session {
     // navigates while it runs.
     this.turnLeaf = this.conversation.activeLeaf;
     this.takeTurn();
-    // A fresh *human* message is a fresh turn, so the tool-round budget starts
-    // over (D-79) — and it starts over *here only*: approval, ask_user and
-    // compaction all resume the same turn and keep spending the same budget,
-    // and an agent's message continues it (D-89).
-    if (opts.human) {
-      this.toolRounds = 0;
-      this.iterationBudget = this.maxToolIterations;
-    }
-    this.turnByHuman = opts.human;
-    this.pendingStall = undefined;
-    // A turn's top is between batches (P9f2): a parent's mode change lands, and
-    // its note goes ahead of the message that opens the turn.
-    this.applyPendingMode();
-    this.landModeNote();
-    this.appendUserText(text, opts.inbound);
-    this.pendingToolCalls = [];
-    await this.advance();
+    // Everything from the heal on runs under the backstop (D-99), synchronously
+    // and in the order it always ran in. A throw before the message landed
+    // hands it back (`unsent`) rather than dropping it.
+    let said = false;
+    let leafBeforeSaying: string | null | undefined;
+    await this.advance(() => {
+      try {
+        this.healTip();
+        // A fresh *human* message is a fresh turn, so the tool-round budget starts
+        // over (D-79) — and it starts over *here only*: approval, ask_user and
+        // compaction all resume the same turn and keep spending the same budget,
+        // and an agent's message continues it (D-89).
+        if (opts.human) {
+          this.toolRounds = 0;
+          this.iterationBudget = this.maxToolIterations;
+        }
+        this.turnByHuman = opts.human;
+        this.pendingStall = undefined;
+        // A turn's top is between batches (P9f2): a parent's mode change lands, and
+        // its note goes ahead of the message that opens the turn.
+        this.applyPendingMode();
+        this.landModeNote();
+        leafBeforeSaying = this.turnLeaf;
+        this.appendUserText(text, opts.inbound);
+        said = true;
+        this.pendingToolCalls = [];
+      } catch (err) {
+        // Written already if the pin moved past it — the entry lands before it
+        // is announced, so a throwing listener must not get it sent twice.
+        const written = said || (leafBeforeSaying !== undefined && this.turnLeaf !== leafBeforeSaying);
+        if (!written) this.requeueUnsent(opts.unsent ?? { id: newId("q"), text });
+        throw err;
+      }
+    });
+  }
+
+  /** A message whose turn failed before it was written goes back at the head
+   *  of the queue (D-99) — it may be a sub-agent's notice, its parent's only
+   *  signal (D-88). It waits there for the next trigger, like any queued one. */
+  private requeueUnsent(message: QueuedMessage): void {
+    this.queue.unshift(message);
+    this.emit({ type: "queue", queue: [...this.queue] });
   }
 
   /** Resolve a pending approval (approve / deny / edit-then-approve) and continue. */
   async approve(decision: ApprovalDecision): Promise<void> {
     const pending = this.pendingApproval;
     if (!pending) throw new Error("No pending approval");
-    this.pendingApproval = undefined;
-    // Whatever they typed alongside the decision (D-51) — held until the batch
-    // drains, then appended as an ordinary user message.
-    const note = decision.note?.trim();
-    if (note) this.pendingNote = note;
-    // Answers first (D-48): they are facts about the tool, kept whether or not
-    // this call runs, and the fence check below must see them. A field the user
-    // just called prose is no longer an escape, so it widens nothing.
-    this.applyLearned(pending.tool, decision.learned);
-    const blocked = pending.request.learn?.modeBlocked;
-    if (decision.approve && blocked !== undefined) {
+    const rootsBefore = this.sandbox ? [...this.sandbox.roots] : [];
+    let remember: string[] = [];
+    let denial: string | undefined;
+    let run: { args: Record<string, unknown>; edited: boolean } | undefined;
+    // DECIDE (the rule on `advance`): nothing here consumes the card, writes
+    // the tree or emits. A throw — a tool's learned-answer hook, the fence
+    // check — leaves the card exactly as it was, actionable, after narrowing
+    // back any fence this decision widened (the call it was for never ran).
+    try {
+      // Answers first (D-48): they are facts about the tool, kept whether or not
+      // this call runs, and the fence check below must see them. A field the user
+      // just called prose is no longer an escape, so it widens nothing. Kept on a
+      // refused approval too — a re-approval states them again anyway.
+      this.applyLearned(pending.tool, decision.learned);
+      const blocked = pending.request.learn?.modeBlocked;
       // The pause existed only because the tool was presumed to write. Re-run
       // the gate against what we now know rather than trusting the approval.
-      const recheck = this.gate.check(pending.tool, pending.request.args);
-      if (recheck.kind === "deny") {
-        this.appendToolResult(pending.call, `denied: ${recheck.reason}`, true);
-        this.pendingToolCalls.shift();
-        await this.advance();
-        return;
-      }
-    }
-    if (decision.approve) {
-      const runArgs = decision.editedArgs ?? pending.request.args;
-      const edited = decision.editedArgs !== undefined;
-      // Widen the fence for any out-of-fence paths the user consented to (D-19).
-      const escapes = this.fenceEscapes(pending.tool, runArgs);
-      // H-08: allow-once is meaningless for a server that can remember the path.
-      // Approving without choosing a root is refused rather than quietly treated
-      // as "remember", because widening the fence must stay something the user
-      // did on purpose and can see afterwards.
-      if (escapes.length > 0 && pending.tool.classifyPaths && !decision.addRoot) {
-        this.appendToolResult(
-          pending.call,
-          "denied: this path is outside the workspace, and it was sent to an MCP server, " +
+      const recheck = decision.approve && blocked !== undefined ? this.gate.check(pending.tool, pending.request.args) : undefined;
+      if (recheck?.kind === "deny") {
+        denial = `denied: ${recheck.reason}`;
+      } else if (decision.approve) {
+        const runArgs = decision.editedArgs ?? pending.request.args;
+        const edited = decision.editedArgs !== undefined;
+        // Widen the fence for any out-of-fence paths the user consented to (D-19).
+        const escapes = this.fenceEscapes(pending.tool, runArgs);
+        // H-08: allow-once is meaningless for a server that can remember the path.
+        // Approving without choosing a root is refused rather than quietly treated
+        // as "remember", because widening the fence must stay something the user
+        // did on purpose and can see afterwards.
+        if (escapes.length > 0 && pending.tool.classifyPaths && !decision.addRoot) {
+          denial =
+            "denied: this path is outside the workspace, and it was sent to an MCP server, " +
             "which can remember it — so it cannot be allowed just once. Approve it with " +
-            "\"remember this root\" to widen the workspace deliberately, or deny it.",
-          true,
-        );
+            "\"remember this root\" to widen the workspace deliberately, or deny it.";
+        } else {
+          if (escapes.length > 0 && this.sandbox) {
+            for (const e of escapes) {
+              if (decision.addRoot) {
+                const dir = typeof decision.addRoot === "string" ? decision.addRoot : path.dirname(e.escapedPath);
+                this.sandbox.addRoot(dir);
+                remember.push(dir);
+              } else {
+                this.sandbox.allowOnce(e.escapedPath); // one-shot
+              }
+            }
+          }
+          run = { args: runArgs, edited };
+        }
+      } else {
+        denial = `denied by user${decision.reason ? `: ${decision.reason}` : ""}`;
+      }
+    } catch (err) {
+      if (this.sandbox) {
+        this.sandbox.restoreRoots(rootsBefore);
+        this.sandbox.clearOnce();
+      }
+      remember = [];
+      this.reportInternal("approval could not be applied; the card is kept", err, "error");
+      throw err;
+    }
+    // ACT, under the backstop (D-99): from consuming the card on, a throw ends
+    // the turn as a retryable failure with every call answered — never a card
+    // restored over a call that already has its result, never a card-less
+    // pause nobody can leave.
+    await this.advance(async () => {
+      this.pendingApproval = undefined;
+      // Whatever they typed alongside the decision (D-51) — held until the batch
+      // drains, then appended as an ordinary user message.
+      const note = decision.note?.trim();
+      if (note) this.pendingNote = note;
+      if (denial !== undefined) {
+        // Deny and refuse reach `running` through the loop, as before.
+        this.appendToolResult(pending.call, denial, true);
         this.pendingToolCalls.shift();
-        await this.advance();
         return;
       }
-      if (escapes.length > 0 && this.sandbox) {
-        for (const e of escapes) {
-          if (decision.addRoot) {
-            const dir = typeof decision.addRoot === "string" ? decision.addRoot : path.dirname(e.escapedPath);
-            this.sandbox.addRoot(dir);
-            this.onAddRoot?.(dir);
-          } else {
-            this.sandbox.allowOnce(e.escapedPath); // one-shot
-          }
-        }
-      }
+      const { args: runArgs, edited } = run!;
       // The approved tool is about to run: from here this is a running turn. A
       // Stop must see it as running — the loop then settles it with its pin,
       // rather than the stop ending a "suspended" turn that is in fact live (and
-      // landing its tool result elsewhere). Set here, not when the card is
-      // consumed: nothing above awaits, so no Stop can land earlier, and a throw
-      // above (a failing `onAddRoot`) leaves the card's status, which a hard
-      // Stop recovers. Deny and refuse paths reach running through `advance()`.
+      // landing its tool result elsewhere). Set before the first await, so no
+      // Stop can land earlier.
       this.status = "running";
-      await this.doExecute(pending.call, pending.tool, runArgs, edited);
-      this.sandbox?.clearOnce();
-    } else {
-      this.appendToolResult(pending.call, `denied by user${decision.reason ? `: ${decision.reason}` : ""}`, true);
-    }
-    this.pendingToolCalls.shift();
-    await this.advance();
+      // Persisting a remembered root writes the config store — the file a person
+      // may be hand-editing right now (D-99). The root is already allowed for
+      // this session; failing to *remember* it is not a reason to refuse the
+      // call the person just approved, so it is said aloud and the call runs.
+      for (const dir of remember) {
+        try {
+          this.onAddRoot?.(dir);
+        } catch (err) {
+          this.reportInternal("could not remember an approved root in config", err, "warn");
+          const detail = err instanceof Error ? err.message : String(err);
+          this.emit({
+            type: "error",
+            message: `${dir} is allowed for this session, but couldn't be remembered in config: ${detail}`,
+          });
+        }
+      }
+      try {
+        await this.doExecute(pending.call, pending.tool, runArgs, edited);
+      } finally {
+        this.sandbox?.clearOnce();
+      }
+      this.pendingToolCalls.shift();
+    });
   }
+
+
 
   /** Provide the answer(s) to a pending question and continue (D-18). A bare
    *  string answers a single-question form verbatim (the tool result is exactly
@@ -2391,10 +2664,13 @@ export class Session {
       const missing = questions.find((q, i) => q.required === true && isBlankAnswer(payload[i]!));
       if (missing) throw new Error(`This question requires an answer: ${missing.question}`);
     }
-    this.pendingQuestion = undefined;
-    this.appendToolResult(pending.call, formatAnswers(payload, questions), false);
-    this.pendingToolCalls.shift();
-    await this.advance();
+    const content = formatAnswers(payload, questions); // decide…
+    // …then act, under the backstop (the rule on `advance`, D-99).
+    await this.advance(() => {
+      this.pendingQuestion = undefined;
+      this.appendToolResult(pending.call, content, false);
+      this.pendingToolCalls.shift();
+    });
   }
 
   /** Append one user entry mid-run and announce it (the shared seam behind the
@@ -2453,18 +2729,59 @@ export class Session {
    *  suspended and will be resumed (H-05). An approval / question / compaction
    *  pause — and a spend-cap block, which settles to `idle` but resumes on
    *  `setSpendCap` — all continue the *same* turn, so the pin has to outlive
-   *  them; anything else has ended the turn. */
-  private async advance(): Promise<void> {
+   *  them; anything else has ended the turn.
+   *
+   *  THE ENTRY-POINT RULE (D-99). Before `advance`, an entry point may only
+   *  validate and decide. That code can throw, but it must leave no trace: no
+   *  tree write, no emit, no card consumed (or the card is restored).
+   *  Everything that writes or emits runs in the `advance` prelude, or behind
+   *  an equivalent guard where `advance` isn't reachable synchronously
+   *  (`answerFromParent`, `drainQueue`'s requeue, `stop`). Two kinds of work
+   *  are allowed before it because each is a complete, valid idle-point act on
+   *  its own, whatever follows: aligning the session to the branch in view (a
+   *  pending model switch written, a `config` retarget — `openTurn`, `retry`,
+   *  `wake`), and status moves into a state that is itself a rest or a queue
+   *  slot (`queued`, `idle` before a Wake). Every throw past that point is the
+   *  backstop's: answered calls, `idle`, a retryable `error`, `settled`. */
+  private async advance(prelude?: () => void | Promise<void>): Promise<void> {
     const gen = this.turnGen;
+    let opening = prelude !== undefined;
     try {
+      // The work a turn does after it took its generation and before the loop
+      // takes over — healing the tip and landing the opening message (`openTurn`,
+      // `retry`, `wake`), the approved call (`approve`), the compaction a card
+      // was waiting on (`resolveCompaction`) — runs here so the backstop covers
+      // it. A synchronous prelude is called without an `await`, so the loop
+      // still marks the session `running` in the same tick as before: callers
+      // (`admit`, a second `enqueue`) rely on that.
+      if (prelude) {
+        const pending = prelude();
+        if (pending) await pending;
+      }
+      opening = false;
       await this.runLoop();
+    } catch (err) {
+      // The backstop (D-99): every turn path — open, retry, every resume, a
+      // wake — comes through here, and everything such a path does once its
+      // turn is taken is this method's `prelude`. So nothing a turn throws may
+      // leave it `running` (or pinned at `idle`) with no error and no
+      // `settled` — a sub-agent's parent would wait on it forever. The loop's
+      // handled exits never get here.
+      this.failTurn(err, gen, opening);
     } finally {
       // A newer turn opened while this one ran its tail: the pin, the status
       // and the settle are that turn's now (see `turnGen`).
       const stale = gen !== this.turnGen;
       // Every issued call has run (or none was issued): a mode a parent set
       // during the turn's last model call applies here, at rest (P9f2).
-      if (!stale && this.pendingToolCalls.length === 0) this.applyPendingMode();
+      // Guarded like the tail below: a throw here must not cost the settle.
+      if (!stale && this.pendingToolCalls.length === 0) {
+        try {
+          this.applyPendingMode();
+        } catch (err) {
+          this.reportInternal("could not apply the pending mode at rest", err, "error");
+        }
+      }
       const suspended =
         this.status === "awaiting-approval" ||
         this.status === "awaiting-input" ||
@@ -2473,10 +2790,18 @@ export class Session {
         this.capReached;
       if (!suspended && !stale) {
         this.turnLeaf = undefined;
-        this.resyncModel(); // the reader may have moved while the turn ran
-        // The turn is over — the other idle point a pending switch waits for —
-        // and a queue held for a missing model can go once one is written.
-        if (this.applyPendingSwitch()) await this.drainQueue();
+        // The tail's own work can throw too (a config read, the queue drain
+        // opening the next turn). Caught so the settle below is still said —
+        // the parent hearing it is the whole point (D-88, D-99). A turn the
+        // drain opened has its own `advance` and reports for itself.
+        try {
+          this.resyncModel(); // the reader may have moved while the turn ran
+          // The turn is over — the other idle point a pending switch waits for —
+          // and a queue held for a missing model can go once one is written.
+          if (this.applyPendingSwitch()) await this.drainQueue();
+        } catch (err) {
+          this.reportInternal("turn settle tail failed", err, "error");
+        }
         // At rest, and still this turn's to report: no newer turn opened from
         // the queue in the meantime (that one reports for itself), nothing is
         // waiting for a slot. This is what a sub-agent's parent hears (D-88).
@@ -2485,6 +2810,80 @@ export class Session {
           this.emit({ type: "settled", outcome });
         }
       }
+    }
+  }
+
+  /**
+   * Bring a turn that threw to rest as a failure (D-99) — the backstop under
+   * every handled exit of `runLoop`. Always logged (with the stack) through
+   * `onInternalError`; the session is only *changed* when the throw left it
+   * stuck, i.e. still `running` and still this turn's:
+   *
+   *  - a newer turn owns the state (`turnGen` moved): log only;
+   *  - a throw in the prelude always counts as stuck, whatever the status:
+   *    the entry point had already consumed its card or taken the turn, and
+   *    the loop never ran;
+   *  - already at rest — a card, the round budget, a cap park, or `idle` after
+   *    a settle tail (the title ask) threw: that rest stands, log only;
+   *  - a Stop was under way (a person's, or a persistence fault's hard stop,
+   *    D-46): finish it as the stop it was — `settleStopped` closes the batch
+   *    and lands on `awaiting-persistence` when a write is stalled;
+   *  - otherwise: answer any call the turn left open (H-10: nothing comes to
+   *    rest over a call with no result), say what broke as a retryable
+   *    `error`, and go `idle`. `advance`'s tail then releases the pin and
+   *    emits `settled` "failed", which is what a parent hears (D-88).
+   *
+   * Retry afterwards is the ordinary D-57 retry from the branch's tip: if the
+   * throw came before a request (a config read, a re-derive), it re-sends the
+   * same prefix; if it came mid-batch, the calls that had no result now carry
+   * {@link FAILED_CALL}, so the model sees which ones did not land and decides
+   * what to redo — no call is silently re-run. `streaming` is already reset by
+   * the request's own `finally`; a stale `abortController` is harmless (the
+   * next request replaces it). The failure is not counted toward the halt
+   * breaker, which measures provider failures, not ours.
+   */
+  private failTurn(err: unknown, gen: number, opening = false): void {
+    this.reportInternal("turn failed on an unexpected error", err, "error");
+    if (gen !== this.turnGen) return;
+    // Stuck = still `running`; or any throw in the prelude. The prelude is
+    // where an entry point consumes its card and writes (the rule on
+    // `advance`), so whatever status it left — the rest it was opened from, a
+    // card status with the card already taken — is not a rest anyone can act
+    // on, and the loop never ran to replace it.
+    const stuck = opening || this.status === "running";
+    if (!stuck) return;
+    if (this.stopScope) {
+      try {
+        this.settleStopped();
+        return;
+      } catch (settleErr) {
+        // Fall through to the failure below: at rest either way, never left
+        // `running` because the stop's own tidy-up broke.
+        this.stopScope = null;
+        this.reportInternal("could not settle the stopped turn", settleErr, "error");
+      }
+    }
+    try {
+      this.closeDanglingCalls(FAILED_CALL);
+    } catch (closeErr) {
+      // The tree may be what broke. Leave the calls open: `takeTurn` heals the
+      // tip at the next turn (SKIPPED_CALL), so Retry and a send still work.
+      this.pendingToolCalls = [];
+      this.reportInternal("could not close the failed turn's open calls", closeErr, "error");
+    }
+    // At rest *before* anyone hears about it: a listener that throws on the
+    // `error` below must not leave the turn `running` after all.
+    this.retryable = true;
+    this.status = "idle";
+    const detail = err instanceof Error ? err.message : String(err);
+    try {
+      this.emit({
+        type: "error",
+        message: `This turn stopped on an internal error: ${detail}. Retry to carry on from here.`,
+        retryable: true,
+      });
+    } catch (emitErr) {
+      this.reportInternal("could not announce the failed turn", emitErr, "error");
     }
   }
 
@@ -2830,9 +3229,28 @@ export class Session {
       this.status = "queued";
       return;
     }
-    this.queue.shift();
-    this.emit({ type: "queue", queue: [...this.queue] });
-    await this.openTurn(next.text, { human, inbound: next.inbound });
+    const gen = this.turnGen;
+    try {
+      // Taken off inside the guard: a listener throwing on this announcement
+      // is a refusal before the turn opened like any other — requeued below.
+      this.queue.shift();
+      this.emit({ type: "queue", queue: [...this.queue] });
+      await this.openTurn(next.text, { human, inbound: next.inbound, unsent: next });
+    } catch (err) {
+      // Refused before the turn opened (D-99) — `openTurn` resolves the model
+      // before it appends anything, and a turn that did open has `advance`'s
+      // backstop. The message goes back at the head, not on the floor: it may
+      // be a sub-agent's "finished" notice, the parent's only signal (D-88).
+      // It stays put until the next trigger (a settle, a new message, a model
+      // pick) — nothing here drains again, so a head that always throws
+      // cannot spin. Said aloud, and logged; not rethrown into a caller (a
+      // settle tail, the coordinator) that could do nothing more with it.
+      if (gen !== this.turnGen) throw err;
+      this.requeueUnsent(next);
+      const detail = err instanceof Error ? err.message : String(err);
+      this.emit({ type: "error", message: `A queued message could not be sent yet and is still queued: ${detail}` });
+      this.reportInternal("queued message could not open a turn", err, "error");
+    }
   }
 
   // ---- The shared todo list (X-31): state folded from ops on this branch.
@@ -3028,16 +3446,19 @@ export class Session {
       throw err;
     }
     this.takeTurn(); // the retried turn owns the pin from here
-    // Who opened the retried turn, for an `ask` with no `to` (P9d): its last
-    // user entry — the message the failed request was answering.
-    const opener = pathToLeaf(this.conversation, this.turnLeaf)
-      .reverse()
-      .find((e) => e.type === "user");
-    this.turnByHuman = !(opener?.type === "user" && opener.inbound);
-    this.retryable = false;
-    this.consecutiveFailures = 0;
-    this.stopScope = null;
-    await this.advance();
+    // The heal and the rest run under the backstop (D-99), in their old order.
+    await this.advance(() => {
+      this.healTip();
+      // Who opened the retried turn, for an `ask` with no `to` (P9d): its last
+      // user entry — the message the failed request was answering.
+      const opener = pathToLeaf(this.conversation, this.turnLeaf)
+        .reverse()
+        .find((e) => e.type === "user");
+      this.turnByHuman = !(opener?.type === "user" && opener.inbound);
+      this.retryable = false;
+      this.consecutiveFailures = 0;
+      this.stopScope = null;
+    });
   }
 
   private async oneAssistantTurn(): Promise<AssistantResult | undefined> {

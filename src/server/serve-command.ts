@@ -89,7 +89,8 @@ export async function runServe(args: string[]): Promise<number> {
   // the defect. Skipped under the fake driver so offline tests never touch the
   // network (they get the fallback, which is a real window).
   const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
-  const factoryDeps = { paths, cwd, makeDriver, mcpTools: () => mcp.tools(), catalog, resolveBinding: resolveConfig };
+  const log = createLogger({ dir: paths.logsDir });
+  const factoryDeps = { paths, cwd, makeDriver, mcpTools: () => mcp.tools(), catalog, resolveBinding: resolveConfig, logger: log };
   const newSession = createSessionFactory(factoryDeps);
   // How a `jlcode config model` switch reaches a thread that is already open
   // (X-40, D-82a): the server re-resolves at the top of each user turn and hands
@@ -100,7 +101,6 @@ export async function runServe(args: string[]): Promise<number> {
 
   const store = new ConversationStore(paths.conversationsDir);
   const debugJournal = new DebugJournal(paths.logsDir);
-  const log = createLogger({ dir: paths.logsDir });
 
   const config = resolveConfig();
   if (!config) {

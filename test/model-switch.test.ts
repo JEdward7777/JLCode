@@ -1303,8 +1303,10 @@ describe("review round 8: stop during resolveCompaction", () => {
   }
 });
 
-// ---- Review round 10: a throw before the approved tool runs leaves the card's
-// status, which a hard Stop recovers.
+// ---- Review round 10, revised by H-25 (D-99): "remember this root" failing to
+// persist (config.json mid hand-edit) used to leave the card's status for a hard
+// Stop to recover. It no longer strands anything: the root is allowed for this
+// session, the person is told it wasn't remembered, and the approved call runs.
 
 describe("review round 10: approve throws before the tool runs", () => {
   beforeEach(() => {
@@ -1315,13 +1317,26 @@ describe("review round 10: approve throws before the tool runs", () => {
     slowHold = undefined;
   });
 
-  it("a failing onAddRoot leaves awaiting-approval, and a hard Stop recovers the thread", async () => {
+  it("a failing onAddRoot still runs the approved call, says so, and leaves the thread usable", async () => {
     fs.writeFileSync(path.join(dir, "outside.txt"), "outside the fence\n");
-    const app = makeApp(scriptDriver);
+    const deps = { paths, cwd: workspace, makeDriver: scriptDriver, mcpTools: () => [], catalog };
+    const { app, manager } = createServer({
+      resolveConfig: () => resolveForCwd(loadConfig(paths), workspace),
+      newSession: createSessionFactory(deps),
+      listConfigs: () => loadConfig(paths).modelConfigs,
+      store,
+      workingDir: workspace,
+      version: "0.0.0",
+    });
     const first = await post(app, "/chat", { text: "one" });
     const sessionId = first.json.sessionId as string;
     const card = await post(app, "/chat", { text: "outside: read it", sessionId });
     expect(card.json.status).toBe("awaiting-approval");
+    const session = manager.get(sessionId)!;
+    const errors: string[] = [];
+    session.onEvent((e) => {
+      if (e.type === "error") errors.push(e.message);
+    });
 
     // "Remember this root" persists through the config store — make that throw.
     const good = fs.readFileSync(paths.configFile, "utf8");
@@ -1331,13 +1346,17 @@ describe("review round 10: approve throws before the tool runs", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ approve: true, addRoot: true }),
     });
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
     fs.writeFileSync(paths.configFile, good, "utf8");
+    // The out-of-fence read ran — its real result is on the tree — and the
+    // person was told the root was not remembered.
+    const read = session.conversation.entries.find((e) => e.type === "tool" && e.toolCallId === "o1");
+    expect(read).toMatchObject({ isError: false });
+    expect((read as { content: string }).content).toContain("outside the fence");
+    expect(errors).toEqual([expect.stringContaining("couldn't be remembered in config")]);
 
-    const stuck = JSON.parse((await get(app, `/session/${sessionId}/state`)).text) as Record<string, any>;
-    expect(stuck.status).toBe("awaiting-approval"); // not a loop-less "running"
-    const stopped = await post(app, `/session/${sessionId}/stop`, { scope: "hard" });
-    expect(stopped.json.status).toBe("idle");
+    const after = JSON.parse((await get(app, `/session/${sessionId}/state`)).text) as Record<string, any>;
+    expect(after.status).toBe("idle"); // never a card-less "awaiting-approval"
     const again = await post(app, "/chat", { text: "two", sessionId });
     expect(again.status).toBe(200);
     expect(again.json.status).toBe("idle");

@@ -57,8 +57,10 @@ export interface AgentCoordinatorDeps {
   /** Sessions a close took out of the tree — the caller drops them from the
    *  bag (P9f: an agent closing its child has no route to do it for it). */
   onUnloaded?(sessions: Session[]): void;
-  /** Something went wrong starting a turn off the caller's stack. */
-  onError?(err: unknown): void;
+  /** Something went wrong starting a turn off the caller's stack — or, with a
+   *  `context`, a fault the coordinator rode out (an unreadable config store,
+   *  D-99) and only wants on the record. */
+  onError?(err: unknown, context?: string): void;
 }
 
 interface Member {
@@ -164,6 +166,8 @@ export class AgentCoordinator implements AgentHost {
   /** Parents whose subtree changed since the last `subtree` announcement. */
   private readonly dirty = new Set<Member>();
   private flushScheduled = false;
+  /** Inside a streak of unreadable config-store reads (D-99): noted once. */
+  private configStoreFailing = false;
   /** Sessions a close unloaded whose file was still being written, by
    *  conversation id: a reopen before those writes land reads the session's
    *  own copy, not a file that is behind it (P9f). Pruned once written. */
@@ -260,10 +264,24 @@ export class AgentCoordinator implements AgentHost {
     return [tree.root, ...this.descendants(tree.root)];
   }
 
-  /** The config governing a tree's limits: the root's, read live (D-89). */
+  /** The config governing a tree's limits: the root's, read live (D-89).
+   *  A store that cannot be read right now (a config.json mid hand-edit) is not
+   *  a reason to fail the admit, the settle notice or the round brake this
+   *  feeds — they run under the root's held config, as for a deleted one, and
+   *  the fault is noted once per streak (D-99). Unguarded, this dropped a
+   *  sub-agent's "finished" notice on the floor and left the parent waiting. */
   private rootConfig(tree: Tree): ModelConfig {
     const held = tree.root.session.config;
-    return this.deps.listConfigs().find((c) => c.id === held.id) ?? held;
+    let all: ModelConfig[];
+    try {
+      all = this.deps.listConfigs();
+    } catch (err) {
+      if (!this.configStoreFailing) this.deps.onError?.(err, "config store unreadable — agent limits use the root's held config");
+      this.configStoreFailing = true;
+      return held;
+    }
+    this.configStoreFailing = false;
+    return all.find((c) => c.id === held.id) ?? held;
   }
 
   // ---- The tools (AgentHost).

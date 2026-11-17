@@ -24,6 +24,7 @@ import { Sandbox } from "../tools/sandbox.js";
 import { ModeApprovalGate } from "../tools/mode-gate.js";
 import type { Tool } from "../tools/types.js";
 import type { Conversation } from "../conversation/types.js";
+import type { Logger } from "../logger.js";
 
 export interface SessionFactoryDeps {
   paths: JlcodePaths;
@@ -37,6 +38,9 @@ export interface SessionFactoryDeps {
   /** What a branch with no model switch runs under — the folder binding, or
    *  `serve --config`'s pin (D-82a/D-87). Defaults to the binding for `cwd`. */
   resolveBinding?: () => ModelConfig | undefined;
+  /** The diagnostic log (D-11) a session reports what it rode out or died of
+   *  to — an unreadable config store, a turn that threw (D-99). */
+  logger?: Pick<Logger, "error" | "warn">;
 }
 
 export interface WindowResolution {
@@ -162,7 +166,10 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
     const workspaceInstructions = projectInstructionsEnabled(config)
       ? readWorkspaceInstructions(deps.cwd)
       : undefined;
-    return new Session({
+    // Declared ahead so the hook can name the thread; it can fire from inside
+    // the constructor (a resumed switched thread reads the store there).
+    let session: Session | undefined = undefined;
+    session = new Session({
       config,
       driver: deps.makeDriver(config),
       tools,
@@ -208,6 +215,11 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
           );
         }
       },
+      // What the transcript may never show (D-99): logged with the thread it
+      // happened on, the stack carried by the logger's error formatting.
+      onInternalError: (context, err, level) =>
+        deps.logger?.[level](context, { conversationId: session?.conversation.id ?? conversation?.id, err }),
     });
+    return session;
   };
 }

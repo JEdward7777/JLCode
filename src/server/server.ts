@@ -340,7 +340,8 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
         dropFaultListener(s.id);
       }
     },
-    onError: (err) => deps.logger?.error("agent turn failed to start", { err }),
+    onError: (err, context) =>
+      context ? deps.logger?.warn(context, { err }) : deps.logger?.error("agent turn failed to start", { err }),
   });
 
   /**
