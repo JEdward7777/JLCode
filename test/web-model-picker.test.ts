@@ -7,6 +7,8 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  cancelNotice,
+  currentRowTitle,
   confirmFromRefusal,
   crossKeyQuestion,
   editRefusalNotice,
@@ -187,5 +189,51 @@ describe("a row is current only in the server's current group (P9b round 3)", ()
   it("clicking it is a real pick — confirmed against the current group's key — never a no-op", () => {
     expect(planPick(rebound, "opus", "opus")).toEqual({ kind: "confirm", configId: "opus", name: "Opus", from: "bbbb", to: "aaaa" });
     expect(planPick(rebound, "sol", "opus")).toEqual({ kind: "switch", configId: "sol" });
+  });
+});
+
+describe("X-57 — the current row cancels a pending pick", () => {
+  it("is cancel-pending on the current row while a pick is pending, and a no-op without one", () => {
+    expect(planPick(GROUPS, "opus", "opus", "sonnet")).toEqual({ kind: "cancel-pending" });
+    expect(planPick(GROUPS, "opus", "opus", null)).toEqual({ kind: "current" });
+    expect(planPick(GROUPS, "opus", "opus")).toEqual({ kind: "current" }); // the old three-argument call
+  });
+
+  it("only the current row cancels: other rows are still ordinary picks that replace the pending one", () => {
+    expect(planPick(GROUPS, "sonnet", "opus", "sol")).toEqual({ kind: "switch", configId: "sonnet" });
+    expect(planPick(GROUPS, "sol", "opus", "sonnet")).toMatchObject({ kind: "confirm", configId: "sol" });
+    // A pending target that is itself the in-view row (the reader moved
+    // branches mid-turn) is still the current row — clicking it cancels.
+    expect(planPick(GROUPS, "sonnet", "sonnet", "sonnet")).toEqual({ kind: "cancel-pending" });
+  });
+
+  it("the current row's title says so while a pick is pending", () => {
+    const c = { name: "Opus", model: "anthropic/claude-opus-5" };
+    expect(currentRowTitle(c, false)).toBe("Opus — anthropic/claude-opus-5");
+    expect(currentRowTitle(c, true)).toMatch(/cancel the pending model switch/);
+  });
+
+  describe("what a cancel that found nothing pending says", () => {
+    it("says nothing when the cancel worked", () => {
+      expect(cancelNotice({ cancelled: true, pendingConfigId: "sonnet", beforeInView: "opus", afterInView: "opus" })).toBeNull();
+    });
+
+    it("'had already happened' only when the in-view config moved onto the target across the click", () => {
+      expect(cancelNotice({ cancelled: false, pendingConfigId: "sonnet", beforeInView: "opus", afterInView: "sonnet" })).toMatch(
+        /the switch had already happened/,
+      );
+    });
+
+    it("otherwise 'nothing was pending any more' — dropped, cancelled elsewhere, or moved somewhere else", () => {
+      const plain = /nothing was pending any more/;
+      // Dropped with an error, or cancelled in another tab: nothing moved.
+      expect(cancelNotice({ cancelled: false, pendingConfigId: "sonnet", beforeInView: "opus", afterInView: "opus" })).toMatch(plain);
+      // Moved, but not onto the target (another tab switched elsewhere).
+      expect(cancelNotice({ cancelled: false, pendingConfigId: "sonnet", beforeInView: "opus", afterInView: "sol" })).toMatch(plain);
+      // The target was already in view before the click: proves nothing.
+      expect(cancelNotice({ cancelled: false, pendingConfigId: "sonnet", beforeInView: "sonnet", afterInView: "sonnet" })).toMatch(plain);
+      // No target known at all.
+      expect(cancelNotice({ cancelled: false, pendingConfigId: null, beforeInView: null, afterInView: null })).toMatch(plain);
+    });
   });
 });

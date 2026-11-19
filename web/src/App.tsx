@@ -26,6 +26,8 @@ import {
   crossKeyQuestion,
   groupHeading,
   isCurrentRow,
+  cancelNotice,
+  currentRowTitle,
   missingNotice,
   editRefusalNotice,
   refusalBlocksView,
@@ -77,6 +79,7 @@ import {
   sendChat,
   fetchConfigs,
   switchModel as apiSwitchModel,
+  cancelPendingModel,
   modelMissingOf,
   ApiError,
   type ConfigGroup,
@@ -2530,6 +2533,10 @@ function ModelPicker({
    *  top, and a CLI re-bind emits nothing (D-82a). Null in the deleted state. */
   const [currentConfigId, setCurrentConfigId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** What a cancel that found nothing pending says (X-57). Its own state, not
+   *  `error`: the cancel's answer can move the in-view config — the very change
+   *  that clears `error` below — and this must survive it. */
+  const [notice, setNotice] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Extract<PickPlan, { kind: "confirm" }> | null>(null);
   const [busy, setBusy] = useState(false);
   // The confirm can open below the fold of the thread (the deleted-config
@@ -2588,10 +2595,36 @@ function ModelPicker({
     }
   };
 
+  // Clicking the current row while a pick is pending cancels it (X-57). The
+  // in-view id *before* the click is what tells "it landed" from "it was gone".
+  const cancelPending = async () => {
+    const before = viewConfigId;
+    const target = pendingConfigId;
+    setBusy(true);
+    try {
+      const state = await cancelPendingModel(sessionId);
+      onState(state);
+      const said = cancelNotice({
+        cancelled: state.cancelled,
+        pendingConfigId: target,
+        beforeInView: before,
+        afterInView: state.inViewConfigId ?? null,
+      });
+      if (said) setNotice(said);
+      else onDone?.();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const pick = (c: { id: string; name: string }) => {
-    const plan = planPick(groups ?? [], c.id, currentConfigId);
+    const plan = planPick(groups ?? [], c.id, currentConfigId, pendingConfigId);
     setError(null);
+    setNotice(null);
     if (plan.kind === "current") return onDone?.();
+    if (plan.kind === "cancel-pending") return void cancelPending();
     if (plan.kind === "confirm") return setConfirm(plan);
     if (plan.kind === "unknown") {
       // The row is stale — the config left the list since it was fetched.
@@ -2620,7 +2653,7 @@ function ModelPicker({
                 className={`mp-row ${isCurrent ? "on" : ""} ${confirm?.configId === c.id ? "confirming" : ""}`}
                 disabled={busy}
                 onClick={() => pick(c)}
-                title={`${c.name} — ${c.model}`}
+                title={isCurrent ? currentRowTitle(c, pendingConfigId !== null) : `${c.name} — ${c.model}`}
               >
                 <span className="mp-name">{c.name}</span>
                 <span className="mp-model">{c.model}</span>
@@ -2645,6 +2678,7 @@ function ModelPicker({
         </div>
       ))}
       {error && <div className="mp-error">{error}</div>}
+      {notice && <div className="mp-notice" role="status">{notice}</div>}
     </div>
   );
 }

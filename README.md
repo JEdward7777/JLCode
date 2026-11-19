@@ -282,7 +282,8 @@ key's last four characters. Your thread's own key comes first.
 - **A model on a different key** first asks, inline and every time, naming both
   keys.
 - **While the thread is busy**, the pick shows as pending on the chip and takes
-  effect when the current turn ends.
+  effect when the current turn ends. Changed your mind? Click the model you're
+  already on, and the pending pick is cancelled.
 
 From then on that thread (and anything forked below the switch) keeps its model,
 whatever the folder's binding later says. The transcript marks the point:

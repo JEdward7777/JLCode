@@ -3,7 +3,7 @@
  *
  * The picker lists every model config **grouped by key** — the thread's own
  * group first — and a pick is one of three things: the config already in force
- * (nothing to do), one under the same key (one click), or one under **another
+ * (nothing to do — or, while a pick is pending, cancel it), one under the same key (one click), or one under **another
  * key**, which confirms inline naming both fingerprints, **every time** (Q3: no
  * "don't ask again"). There is deliberately no fit or cost line anywhere in
  * here (Q4): over-window and spend surface at send time, as they always have.
@@ -34,6 +34,8 @@ export function groupHeading(g: Pick<ConfigGroup, "fingerprint" | "configs">): s
 export type PickPlan =
   /** The config already governing this thread — nothing to switch. */
   | { kind: "current" }
+  /** The current row while a pick is pending: cancel that pick (X-57). */
+  | { kind: "cancel-pending" }
   /** Same key: POST at once. */
   | { kind: "switch"; configId: string }
   /** Another key: confirm first, naming both. `from` null = unknown key. */
@@ -52,14 +54,25 @@ export type PickPlan =
  * group the server marked `current`; with no such group (the server could not
  * name the thread's key) every pick is treated as cross-key, because a
  * confirmation nobody needed beats a key change nobody confirmed (D-90).
+ *
+ * `pendingConfigId` is a pick made while busy, not yet landed. Clicking the
+ * current row then means "never mind": it cancels that pick (X-57, amending
+ * D-91's no-op) rather than closing as if accepted while the switch still lands.
  */
-export function planPick(groups: readonly ConfigGroup[], configId: string, currentConfigId: string | null): PickPlan {
+export function planPick(
+  groups: readonly ConfigGroup[],
+  configId: string,
+  currentConfigId: string | null,
+  pendingConfigId: string | null = null,
+): PickPlan {
   const group = groups.find((g) => g.configs.some((c) => c.id === configId));
   if (!group) return { kind: "unknown" };
   // Guarded by the group as well: the id and the group both come from the same
   // `/configs` answer and should agree, but a row outside the current group is
   // an ordinary pick (one that pins it), never a silent no-op.
-  if (isCurrentRow(group, configId, currentConfigId)) return { kind: "current" };
+  if (isCurrentRow(group, configId, currentConfigId)) {
+    return pendingConfigId === null ? { kind: "current" } : { kind: "cancel-pending" };
+  }
   if (group.current) return { kind: "switch", configId };
   const from = groups.find((g) => g.current)?.fingerprint ?? null;
   const name = group.configs.find((c) => c.id === configId)!.name;
@@ -70,6 +83,33 @@ export function planPick(groups: readonly ConfigGroup[], configId: string, curre
  *  the server marked current — see {@link planPick}. */
 export function isCurrentRow(group: Pick<ConfigGroup, "current">, configId: string, currentConfigId: string | null): boolean {
   return group.current && configId === currentConfigId;
+}
+
+/** The current row's title while a pick is pending (X-57) — the only sign
+ *  that clicking it does something; there is no other cancel affordance. */
+export function currentRowTitle(c: { name: string; model: string }, pending: boolean): string {
+  const base = `${c.name} — ${c.model}`;
+  return pending ? `${base}\nclick to cancel the pending model switch` : base;
+}
+
+/**
+ * What to say when a cancel found nothing pending (`cancelled: false`, X-57).
+ * The pick may have landed, been dropped with an error, or been cancelled in
+ * another tab — and only the first is worth naming. It is claimed **only** when
+ * the in-view config moved *onto* the pending target across the click: before
+ * it was something else, after it is the target. A target that was already in
+ * view (the reader moved branches mid-turn) proves nothing, so it gets the
+ * plain answer. Null when the cancel worked — nothing to say.
+ */
+export function cancelNotice(p: {
+  cancelled: boolean;
+  pendingConfigId: string | null;
+  beforeInView: string | null;
+  afterInView: string | null;
+}): string | null {
+  if (p.cancelled) return null;
+  const landed = p.pendingConfigId !== null && p.beforeInView !== p.pendingConfigId && p.afterInView === p.pendingConfigId;
+  return landed ? "Too late to cancel — the switch had already happened." : "Nothing to cancel — nothing was pending any more.";
 }
 
 /** The inline confirm's sentence for a cross-key pick — both keys named. */

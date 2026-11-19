@@ -17,7 +17,7 @@
  * Tier 0: fake drivers record every request, so "the thread runs on Sonnet" is
  * asserted on the wire rather than on a label.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -31,7 +31,7 @@ import { resolvePaths, type JlcodePaths } from "../src/paths";
 import { newConversation, appendEntry, governingSwitch } from "../src/conversation/tree";
 import { buildWireMessages, pinnedProvider } from "../src/conversation/wire";
 import { Session } from "../src/session/session";
-import { isCurrentRow, planPick } from "../web/src/model-picker";
+import { cancelNotice, isCurrentRow, planPick } from "../web/src/model-picker";
 import type { ChatRequest, LlmDriver, StreamEvent } from "../src/llm/types";
 import type { ModelConfig } from "../src/config/types";
 
@@ -220,7 +220,7 @@ function makeApp(
 ) {
   const deps = { paths, cwd: workspace, makeDriver, mcpTools: () => [], catalog };
   const retarget = createSessionRetarget(deps);
-  return createServer({
+  const server = createServer({
     resolveConfig: () => resolveForCwd(loadConfig(paths), workspace),
     newSession: createSessionFactory(deps),
     retargetSession: (session, config) => {
@@ -232,8 +232,13 @@ function makeApp(
     store,
     workingDir: workspace,
     version: "0.0.0",
-  }).app;
+  });
+  lastManager = server.manager;
+  return server.app;
 }
+
+/** The last {@link makeApp}'s session manager, for a test that watches events. */
+let lastManager: ReturnType<typeof createServer>["manager"];
 
 type App = ReturnType<typeof makeApp>;
 
@@ -1582,5 +1587,123 @@ describe("P9b round 4 — `/configs` is the picker's one source of truth for cur
     const r = await configsOf(app, sessionId);
     expect(r.groups.flatMap((g) => g.configs).some((c) => c.id === r.currentConfigId)).toBe(false);
     expect(r.groups.some((g) => g.current)).toBe(false);
+  });
+});
+
+describe("X-57 — cancelling a pending pick", () => {
+  // `scriptDriver` reads module-level knobs; reset them here so each test
+  // stands alone under `-t` rather than inheriting an earlier describe's.
+  beforeEach(() => {
+    failing = new Set();
+    askRounds = 1;
+    duringAnswer = undefined;
+    titleHold = undefined;
+    slowHold = undefined;
+  });
+
+  async function del(app: App, url: string) {
+    const res = await app.request(url, { method: "DELETE" });
+    return { status: res.status, json: (await res.json()) as Record<string, any> };
+  }
+  const switchesOf = async (app: App, sessionId: string) =>
+    (await treeOf(app, sessionId)).entries.filter((e) => e.type === "model-switch").map((e) => e.configId);
+
+  it("cancels a pending pick (with the event) and nothing lands at the idle point", async () => {
+    const app = makeApp(askDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    const seen: unknown[] = [];
+    lastManager.get(sessionId)!.onEvent((e) => e.type === "model-switch-pending" && seen.push(e.pending));
+
+    const pick = await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    expect(pick.json.switch).toBe("pending");
+    const cancel = await del(app, `/session/${sessionId}/model/pending`);
+    expect(cancel.status).toBe(200);
+    expect(cancel.json.cancelled).toBe(true);
+    expect(cancel.json.pendingModelSwitch).toBeNull();
+    expect(cancel.json.status).toBe("awaiting-input"); // the turn is untouched
+    expect(seen.at(-1)).toBeNull();
+
+    const done = await post(app, `/session/${sessionId}/answer`, { text: "prod" });
+    expect(done.json.status).toBe("idle");
+    expect(done.json.model).toBe(OPUS);
+    expect(await switchesOf(app, sessionId)).toEqual([]);
+  });
+
+  it("nothing pending is an answer, not an error; an unknown session is a 404", async () => {
+    const app = makeApp(plainDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    const none = await del(app, `/session/${sessionId}/model/pending`);
+    expect(none.status).toBe(200);
+    expect(none.json.cancelled).toBe(false);
+    expect(none.json.inViewConfigId).toBe(seeded.opus.id);
+    expect((await del(app, "/session/nope/model/pending")).status).toBe(404);
+  });
+
+  it("leaves the queue and the running turn alone", async () => {
+    const app = makeApp(askDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    const queued = await post(app, `/session/${sessionId}/queue`, { text: "later" });
+    expect(queued.json.queue).toHaveLength(1);
+
+    const session = lastManager.get(sessionId)!;
+    expect(session.cancelPendingSwitch()).toBe(true);
+    expect(session.cancelPendingSwitch()).toBe(false); // once
+    expect(session.queuedMessages).toHaveLength(1);
+    expect(session.status).toBe("awaiting-input");
+
+    await post(app, `/session/${sessionId}/answer`, { text: "prod" });
+    // The paused turn and the queued one after it both ran on the old model.
+    await vi.waitFor(() => expect(session.status).toBe("idle"));
+    expect(session.queuedMessages).toHaveLength(0);
+    expect(calls.map((r) => r.model).every((m) => m === OPUS)).toBe(true);
+    expect(await switchesOf(app, sessionId)).toEqual([]);
+  });
+
+  it("a cap-blocked turn (idle, not an idle point): cancel works and nothing lands on the raise", async () => {
+    const app = makeApp(scriptDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    await post(app, "/chat", { text: "ask: two", sessionId });
+    await post(app, `/session/${sessionId}/cap`, { capUsd: 0 });
+    const blocked = await post(app, `/session/${sessionId}/answer`, { text: "x" });
+    expect(blocked.json.capReached).toBe(true);
+    expect(blocked.json.status).toBe("idle");
+    expect(lastManager.get(sessionId)!.atIdlePoint).toBe(false);
+
+    const pick = await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    expect(pick.json.switch).toBe("pending");
+    const cancel = await del(app, `/session/${sessionId}/model/pending`);
+    expect(cancel.json.cancelled).toBe(true);
+
+    const n = calls.length;
+    const raised = await post(app, `/session/${sessionId}/cap`, { capUsd: null });
+    expect(calls[n]!.model).toBe(OPUS); // the resumed turn
+    expect(raised.json.pendingModelSwitch).toBeNull();
+    expect(raised.json.model).toBe(OPUS);
+    expect(await switchesOf(app, sessionId)).toEqual([]);
+  });
+
+  it("too late: the pick already landed — the answer lets the browser say so", async () => {
+    const app = makeApp(askDriver);
+    const first = await post(app, "/chat", { text: "one" });
+    const sessionId = first.json.sessionId as string;
+    const pick = await post(app, `/session/${sessionId}/model`, { configId: seeded.sonnet.id });
+    const before = pick.json.inViewConfigId as string;
+    await post(app, `/session/${sessionId}/answer`, { text: "prod" }); // idle point: it lands
+    const late = await del(app, `/session/${sessionId}/model/pending`);
+    expect(late.json.cancelled).toBe(false);
+    expect(late.json.inViewConfigId).toBe(seeded.sonnet.id);
+    expect(
+      cancelNotice({
+        cancelled: late.json.cancelled,
+        pendingConfigId: seeded.sonnet.id,
+        beforeInView: before,
+        afterInView: late.json.inViewConfigId,
+      }),
+    ).toMatch(/the switch had already happened/);
   });
 });

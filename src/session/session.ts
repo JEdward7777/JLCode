@@ -895,6 +895,16 @@ export class Session {
     return "pending";
   }
 
+  /** Drop a pick made while busy, before it lands (X-57) — picking the row
+   *  the thread is already on. True when something was pending; false is not
+   *  an error: the pick may have landed, been dropped, or been cancelled
+   *  elsewhere already. Leaves the queue and any running turn alone. */
+  cancelPendingSwitch(): boolean {
+    if (!this.pendingSwitch) return false;
+    this.clearPendingSwitch();
+    return true;
+  }
+
   private clearPendingSwitch(): void {
     if (!this.pendingSwitch) return;
     this.pendingSwitch = undefined;

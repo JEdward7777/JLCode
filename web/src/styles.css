@@ -2367,6 +2367,7 @@ button.model-chip.missing {
   color: #fff;
 }
 .mp-loading,
+.mp-notice,
 .mp-error {
   font-size: 12px;
   color: var(--muted);

@@ -1916,3 +1916,28 @@ mean hiding a running session from the rail, which is worse.
 - **Live update (round-2 reviewer):** with a tab left open and no reload, agent-1's row went from CODE to PLAN when the root set it.
 
 **Caught by looking:** with "needs approval" showing, the mode label wrapped to a third line. The model label now gives way first (`p9f2-rail-mode` reads "needs approval · peek/… · CODE" on one line).
+
+## X-57 — the current row cancels a pending model pick · 2026-11-19 · ✅ looked good
+
+**Setup:** fake driver, plus a second same-key config ("Peek B") in the peek's temp `config.json`.
+The implementer peeked on 7871/9471, and the R1 reviewer on 7872/9472. Chrome was reached through a
+`google-chrome` symlink to Playwright's chromium (H-28). I looked at `x57-pending-picker.png` and
+`x57-cancelled.png` myself.
+
+**Confirmed by eye:**
+- **`x57-busy`:** a `run: echo hi` turn waits on manual approval. The chip reads `peek/model`.
+- **`x57-pending-picker`:** after picking Peek B mid-turn, the chip reads `peek/model ▾ → Peek B · pending`.
+  The reopened picker tags Peek "current" and Peek B "pending".
+- **`x57-cancelled`:** clicking the current (Peek) row closed the popover, and the pending suffix is gone.
+  The approval card is still waiting. Server state: `pendingModelSwitch` null.
+- **`x57-turn-ended`:** after Approve, the turn ended on `peek/model`, with no model-switch entry in the
+  transcript.
+- **The R1 reviewer's own peek** saw the same flow with a `write:` turn, and a `DELETE` with nothing
+  pending answering `cancelled:false`.
+
+**Not seen:**
+- The row's title tooltip; headless shots don't render native tooltips.
+- The `cancelled:false` notices in the browser; peek can't stage that race.
+
+Both are covered at Tier-0.
+

@@ -24,7 +24,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57; X-59 ✅, X-60 ✅).** **Next free ids: D-102, X-61, H-28.**
+> **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57 — all ✅, run complete).** **Next free ids: D-103, X-61, H-29.**
 >
 > Joshua asked for X-59, X-60 and X-57, in that order, through the ratchet, with the plan ratcheted first.
 > The plan is in "Phase 9 follow-ups" below and took five review rounds, R5 CLEAN. Joshua's calls:
@@ -44,10 +44,16 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > Re-record cost **$0.0029**, so total spend is **$0.0118**. P9g went from 52 to 40 calls, and 29 orphans were pruned.
 > Build + free tiers green: **1315**.
 >
-> **Resume checklist if interrupted:**
-> 1. **X-57:** a free slice, with a peek. Peek ports from 7871/9471 upward.
+> **X-57 ✅ (D-102, amends D-91):** while a pick is pending, clicking the current row cancels it, through
+> `DELETE /session/:id/model/pending`. Two code rounds. R1 found an order-dependent test. Peeked by the
+> implementer and the R1 reviewer (VISUAL-LOG "X-57"). The README picker bullet now mentions it.
+> Build + free tiers green: **1326**.
 >
-> Stop at the end of X-57, or if the $1 cap nears.
+> **Run total: $0.0118 of the $1 grant**, which is now spent and closed. Filed during the run: **H-26** (four old orphan fixtures,
+> to prune when G-01 is spent), **H-27** (a Stop in the post-turn title window can drain a parked
+> notice), and **H-28** (the peek tool can't find Chrome here).
+>
+> **Next:** the post-v1 backlog. H-27 is small and pairs with H-25's leftovers.
 
 > **Resume block — 2026-11-17 (H-25 ✅ — closes H-11).** **Next free ids: D-100, X-61, H-26.**
 >
@@ -2382,7 +2388,7 @@ child question routed to its parent, a cross-model switch mid-thread and back vi
 spawned in ask then loosened by its parent (`set_agent_mode`, P9f2). Record what
 the models actually did with the tool descriptions.
 
-## Phase 9 follow-ups — X-59, X-60, X-57 (planned 2026-11-19, run as the ratchet; plan reviewed in five rounds, R5 CLEAN)
+## Phase 9 follow-ups — X-59, X-60, X-57 (planned 2026-11-19, run as the ratchet; plan reviewed in five rounds, R5 CLEAN) ✅ **all three shipped 2026-11-19**
 
 Joshua asked for these three, **in this order**, through the ratchet (`pipelines/ratchet.md`). Each
 slice has its own implementer, its own review loop and its own commit, and is pushed before the
@@ -2487,7 +2493,7 @@ the root then asked again, costing about 3 extra calls per tree.
 **Success criterion for the recording:** in scenarios (a), (b) and (e), the root sends no "please
 provide/send the results" message to a child whose notice said it had sent messages.
 
-### X-57 — a pending model pick can't be cancelled (UI, Tier-0 + peek, free)
+### X-57 — a pending model pick can't be cancelled (UI, Tier-0 + peek, free) ✅ *(2026-11-19, D-102 — two code rounds, R2 CLEAN; peeked)*
 
 **Joshua's call:** while a pick is pending, clicking the row the thread is already on cancels the pending pick.
 
@@ -2510,6 +2516,13 @@ provide/send the results" message to a child whose notice said it had sent messa
 **Out of scope for all three:** H-24(c), the same cancel semantics for the *mode* toggle. It is noted as related, not built.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-28 — the peek tool can't find Chrome on this machine.** Found 2026-11-19 building X-57. **OPEN.**
+  `harness/peek/peek.mjs` crashes with an unhandled `spawn google-chrome ENOENT` when only Playwright's
+  chromium (`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`) is installed. The workaround is a
+  `google-chrome` symlink on `PATH`. Fix: a Chrome-path env override plus a Playwright-cache fallback, and
+  a clear error in place of the unhandled one. One first `shot` also timed out once on `Page.navigate`
+  (20s), and the retry worked.
 
 - **H-27 — a Stop can let a parked notice open a turn.** Found 2026-11-19 by the X-60 review (R2). **OPEN.**
   `runLoop`'s final-answer exit never re-checks `stopScope`. `status` is already `idle` across the

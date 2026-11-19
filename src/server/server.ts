@@ -660,6 +660,17 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json({ ...stateOf(session), switch: result });
   });
 
+  // Cancel a pick made while busy (X-57): picking the current row while one is
+  // pending. Synchronous — nothing is awaited before the cancel, so an idle
+  // point can't slip in between. `cancelled: false` is an answer, not an error:
+  // the pick may have landed already, and the state says which model governs.
+  app.delete("/session/:id/model/pending", (c) => {
+    const session = manager.get(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const cancelled = session.cancelPendingSwitch();
+    return c.json({ ...stateOf(session), cancelled });
+  });
+
   app.get("/sessions", (c) =>
     c.json({
       sessions: manager.list().map((s) => ({

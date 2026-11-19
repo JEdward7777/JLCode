@@ -839,6 +839,18 @@ export async function switchModel(
   });
 }
 
+/** Cancel a pick made while busy (X-57). `cancelled` false is not an error:
+ *  the pick may have landed or been dropped already — the state says which
+ *  model the branch in view now runs. */
+export async function cancelPendingModel(id: string): Promise<SessionState & { cancelled: boolean }> {
+  const res = await fetch(`/session/${id}/model/pending`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new ApiError(err.error ?? `request failed (${res.status})`, res.status, err);
+  }
+  return await res.json();
+}
+
 /** Pencil-edit a message: fork a sibling with new text and run a turn (D-17). */
 export async function editFork(id: string, entryId: string, text: string): Promise<void> {
   await postJson(`/session/${id}/edit`, { entryId, text });
