@@ -2357,6 +2357,133 @@ child question routed to its parent, a cross-model switch mid-thread and back vi
 spawned in ask then loosened by its parent (`set_agent_mode`, P9f2). Record what
 the models actually did with the tool descriptions.
 
+## Phase 9 follow-ups — X-59, X-60, X-57 (planned 2026-11-19, run as the ratchet; plan reviewed in five rounds, R5 CLEAN)
+
+Joshua asked for these three, **in this order**, through the ratchet (`pipelines/ratchet.md`). Each
+slice has its own implementer, its own review loop and its own commit, and is pushed before the
+next slice starts. **Next free ids at the start: D-100, X-61, H-26.** **Baseline: 1295 green across 90
+test files** (2026-11-19, on `942a171`).
+
+**Joshua's calls (2026-11-19):**
+- X-57: picking the current row cancels a pending pick, with no new UI.
+- Paid re-recording of the P9c/P9g live fixtures is approved for X-59 and X-60, capped at **$1
+  in total** across the run. Expected spend is about 1¢ per re-record.
+
+**The paid step (X-59, X-60).** Both slices change bytes that the recorded requests hash: tool
+descriptions and tool results for X-59, notice text for X-60. So `test/agents-live.test.ts` and
+`test/agents-p9g-live.test.ts` fail with "stale fixture" until they are re-recorded. A slice
+cannot commit red, so each of these slices runs this way:
+1. **Implement.** The implementer builds, adds Tier-0 tests, and runs `npm run build && npm test`.
+   The *only* allowed failures are the stale-fixture misses in those two files. It lists them by
+   test name.
+2. **Review the code** in the normal loop, with the same allowance, until a round comes back CLEAN.
+3. **The coordinator re-records.** Subagents never run the paid tier. The command is
+   **one file per command**: `JLCODE_LIVE=1 npx vitest run test/agents-live.test.ts`, then the same for
+   `test/agents-p9g-live.test.ts`. **Snapshot**
+   `git status --porcelain --untracked-files=all test/fixtures/llm-cache` before each command (scoped
+   to that path, because the tree holds Joshua's untracked files). A file's writes are only the entries
+   added since its snapshot. Use that set for both spend and pre-retry deletion, so the second file never
+   counts or deletes the first file's fixtures.
+   - Spend is the sum of `usage.costUsd` over the new fixture files.
+   - Running total is kept against the $1 cap.
+   - A live run can fail on model nondeterminism (the assertions are weak properties). A failed run has already written its responses to the cache, so a plain re-run replays the same failure for $0.
+   - So before a retry, delete the **untracked** fixtures that the failed file's command wrote, found by `git status` as above. Count their `costUsd` toward the cap anyway.
+   - At most one retry per file per re-record. Two failures in a row → stop and report.
+   - **Diagnose before retrying.** Read the failed run's recorded calls first. Retry only when the failure is model variance unrelated to the slice. If the slice's change steered the model wrong (e.g. a lenient match accepted a mistaken `model` and the child landed on the wrong config), that is a product finding: stop, report, and don't spend the retry.
+4. **Prune orphans.** These are tracked fixtures that no test reads any more.
+   - X-59 adds a test-helper-only switch to `test/helpers/live.ts`: `JLCODE_CACHE_LOG=<file>`. It appends one line per cache access, `hit|miss|write` and the address, through a wrapper around `LlmCache` in the helper. `src/` is untouched.
+   - **Baseline first, per slice.** Before the slice's re-record, the coordinator takes two logged runs and saves the results:
+     - a full `npm test`, giving the **baseline orphan set** (tracked fixtures that nothing reads);
+     - `npx vitest run test/agents-live.test.ts test/agents-p9g-live.test.ts`, giving the **agent files' addresses**.
+   - Which tree each baseline runs on:
+     - **X-59:** `942a171` plus *only* the helper change. Before the X-59 implementer starts, the coordinator applies that change itself, so the baseline is free of product changes. It stays uncommitted and goes into X-59's commit.
+     - **X-60:** the committed, re-recorded X-59 tree, re-taken at X-60's start.
+   - The baseline is known to hold 4 orphans from `e6c09ca` (P6c Fable/BLUEJAY), plus one passing miss in `fable-live` case (b). That miss is **G-01**, whose grant is unspent.
+   - After a re-record, take one more logged full `npm test`. It is the green check, and it gives "orphans now". Prune = (orphans now) − (baseline orphans). That set must be a subset of the two agent files' baseline addresses. If it is not, stop: it is a method bug, not a deletion.
+   - **Never touch** the baseline orphans or G-01's fixtures. The 4 old orphans are filed as **H-26**, not pruned here.
+5. **A final fresh reviewer runs on the re-recorded tree.** It checks that the suite is green and reads the new recordings
+   for the slice's **success criterion** (below). Wording changes from this review cost another
+   re-record. That is fine under the cap, but the reviewer should ask for one only on a real defect.
+
+### X-59 — the model passes the wrong thing as `spawn_agent`'s `model`
+
+**Problem** (DECISIONS X-59): gpt-4o-mini passed `"default"` and once a raw slug (`openai/gpt-4.1-nano`),
+where `pickConfig` (`src/session/agents.ts`) wants a config *name*. Each mistake cost a billed
+recovery call.
+
+**Build — be lenient where the meaning is unambiguous, and say so:**
+- **A model id among same-key configs.** After name matching (exact, then case-insensitive, then config `id`, as `byName` does today) fails, try a case-insensitive `c.model` match among `same`.
+  - Exactly one hit → use it.
+  - Several, and one of them is the caller's own config (`c.id === session.config.id`, the identity `listModels` marks "(your own)") → use the caller's own.
+  - Several otherwise → refuse, naming the matching config names ("… is the model of several configs: "A", "B" — pass one name").
+- **"default" is *not* made lenient** (plan review R4). In P9g (a) the model was asked for the *other* config. Mapping "default" to its own config would silently hide that mistake, where today's refusal let it recover. Instead:
+  - The descriptions stop using the word "default". The `model` parameter's `(default: your own)` becomes "omit it for your own model", and the `mode` parameter's `(default: your own mode)` becomes "omit it for your own mode", for one consistent wording.
+  - A refused `"default"` (case-insensitive, with no config by that name) gets a specific refusal: `"default" is not a model config name — omit \`model\` to use your own model ("<own name>"), or pass one of: <allowed>.`
+  - If the caller's own config is gone, the hint drops the `("<own name>")` part and keeps the `allowed` list.
+  - The refusal costs one recovery call, as today. The D-row records why "default → own" was rejected: it would let P9g (a) hide a wrong pick.
+- **Order:** same-key name match (today's `byName`) → same-key model-id match → the existing refusals: cross-key via `elsewhere`, which also matches by model id and reports the first match; then the "default" refusal; then not-found.
+- **Cross-key.** A slug that matches only another key's config keeps the existing cross-key refusal. Extend `elsewhere` to match by model too, so the error stays specific.
+- **Descriptions** (`src/tools/agent-tools.ts`). Leniency is announced **only** in the tool descriptions. `spawn_agent`'s success text (`Started sub-agent "…" on <name> (<model>)[ in <mode> mode].`) is unchanged. `test/agents.test.ts` asserts the exact cross-key sentence and the `- opus — … (your own)` row, so a format change updates those. `spawn_agent`'s `model` parameter and the sentence in its description say a config **name** from list_models is canonical, and an unambiguous model id also works. `list_models`'s description says the same. Keep them short.
+  - `listModels()`'s output format may stay as it is. If the implementer changes it, it must be for clarity (name first, id labelled), not churn.
+- **Tier-0 tests:** name, case-insensitive name, unique slug, ambiguous slug refused with names, ambiguous slug including own → own, "default" refused with the omit-it hint, a same-key config named "default" is picked, slug on another key → cross-key refusal, unknown → unchanged refusal.
+- **`JLCODE_CACHE_LOG`** in `test/helpers/live.ts`, for the prune step above. It is test-only and has no product effect. The coordinator writes it before the implementer starts, as described above.
+- **P9g scenario (a)'s assertion** `calls(b.root, "spawn_agent").some((a) => a.model?.toLowerCase() === "nano")` in `test/agents-p9g-live.test.ts` assumes a slug is refused and then retried as "nano". With a slug accepted, (a) would fail on re-record. Widen it to accept the name *or* the NANO slug. The existing `child.config.model === NANO` check stays as the outcome check.
+- The ambiguous-model-id refusal lists **same-key** configs only.
+
+**Success criterion for the recording:** in the new P9g recording, no `spawn_agent` call is
+refused for a slug. A "default" refusal may still occur; record it if it does. Also update both
+live files' header comments with the re-record date. If the model still sends a slug, it is accepted.
+
+### X-60 — the finished notice makes the parent ask for results it already has
+
+**Problem** (DECISIONS X-60): `notifyParent` (`src/session/agents.ts`) always says "It does not send
+its results on its own — ask it with send_message if you need them". In scenarios (a), (b) and (e)
+the root then asked again, costing about 3 extra calls per tree.
+
+**Build:**
+- The coordinator counts the messages a child delivered to its parent **since its last notice**.
+  - Count in `send`, after `deliver`, keyed on the **resolved target** (`target === sender.parent`). `resolve` also accepts the parent's *name*, so testing the string `"parent"` would miss those.
+  - Keep the count on the in-memory member. It is reset when a notice goes out.
+  - A child's `ask(to: parent)` question is not results and does not count.
+  - Why "since its last notice", not "this turn": `settled` (and so the notice) fires only when no queued turn opened. A turn that drains straight into the next one therefore carries its count forward, and so do the H-17(b)/(c) paths that skip `settled`. The wording says exactly what is counted.
+- **Exact notice text.** It is `[Sub-agent "<name>" <what><still>. <clause>]`. `<what>` and `<still>` are unchanged from today:
+  - `<what>` is `has finished its turn and is idle`, `stopped on an error and is idle`, or `was stopped by the user`.
+  - `<still>` is empty or ` (N of its own sub-agent(s) is/are still working)`.
+- `<clause>` **replaces** today's "It does not send its results on its own — ask it with send_message if you need them." in **all three** outcomes:
+  - sent 1: `It has sent you 1 message since its last notice, above.`
+  - sent N≥2: `It has sent you N messages since its last notice, above.`
+  - sent 0: `It has not sent you anything since its last notice — ask it with send_message if you need its results.`
+- The clause always comes after `<still>`, so `agentCard`'s regexes in `web/src/agents.ts` keep parsing.
+- The count resets on **every** notice, including a parked stopped one. `deliver` still writes that one into the parent's log, so "since its last notice" stays true.
+- A restart loses the in-memory count, and so does a close and reopen (`revive` builds a fresh `Member`). That is acceptable: the notice falls back to the 0 case, which keeps today's ask-it hint. Note both in the D-row.
+- `spawn_agent`'s description ("it does not send its results unless asked, so say in `task` what to report back with send_message, or ask it afterwards") stays true and stays as it is.
+- **Tier-0 tests:** a notice after a child sent 0, 1 and 2 messages; reset between notices; the parent addressed **by name** counts; ask-to-parent not counted; a message to its own child not counted. (A sibling is unreachable through `resolve`, so there is nothing to test there.)
+
+**Success criterion for the recording:** in scenarios (a), (b) and (e), the root sends no "please
+provide/send the results" message to a child whose notice said it had sent messages.
+
+### X-57 — a pending model pick can't be cancelled (UI, Tier-0 + peek, free)
+
+**Joshua's call:** while a pick is pending, clicking the row the thread is already on cancels the pending pick.
+
+**Build:**
+- **Session.** Add a public `cancelPendingSwitch(): boolean` on `Session` (`src/session/session.ts`). It wraps `clearPendingSwitch` and is true when something was pending. It emits `model-switch-pending: null` as today.
+- **Server.** Add `DELETE /session/:id/model/pending` (`src/server/server.ts`).
+  - 200 with `stateOf(session)` plus `cancelled: boolean`.
+  - It is not an error when nothing was pending. The pick may have landed already, and the answer must let the browser show that.
+  - Calling `flushDurable` is harmless but unnecessary. `app.delete` has a precedent (`/conversation/:id`).
+- **Browser** (`web/src/model-picker.ts`, `App.tsx`).
+  - `planPick` returns `{kind: "cancel-pending"}` when the row is current **and** a pick is pending; plain `current` stays a no-op otherwise. Thread `pendingConfigId` into the plan.
+  - On cancel-pending, send the DELETE and apply the returned state. If `cancelled` is false, that can mean the switch landed, was dropped with an error, or was cancelled in another tab.
+    - Say "the switch had already happened" **only** when the browser's `inViewConfigId` *before* the click differed from the pending target and the returned one equals it. The pending target can already be the in-view row when the reader moved branches mid-turn; there the row shows no pending tag, only the title.
+    - Otherwise say "nothing was pending any more".
+  - While a pick is pending, the current row's title says clicking it cancels the pending switch.
+- **D-91 amendment.** D-91 says "picking the current row is a no-op". Record that X-57 amends it in a new D-row. SPEC doesn't repeat the sentence (checked).
+- **Tier-0 tests:** `planPick`'s cancel-pending; the DELETE route (pending → cancelled + event; nothing pending → `cancelled: false`; unknown session → 404); session `cancelPendingSwitch` leaves the queue and the turn alone; a pending pick cancelled → nothing lands at the idle point; **cap-blocked idle-but-pending** (`status` idle, `atIdlePoint` false): cancel returns true and nothing lands when the cap is raised; the notice helper's before/after rule, including target-already-in-view with nothing cancelled → "nothing was pending any more".
+- **Peek** (VISUAL-LOG "X-57"): a busy thread, a pick shows `→ X · pending`, the current row is clicked and the suffix goes away, and when the turn ends the model is unchanged.
+
+**Out of scope for all three:** H-24(c), the same cancel semantics for the *mode* toggle. It is noted as related, not built.
+
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
 - **H-25 — a turn that throws can't leave a session silently stuck.** Found 2026-11-17 in a real
@@ -2986,7 +3113,7 @@ different wire format (system as a top-level field, content blocks end to end,
 the precedent D-78a already cites: `anthropic-messages.ts` and `openai-chat.ts` are two
 implementations, not one parameterized one. A `provider` enum on `ModelConfig` will read like a
 portability promise; it is worth writing down here that it is not one.
-## X-43 — showing Joshua a file the model never read (designed 2026-09-10, **building**)
+## X-43 — showing Joshua a file the model never read ✅ *(designed and built 2026-09-10, shipped in `982b207`)*
 
 Decision and rationale: **D-83**. The failure that prompted it: `cv_e794cbe415ca`, where a screenshot
 the model had never seen was announced as one it had captured, over a broken image icon.
