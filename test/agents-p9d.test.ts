@@ -253,8 +253,10 @@ describe("the default addressee is whoever opened the current turn", () => {
     expect(toolResults(root).find((t) => t.name === "send_message")!.content).toMatch(/as the answer to its question/);
     expect(child.status).toBe("idle");
     expect(child.queuedMessages).toEqual([]);
-    // The child then carried on and finished, and its parent heard.
-    expect(inbound(root).some((e) => e.inbound!.kind === "finished")).toBe(true);
+    // The child then carried on and finished, and its parent heard. Its
+    // question was not results, so the notice keeps the ask-it hint (X-60).
+    const notice = inbound(root).find((e) => e.inbound!.kind === "finished")!;
+    expect(notice.text).toContain("It has not sent you anything since its last notice");
     // H-10: every request the child made answered every call.
     for (const r of requests) expect(everyCallAnswered(r.messages)).toBe(true);
   });

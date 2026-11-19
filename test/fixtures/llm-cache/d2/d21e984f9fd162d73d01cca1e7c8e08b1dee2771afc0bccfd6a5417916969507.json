@@ -1,1 +1,0 @@
-{"text":"The sub-agent is idle again. If you need any further action, let me know!","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1221,"completionTokens":19,"totalTokens":1240,"cachedTokens":1152,"costUsd":0.00010815}}

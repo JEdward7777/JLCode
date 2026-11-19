@@ -22,7 +22,7 @@
  * ## Recorded through the request-keyed cache (D-24)
  *
  * Recorded once with `JLCODE_LIVE=1 npx vitest run test/agents-p9g-live.test.ts`
- * (paid — Joshua approved P9g 2026-11-12; re-recorded 2026-11-19 for X-59, approved
+ * (paid — Joshua approved P9g 2026-11-12; re-recorded 2026-11-19 for X-59 and X-60, approved
  * with a $1 cap); every run since replays free.
  * Every scenario always runs: there is no "is it recorded?" gate, because a
  * gate hides a stale fixture — an edited tool description or system prompt

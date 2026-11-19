@@ -1,0 +1,1 @@
+{"text":"The color we are using is BLUE.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1598,"completionTokens":9,"totalTokens":1607,"cachedTokens":1536,"costUsd":0.0001299}}

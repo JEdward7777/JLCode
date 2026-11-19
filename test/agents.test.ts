@@ -50,6 +50,7 @@ import type { ChatMessage } from "../src/llm/types";
 import { ModeApprovalGate } from "../src/tools/mode-gate";
 import { agentTools as agentToolsForTest } from "../src/tools/agent-tools";
 import type { AgentHost } from "../src/session/session";
+import { HttpError } from "../src/llm/errors";
 
 const OPUS = "anthropic/claude-opus-5";
 const SONNET = "anthropic/claude-sonnet-5";
@@ -133,6 +134,24 @@ function treeDriver(config: ModelConfig): LlmDriver {
         yield { type: "finish", reason: "tool_calls" };
         return;
       }
+      // `calls:<json>` — one batch of tool calls, args verbatim, so a turn can
+      // send more than one message (X-60's count). `callsfail:<json>` is the
+      // same batch, and the model call after it fails for good.
+      const lastMsg = req.messages[req.messages.length - 1];
+      const opener = [...req.messages].reverse().find((m) => m.role === "user" && typeof m.content === "string");
+      const opened = typeof opener?.content === "string" ? stripEnvironmentDetails(opener.content).trim().replace(HEADER, "").trim() : "";
+      if (lastMsg?.role === "tool" && opened.startsWith("callsfail:")) {
+        throw new HttpError(402, "OpenRouter 402 Payment Required: Insufficient credits");
+      }
+      const batchOf = /^calls(?:fail)?:/.exec(said);
+      if (batchOf) {
+        const calls = JSON.parse(said.slice(batchOf[0].length)) as { name: string; args: unknown }[];
+        for (const [index, c] of calls.entries()) {
+          yield { type: "tool_call", index, id: `calls_${index}`, name: c.name, argsDelta: JSON.stringify(c.args) };
+        }
+        yield { type: "finish", reason: "tool_calls" };
+        return;
+      }
       const held = /^(hold|holdread):(\S+)/.exec(said);
       if (held) {
         await gateFor(held[2]!).promise;
@@ -177,6 +196,8 @@ function editConfig(id: string, patch: Partial<ModelConfig>): void {
 
 /** Gates a running tool has reached — `until` waits on these. */
 let reached: Set<string>;
+/** Pending `until` checks: reaching a gate is no bus frame, so it re-runs them. */
+const rechecks = new Set<() => void>();
 /** A tool that blocks until its gate opens: a long command, without a process. */
 const waitGate: Tool = {
   name: "wait_gate",
@@ -186,6 +207,7 @@ const waitGate: Tool = {
   async execute(args) {
     const g = String(args.gate);
     reached.add(g);
+    for (const check of [...rechecks]) check();
     await gateFor(g).promise;
     return { content: `gate ${g} opened` };
   },
@@ -226,12 +248,15 @@ async function post(app: Server["app"], url: string, body: unknown) {
 function until(manager: SessionManager, pred: () => boolean): Promise<void> {
   return new Promise((resolve) => {
     if (pred()) return resolve();
-    const unsub = manager.subscribe(() => {
+    const check = () => {
       if (pred()) {
         unsub();
+        rechecks.delete(check);
         resolve();
       }
-    });
+    };
+    const unsub = manager.subscribe(check);
+    rechecks.add(check);
   });
 }
 
@@ -259,6 +284,7 @@ beforeEach(() => {
   requests = [];
   gates = new Map();
   reached = new Set();
+  rechecks.clear();
 });
 
 afterEach(async () => {
@@ -740,6 +766,168 @@ describe("spawn_agent's model: a name, or an unambiguous model id (X-59)", () =>
     const { result, children } = await spawnWith("spawn@gpt-9: say hi");
     expect(result.content).toBe('No model config named "gpt-9". Allowed (call list_models for their models): "opus", "sonnet".');
     expect(children).toHaveLength(0);
+  });
+});
+
+describe("the finished notice says what the child already sent (X-60)", () => {
+  const NONE = "It has not sent you anything since its last notice — ask it with send_message if you need its results.";
+  const notices = (s: Session) => inbound(s).filter((e) => e.inbound!.kind === "finished").map((e) => e.text);
+  async function tree(task: string) {
+    seed();
+    const { app, manager, agents } = makeServer();
+    const first = await post(app, "/chat", { text: `spawn: ${task}` });
+    await agents.idle();
+    return { app, manager, agents, root: manager.get(first.json.sessionId as string)! };
+  }
+  const send = (to: string, text: string) => ({ name: "send_message", args: { to, text } });
+
+  it("a child that sent nothing keeps the ask-it hint", async () => {
+    const { root } = await tree("say hi");
+    expect(notices(root)).toEqual([`[Sub-agent "agent-1" has finished its turn and is idle. ${NONE}]`]);
+  });
+
+  it("one message is counted, singular", async () => {
+    const { root } = await tree("msg: parent | the results");
+    expect(notices(root)).toEqual([
+      '[Sub-agent "agent-1" has finished its turn and is idle. It has sent you 1 message since its last notice, above.]',
+    ]);
+  });
+
+  it("two messages are counted, plural — the parent addressed by name counts too", async () => {
+    const { root } = await tree(`calls:${JSON.stringify([send("parent", "part one"), send("root", "part two")])}`);
+    expect(inbound(root).filter((e) => e.inbound!.kind === "message")).toHaveLength(2);
+    expect(notices(root)).toEqual([
+      '[Sub-agent "agent-1" has finished its turn and is idle. It has sent you 2 messages since its last notice, above.]',
+    ]);
+  });
+
+  it("the parent addressed by name alone counts", async () => {
+    const { root } = await tree("msg: root | the results");
+    expect(notices(root)[0]).toContain("It has sent you 1 message since its last notice, above.");
+  });
+
+  it("the count resets with each notice", async () => {
+    const { app, agents, root } = await tree("msg: parent | the results");
+    await post(app, "/chat", { sessionId: root.id, text: "msg: agent-1 | anything else?" });
+    await agents.idle();
+    const [first, second] = notices(root);
+    expect(first).toContain("It has sent you 1 message");
+    expect(second).toBe(`[Sub-agent "agent-1" has finished its turn and is idle. ${NONE}]`);
+  });
+
+  it("a message to its own sub-agent is not counted", async () => {
+    const { app, manager, agents, root } = await tree("spawn: say hi");
+    await post(app, "/chat", { sessionId: root.id, text: "msg: agent-1 | msg: agent-2 | hello down there" });
+    await agents.idle();
+    const child = named(manager, "agent-1")!;
+    expect(toolResults(child).filter((t) => t.name === "send_message").map((t) => t.content)).toEqual(['Sent to "agent-2".']);
+    // One per turn agent-1 came to rest on: its spawn, agent-2's notice, the message.
+    const all = notices(root);
+    expect(all).toHaveLength(3);
+    for (const n of all) expect(n).toContain(NONE);
+  });
+
+  it("the still-working parenthetical comes before the clause", async () => {
+    seed();
+    const { app, manager, agents } = makeServer();
+    const task = `calls:${JSON.stringify([send("parent", "partial"), { name: "spawn_agent", args: { task: "hold:gc" } }])}`;
+    const first = await post(app, "/chat", { text: `spawn: ${task}` });
+    const root = manager.get(first.json.sessionId as string)!;
+    await until(manager, () => notices(root).length > 0);
+    expect(notices(root)[0]).toBe(
+      '[Sub-agent "agent-1" has finished its turn and is idle (1 of its own sub-agent is still working). ' +
+        "It has sent you 1 message since its last notice, above.]",
+    );
+    gateFor("gc").open();
+    await agents.idle();
+    expect(named(manager, "agent-2")!.status).toBe("idle");
+  });
+
+  it("a failed turn's notice counts what it sent before the fault", async () => {
+    const { root } = await tree(`callsfail:${JSON.stringify([send("parent", "before the fault")])}`);
+    expect(notices(root)).toEqual([
+      '[Sub-agent "agent-1" stopped on an error and is idle. It has sent you 1 message since its last notice, above.]',
+    ]);
+  });
+
+  it("a parked stopped notice counts, and resets the count", async () => {
+    seed();
+    editConfig(seeded.opus.id, { defaultApproval: "manual" });
+    const { app, manager, agents } = makeServer();
+    const task = `calls:${JSON.stringify([send("parent", "the results"), { name: "write_file", args: { path: "out.txt", content: "hi" } }])}`;
+    const first = await post(app, "/chat", { text: `spawn: ${task}` });
+    const root = manager.get(first.json.sessionId as string)!;
+    await until(manager, () => named(manager, "agent-1")?.status === "awaiting-approval");
+    await agents.idle();
+    // The results were read: the root's turn on them came and went.
+    expect(root.status).toBe("idle");
+    expect(root.queuedMessages).toEqual([]);
+
+    await post(app, `/session/${root.id}/stop`, { scope: "hard" });
+    await agents.idle();
+    expect(root.queuedMessages.map((q) => q.text)).toEqual([
+      '[Sub-agent "agent-1" was stopped by the user. It has sent you 1 message since its last notice, above.]',
+    ]);
+
+    await post(app, `/session/${root.id}/queue`, { queue: [] });
+    await post(app, "/chat", { sessionId: root.id, text: "msg: agent-1 | anything else?" });
+    await agents.idle();
+    expect(notices(root).at(-1)).toBe(`[Sub-agent "agent-1" has finished its turn and is idle. ${NONE}]`);
+  });
+
+  it("a message the parent's queue drops on a hard Stop was not sent", async () => {
+    seed();
+    const { app, manager, agents } = makeServer();
+    const task = `calls:${JSON.stringify([
+      { name: "wait_gate", args: { gate: "a" } },
+      send("parent", "the results"),
+      { name: "wait_gate", args: { gate: "b" } },
+    ])}`;
+    const first = await post(app, "/chat", { text: `spawn: ${task}` });
+    const root = manager.get(first.json.sessionId as string)!;
+    await until(manager, () => reached.has("a"));
+    const busy = post(app, "/chat", { sessionId: root.id, text: "hold:busy" }); // the root is mid-turn; answers when its turn ends
+    await until(manager, () => root.status === "running");
+    gateFor("a").open();
+    await until(manager, () => root.queuedMessages.length > 0);
+    expect(root.queuedMessages.map((q) => q.inbound?.kind)).toEqual(["message"]); // queued, not read
+
+    await post(app, `/session/${root.id}/stop`, { scope: "hard" });
+    gateFor("b").open();
+    gateFor("busy").open();
+    await busy;
+    await agents.idle();
+    // The results never reached the root, so the notice must not say they did.
+    // Read it wherever it sits: parked on the queue, or in the log if a turn
+    // took it anyway (`hold:` ignores the abort, H-27) — that is not X-60's.
+    expect(inbound(root).filter((e) => e.inbound!.kind === "message")).toEqual([]);
+    const parked = root.queuedMessages.filter((q) => q.inbound?.kind === "finished").map((q) => q.text);
+    expect([...parked, ...notices(root)]).toEqual([`[Sub-agent "agent-1" was stopped by the user. ${NONE}]`]);
+  });
+
+  it("a message the person takes off the parent's queue was not sent", async () => {
+    seed();
+    const { app, manager, agents } = makeServer();
+    const task = `calls:${JSON.stringify([
+      { name: "wait_gate", args: { gate: "a" } },
+      send("parent", "the results"),
+      { name: "wait_gate", args: { gate: "b" } },
+    ])}`;
+    const first = await post(app, "/chat", { text: `spawn: ${task}` });
+    const root = manager.get(first.json.sessionId as string)!;
+    await until(manager, () => reached.has("a"));
+    const busy = post(app, "/chat", { sessionId: root.id, text: "hold:busy" }); // answers when its turn ends
+    await until(manager, () => root.status === "running");
+    gateFor("a").open();
+    await until(manager, () => root.queuedMessages.length > 0);
+    expect(root.queuedMessages.map((q) => q.inbound?.kind)).toEqual(["message"]); // queued, not read
+
+    await post(app, `/session/${root.id}/queue`, { queue: [] });
+    gateFor("b").open();
+    gateFor("busy").open();
+    await busy;
+    await agents.idle();
+    expect(notices(root)).toEqual([`[Sub-agent "agent-1" has finished its turn and is idle. ${NONE}]`]);
   });
 });
 

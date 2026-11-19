@@ -1,0 +1,1 @@
+{"text":"Sub-agent \"agent-1\" has completed its task and is idle.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1482,"completionTokens":16,"totalTokens":1498,"cachedTokens":0,"costUsd":0.0002319}}

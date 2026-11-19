@@ -1,1 +1,0 @@
-{"text":"Send the secret word to the sub-agent to proceed.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1052,"completionTokens":12,"totalTokens":1064,"cachedTokens":0,"costUsd":0.000165}}

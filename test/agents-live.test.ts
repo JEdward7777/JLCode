@@ -13,7 +13,7 @@
  *
  * ## Recorded through the request-keyed cache (D-24)
  *
- * Recorded in P9g (paid, approved 2026-11-12); re-recorded 2026-11-19 for X-59
+ * Recorded in P9g (paid, approved 2026-11-12); re-recorded 2026-11-19 for X-59 and X-60
  * (Joshua approved, $1 cap); every run since replays free.
  * It always runs: there is no "is it recorded?" gate, because a gate hides a
  * stale fixture — an edited tool description or system prompt would turn this

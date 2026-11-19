@@ -24,7 +24,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57; X-59 ✅).** **Next free ids: D-101, X-61, H-27.**
+> **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57; X-59 ✅, X-60 ✅).** **Next free ids: D-102, X-61, H-28.**
 >
 > Joshua asked for X-59, X-60 and X-57, in that order, through the ratchet, with the plan ratcheted first.
 > The plan is in "Phase 9 follow-ups" below and took five review rounds, R5 CLEAN. Joshua's calls:
@@ -36,9 +36,16 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > refusal. Re-record cost **$0.0089**, which is the spend so far. 60 orphan fixtures were pruned, and H-26 is filed.
 > Build + free tiers green: **1304**.
 >
+> **X-60 ✅ (D-101):** the finished notice says how many messages the child sent since its last notice.
+> Dropped messages are not counted. Three code rounds:
+> - R1 found that a hard Stop could leave a dropped result still counted.
+> - R2 found a test that leaned on H-27, which is now filed.
+>
+> Re-record cost **$0.0029**, so total spend is **$0.0118**. P9g went from 52 to 40 calls, and 29 orphans were pruned.
+> Build + free tiers green: **1315**.
+>
 > **Resume checklist if interrupted:**
-> 1. **X-60:** re-take the prune baseline on this tree (per the plan), then a fresh implementer, review, re-record and prune.
-> 2. **X-57:** a free slice, with a peek. Peek ports from 7871/9471 upward.
+> 1. **X-57:** a free slice, with a peek. Peek ports from 7871/9471 upward.
 >
 > Stop at the end of X-57, or if the $1 cap nears.
 
@@ -2452,7 +2459,7 @@ recovery call.
 refused for a slug. A "default" refusal may still occur; record it if it does. Also update both
 live files' header comments with the re-record date. If the model still sends a slug, it is accepted.
 
-### X-60 — the finished notice makes the parent ask for results it already has
+### X-60 — the finished notice makes the parent ask for results it already has ✅ *(2026-11-19, D-101 — three code rounds, R3 CLEAN; recorded review CLEAN; re-record $0.0029)*
 
 **Problem** (DECISIONS X-60): `notifyParent` (`src/session/agents.ts`) always says "It does not send
 its results on its own — ask it with send_message if you need them". In scenarios (a), (b) and (e)
@@ -2503,6 +2510,14 @@ provide/send the results" message to a child whose notice said it had sent messa
 **Out of scope for all three:** H-24(c), the same cancel semantics for the *mode* toggle. It is noted as related, not built.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-27 — a Stop can let a parked notice open a turn.** Found 2026-11-19 by the X-60 review (R2). **OPEN.**
+  `runLoop`'s final-answer exit never re-checks `stopScope`. `status` is already `idle` across the
+  post-loop `await this.maybeAutoTitle()`. So a hard Stop that lands in that window lets the trailing
+  `drainQueue()` open a turn on a parked "was stopped by the user" notice, and a Stop must not start a
+  turn (`notifyParent`). Seen only through the test driver's `hold:`, which ignores the abort signal. A
+  real driver aborts and takes `settleStopped()`, so the live window is just the title call. X-60's
+  hard-Stop test asserts over queue ∪ log, so it holds either way.
 
 - **H-26 — four tracked fixtures nothing reads.** Found 2026-11-19 by the X-59 prune baseline (a
   `JLCODE_CACHE_LOG` full run). `3abceaf5…`, `9628d417…`, `a4214762…` and `d1a5a89b…` came from

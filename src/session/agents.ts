@@ -73,6 +73,12 @@ interface Member {
   children: Set<Member>;
   tree: Tree;
   unsub: () => void;
+  /** Ids of the messages this agent delivered to its parent since its last
+   *  notice (X-60), so the notice can say whether its results already arrived.
+   *  One the parent's queue drops (a hard Stop, a person's queue edit) comes
+   *  off again — it never arrived. In memory only: a restart or a revival
+   *  starts it empty, which keeps the ask-it hint. */
+  sentToParent: Set<string>;
 }
 
 interface Tree {
@@ -191,7 +197,7 @@ export class AgentCoordinator implements AgentHost {
     parent: Member | undefined,
     tree: Tree,
   ): Member {
-    const member: Member = { session, ...who, parent, children: new Set(), tree, unsub: () => {} };
+    const member: Member = { session, ...who, parent, children: new Set(), tree, unsub: () => {}, sentToParent: new Set() };
     this.members.set(session.id, member);
     // Loaded again: its spend is the session's own from here.
     if (who.agentId !== null) tree.offline.delete(who.agentId);
@@ -354,7 +360,9 @@ export class AgentCoordinator implements AgentHost {
       this.later(() => target.session.resumeAnswered());
       return `Sent to "${target.name}" as the answer to its question; it carries on from there.`;
     }
-    this.deliver(target, sender, "message", text);
+    const id = this.deliver(target, sender, "message", text);
+    // Keyed on whom it reached, not on the string: `to` may name the parent.
+    if (target === sender.parent) sender.sentToParent.add(id);
     return `Sent to "${target.name}".`;
   }
 
@@ -563,12 +571,14 @@ export class AgentCoordinator implements AgentHost {
     kind: InboundMessage["kind"],
     body: string,
     opts: { openTurn?: boolean } = {},
-  ): void {
-    to.session.receive({ id: newId("msg"), from: from.name, kind, text: this.render(to, from, kind, body) });
+  ): string {
+    const id = newId("msg");
+    to.session.receive({ id, from: from.name, kind, text: this.render(to, from, kind, body) });
     // Sent from a turn a person stopped — the rest of a soft-stopped batch, or a
     // spawn that finished after the Stop landed — it is delivered but parked:
     // nothing in a stopped subtree starts a turn after the Stop (D-34).
     if (opts.openTurn !== false && !from.session.stopping) this.later(() => to.session.startNext());
+    return id;
   }
 
   private render(to: Member, from: Member, kind: InboundMessage["kind"], body: string): string {
@@ -591,8 +601,9 @@ export class AgentCoordinator implements AgentHost {
     return `[Message from ${who}]\n\n${body}`;
   }
 
-  /** A sub-agent came to rest: tell its parent who, never what (Q6). A child a
-   *  person stopped is reported too, but parked: a Stop must not start a turn. */
+  /** A sub-agent came to rest: tell its parent who, never what (Q6) — only
+   *  how many messages it sent since its last notice (X-60). A child a person
+   *  stopped is reported too, but parked: a Stop must not start a turn. */
   private notifyParent(child: Member, outcome: "finished" | "failed" | "stopped"): void {
     const parent = child.parent;
     if (!parent) return;
@@ -604,10 +615,16 @@ export class AgentCoordinator implements AgentHost {
           ? "stopped on an error and is idle"
           : "was stopped by the user";
     const still = busy > 0 ? ` (${busy} of its own sub-agent${busy === 1 ? " is" : "s are"} still working)` : "";
-    const text =
-      `[Sub-agent "${child.name}" ${what}${still}. It does not send its results on its own — ` +
-      `ask it with send_message if you need them.]`;
+    // Since its last notice, not this turn: a turn that drains straight into
+    // the next one has no notice of its own, so its count carries (X-60).
+    const sent = child.sentToParent.size;
+    const clause =
+      sent > 0
+        ? `It has sent you ${sent} message${sent === 1 ? "" : "s"} since its last notice, above.`
+        : "It has not sent you anything since its last notice — ask it with send_message if you need its results.";
+    const text = `[Sub-agent "${child.name}" ${what}${still}. ${clause}]`;
     this.deliver(parent, child, "finished", text, { openTurn: outcome !== "stopped" });
+    child.sentToParent.clear(); // a parked (stopped) notice is in the log too
   }
 
   // ---- The width brake (D-89).
@@ -707,6 +724,10 @@ export class AgentCoordinator implements AgentHost {
       this.scheduleFlush();
     } else if (e.type === "settled") {
       this.notifyParent(member, e.outcome);
+    } else if (e.type === "inbox-dropped") {
+      // Queued results that will never be read were not sent, as far as the
+      // next notice is concerned (X-60).
+      for (const c of member.children) for (const id of e.ids) c.sentToParent.delete(id);
     }
   }
 

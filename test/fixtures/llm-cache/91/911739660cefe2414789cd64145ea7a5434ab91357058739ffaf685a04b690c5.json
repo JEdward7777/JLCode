@@ -1,0 +1,1 @@
+{"text":"The sub-agent is idle and ready to receive the secret word. Please provide the secret word for it to respond with.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1046,"completionTokens":25,"totalTokens":1071,"cachedTokens":0,"costUsd":0.0001719}}

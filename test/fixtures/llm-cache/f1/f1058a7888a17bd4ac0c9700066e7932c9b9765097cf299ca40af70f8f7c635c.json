@@ -1,1 +1,0 @@
-{"text":"","toolCalls":[{"id":"call_IxZ82625jh5M3gYGkQnFMZdV","type":"function","function":{"name":"set_agent_mode","arguments":"{\"to\":\"agent-1\",\"mode\":\"code\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1658,"completionTokens":21,"totalTokens":1679,"cachedTokens":1536,"costUsd":0.0001461}}

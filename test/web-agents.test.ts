@@ -212,7 +212,7 @@ describe("transcript cards (Q11)", () => {
 
   it("a completion notice is `finished` — or says it failed or was stopped", () => {
     const n = (t: string) => agentCard(user(t, { id: "m", from: "agent-1", kind: "finished" }));
-    expect(n('[Sub-agent "agent-1" has finished its turn and is idle. It does not send…]')).toEqual({
+    expect(n('[Sub-agent "agent-1" has finished its turn and is idle. It has sent you 2 messages since its last notice, above.]')).toEqual({
       kind: "finished",
       peer: "agent-1",
       head: "finished",
