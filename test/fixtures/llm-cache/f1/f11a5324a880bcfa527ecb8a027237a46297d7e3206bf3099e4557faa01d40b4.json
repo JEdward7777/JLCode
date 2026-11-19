@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_C8ZVOlYfCOchUm1iM8hFuRHZ","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"The project's color is GREEN.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1591,"completionTokens":23,"totalTokens":1614,"cachedTokens":1536,"costUsd":0.00013725}}

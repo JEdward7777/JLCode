@@ -1,0 +1,1 @@
+{"text":"I sent the secret word \"PINEAPPLE\" back to the parent agent.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":994,"completionTokens":17,"totalTokens":1011,"cachedTokens":0,"costUsd":0.0001593}}

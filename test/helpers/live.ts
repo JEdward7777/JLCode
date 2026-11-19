@@ -11,9 +11,10 @@
  * environment, falling back to the local config store's first stored key and the
  * known OpenRouter slugs so a developer with JLCode already configured can run it.
  */
+import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CachingDriver } from "../../src/llm/caching-driver.js";
-import { LlmCache } from "../../src/llm/cache.js";
+import { LlmCache, hashRequest } from "../../src/llm/cache.js";
 import { OpenRouterClient } from "../../src/llm/client.js";
 import type { LlmDriver } from "../../src/llm/types.js";
 import { loadConfig } from "../../src/config/store.js";
@@ -40,10 +41,27 @@ export function liveKey(): string | undefined {
   }
 }
 
+/** `JLCODE_CACHE_LOG=<file>` appends one `hit|miss|write <address>` line per
+ *  fixture-cache access — the coordinator's tool for finding fixtures no test
+ *  reads any more (ROADMAP "Phase 9 follow-ups", the prune step). Test-only. */
+const CACHE_LOG = process.env.JLCODE_CACHE_LOG;
+
+class LoggingCache extends LlmCache {
+  override get(req: Parameters<LlmCache["get"]>[0]) {
+    const hit = super.get(req);
+    appendFileSync(CACHE_LOG!, `${hit ? "hit" : "miss"} ${hashRequest(req)}\n`);
+    return hit;
+  }
+  override put(...args: Parameters<LlmCache["put"]>) {
+    super.put(...args);
+    appendFileSync(CACHE_LOG!, `write ${hashRequest(args[0])}\n`);
+  }
+}
+
 /** A driver that replays from the committed cache and only calls the real model
  *  on a miss (and only when `JLCODE_LIVE=1`); a miss without live throws. */
 export function liveDriver(): LlmDriver {
-  const cache = new LlmCache(FIXTURE_DIR);
+  const cache = CACHE_LOG ? new LoggingCache(FIXTURE_DIR) : new LlmCache(FIXTURE_DIR);
   const inner: LlmDriver = {
     // eslint-disable-next-line require-yield
     async *streamChat(req, opts) {

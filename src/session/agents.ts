@@ -407,7 +407,9 @@ export class AgentCoordinator implements AgentHost {
 
   /** A model by name, from the configs that share the caller's key — checked
    *  against the live store every time (X-56 Q9), and refused with the names
-   *  that would have worked. */
+   *  that would have worked. An unambiguous model id works too (X-59): models
+   *  pass the slug list_models shows beside the name. "default" stays a
+   *  refusal — mapping it to the caller's own config would hide a wrong pick. */
   private pickConfig(session: Session, model: string | undefined): ModelConfig {
     const own = session.config;
     const all = this.deps.listConfigs();
@@ -422,14 +424,27 @@ export class AgentCoordinator implements AgentHost {
     const lower = model.toLowerCase();
     const byName = (list: ModelConfig[]) =>
       list.find((c) => c.name === model) ?? list.find((c) => c.name.toLowerCase() === lower) ?? list.find((c) => c.id === model);
+    const byModel = (list: ModelConfig[]) => list.filter((c) => c.model.toLowerCase() === lower);
     const hit = byName(same);
     if (hit) return hit;
-    const elsewhere = byName(all);
-    throw new Error(
-      elsewhere
-        ? `Model config "${elsewhere.name}" uses a different OpenRouter key, and a sub-agent may only use your own key. Allowed: ${allowed}.`
-        : `No model config named "${model}". Allowed (call list_models for their models): ${allowed}.`,
-    );
+    const slugs = byModel(same);
+    if (slugs.length === 1) return slugs[0]!;
+    if (slugs.length > 1) {
+      const mine = slugs.find((c) => c.id === own.id);
+      if (mine) return mine;
+      const names = slugs.map((c) => `"${c.name}"`).join(", ");
+      throw new Error(`"${model}" is the model of several configs: ${names} — pass one name.`);
+    }
+    const elsewhere = byName(all) ?? byModel(all)[0];
+    if (elsewhere) {
+      throw new Error(`Model config "${elsewhere.name}" uses a different OpenRouter key, and a sub-agent may only use your own key. Allowed: ${allowed}.`);
+    }
+    if (lower === "default") {
+      const live = same.find((c) => c.id === own.id);
+      const ownName = live ? ` ("${live.name}")` : "";
+      throw new Error(`"default" is not a model config name — omit \`model\` to use your own model${ownName}, or pass one of: ${allowed}.`);
+    }
+    throw new Error(`No model config named "${model}". Allowed (call list_models for their models): ${allowed}.`);
   }
 
   private nextName(tree: Tree): string {

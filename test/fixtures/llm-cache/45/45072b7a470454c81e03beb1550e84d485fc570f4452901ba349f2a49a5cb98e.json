@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_b3Ylhtfrig6tWcKgwYammeGB","type":"function","function":{"name":"checkpoint","arguments":"{}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1289,"completionTokens":10,"totalTokens":1299,"cachedTokens":1152,"costUsd":0.00011295}}

@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_G7yy6jTjZkCeXG74CUvUYPv5","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"agent-1\",\"text\":\"Please provide your results and the next steps.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1756,"completionTokens":28,"totalTokens":1784,"cachedTokens":1664,"costUsd":0.0001554}}

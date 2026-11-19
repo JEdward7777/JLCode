@@ -22,7 +22,8 @@
  * ## Recorded through the request-keyed cache (D-24)
  *
  * Recorded once with `JLCODE_LIVE=1 npx vitest run test/agents-p9g-live.test.ts`
- * (paid — Joshua approved P9g 2026-11-12); every run since replays free.
+ * (paid — Joshua approved P9g 2026-11-12; re-recorded 2026-11-19 for X-59, approved
+ * with a $1 cap); every run since replays free.
  * Every scenario always runs: there is no "is it recorded?" gate, because a
  * gate hides a stale fixture — an edited tool description or system prompt
  * would turn the suite into a quiet skip. A request the cache does not hold
@@ -276,8 +277,9 @@ describe("live models drive the agent tree (Tier 1, P9g)", () => {
     const child = child1(b);
 
     expect(calls(b.root, "list_models").length).toBeGreaterThan(0);
-    // It named the sibling, and the child runs on it.
-    expect(calls(b.root, "spawn_agent").some((a) => a.model?.toLowerCase() === "nano")).toBe(true);
+    // It named the sibling — by name, or by its model id, which X-59 accepts — and the child runs on it.
+    const named = (m?: string) => m?.toLowerCase() === "nano" || m?.toLowerCase() === NANO.toLowerCase();
+    expect(calls(b.root, "spawn_agent").some((a) => named(a.model))).toBe(true);
     expect(child.config.model).toBe(NANO);
     // Every request the child made went to the sibling's model; none of the root's did.
     const childs = b.requests.filter((p) => isChilds(p, "agent-1"));

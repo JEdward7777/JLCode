@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_E8dLrrXyJkIzCejW2gF7ZdPc","type":"function","function":{"name":"list_models","arguments":"{}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1235,"completionTokens":10,"totalTokens":1245,"cachedTokens":0,"costUsd":0.00019125}}

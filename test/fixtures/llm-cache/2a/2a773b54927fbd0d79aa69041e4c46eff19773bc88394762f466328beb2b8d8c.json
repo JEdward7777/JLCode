@@ -1,0 +1,1 @@
+{"text":"The sub-agent \"agent-1\" has received the information and will continue its task.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1548,"completionTokens":19,"totalTokens":1567,"cachedTokens":1408,"costUsd":0.000138}}

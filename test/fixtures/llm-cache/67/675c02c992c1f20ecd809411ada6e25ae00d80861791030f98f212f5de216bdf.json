@@ -1,0 +1,1 @@
+{"text":"Checkpoint recorded. Ready for the next instruction.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1414,"completionTokens":10,"totalTokens":1424,"cachedTokens":1280,"costUsd":0.0001221}}

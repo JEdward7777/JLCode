@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_Cx4YAP1t31zNLnFu3K4BAMcg","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"agent-1\",\"text\":\"Use the color BLUE instead of RED.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1407,"completionTokens":27,"totalTokens":1434,"cachedTokens":1280,"costUsd":0.00013125}}

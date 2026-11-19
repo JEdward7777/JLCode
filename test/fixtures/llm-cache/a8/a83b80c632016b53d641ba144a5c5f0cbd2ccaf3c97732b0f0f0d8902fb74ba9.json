@@ -1,0 +1,1 @@
+{"text":"The inquiry about the next step has been sent to the sub-agent.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1698,"completionTokens":15,"totalTokens":1713,"cachedTokens":1664,"costUsd":0.0001389}}

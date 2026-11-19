@@ -13,6 +13,8 @@
  *   - depth refuses, width queues (FIFO) and never refuses;
  *   - agent messages continue the tool-round budget, a human one resets it;
  *   - a model on another key is refused, naming the allowed ones;
+ *   - `model` takes a name or an unambiguous model id; "default" is refused
+ *     with an omit-it hint (X-59);
  *   - a message to a busy child lands at its next tool-loop pass;
  *   - Stop reaches the subtree, spend rolls up, a child's approval lights its
  *     parent.
@@ -628,6 +630,116 @@ describe("spawn_agent's model is checked live against the caller's key", () => {
     expect(listing).toContain("- sonnet — anthropic/claude-sonnet-5");
     expect(listing).not.toContain("haiku");
     expect(listing).not.toContain(KEY_A);
+  });
+});
+
+describe("spawn_agent's model: a name, or an unambiguous model id (X-59)", () => {
+  /** One more config on disk, priced and full-auto like the seeded ones. */
+  function addConfig(name: string, model: string, key = KEY_A): ModelConfig {
+    const r = addModelConfig(loadConfig(paths), {
+      defaultMode: "code",
+      defaultApproval: "full-auto",
+      compaction: { auto: true },
+      pricing: { promptPerMTok: 1, completionPerMTok: 1 },
+      environment: { turnTimestamps: false },
+      name,
+      model,
+      openRouterKey: key,
+    });
+    saveConfig(r.config, paths);
+    return r.added;
+  }
+
+  /** The root's first tool result and its children, after `text` is sent. */
+  async function spawnWith(text: string, server = makeServer()) {
+    const { app, manager, agents } = server;
+    const first = await post(app, "/chat", { text });
+    await agents.idle();
+    const root = manager.get(first.json.sessionId as string)!;
+    return { result: toolResults(root)[0]!, children: childrenOf(manager, root) };
+  }
+
+  it("takes a name case-insensitively", async () => {
+    seed();
+    const { result, children } = await spawnWith("spawn@SONNET: say hi");
+    expect(result.isError).toBeFalsy();
+    expect(children.map((c) => c.config.id)).toEqual([seeded.sonnet.id]);
+  });
+
+  it("takes a model id that only one same-key config runs", async () => {
+    seed();
+    const { result, children } = await spawnWith(`spawn@${SONNET.toUpperCase()}: say hi`);
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain('on sonnet (anthropic/claude-sonnet-5)');
+    expect(children.map((c) => c.config.id)).toEqual([seeded.sonnet.id]);
+  });
+
+  it("refuses a model id several same-key configs run, naming them", async () => {
+    seed();
+    addConfig("sonnet-fast", SONNET);
+    addConfig("sonnet-far", SONNET, KEY_B); // another key: not named
+    const { result, children } = await spawnWith(`spawn@${SONNET}: say hi`);
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(`"${SONNET}" is the model of several configs: "sonnet", "sonnet-fast" — pass one name.`);
+    expect(children).toHaveLength(0);
+  });
+
+  it("takes the caller's own config when it is one of several with that model id", async () => {
+    seed();
+    addConfig("opus-twin", OPUS);
+    const { result, children } = await spawnWith(`spawn@${OPUS}: say hi`);
+    expect(result.isError).toBeFalsy();
+    expect(children.map((c) => c.config.id)).toEqual([seeded.opus.id]);
+  });
+
+  it("refuses \"default\" with the omit-it hint, naming the caller's own config", async () => {
+    seed();
+    const { result, children } = await spawnWith("spawn@Default: say hi");
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      '"default" is not a model config name — omit `model` to use your own model ("opus"), or pass one of: "opus", "sonnet".',
+    );
+    expect(children).toHaveLength(0);
+  });
+
+  it("drops the own-name part of the \"default\" hint when the caller's config is gone", async () => {
+    seed();
+    const deps = { paths, cwd: workspace, makeDriver: treeDriver, mcpTools: () => [waitGate], catalog };
+    // The store the coordinator reads has lost the root's config; the root still holds it.
+    const server = createServer({
+      resolveConfig: () => resolveForCwd(loadConfig(paths), workspace),
+      newSession: createSessionFactory(deps),
+      listConfigs: () => loadConfig(paths).modelConfigs.filter((c) => c.id !== seeded.opus.id),
+      store,
+      workingDir: workspace,
+      version: "0.0.0",
+    });
+    const { result } = await spawnWith("spawn@default: say hi", server);
+    expect(result.content).toBe('"default" is not a model config name — omit `model` to use your own model, or pass one of: "sonnet".');
+  });
+
+  it("picks a same-key config that is named \"default\"", async () => {
+    seed();
+    const dflt = addConfig("default", HAIKU);
+    const { result, children } = await spawnWith("spawn@default: say hi");
+    expect(result.isError).toBeFalsy();
+    expect(children.map((c) => c.config.id)).toEqual([dflt.id]);
+  });
+
+  it("refuses a model id only another key's config runs, as cross-key", async () => {
+    seed();
+    const { result, children } = await spawnWith(`spawn@${HAIKU}: say hi`);
+    expect(result.content).toBe(
+      'Model config "haiku" uses a different OpenRouter key, and a sub-agent may only use your own key. Allowed: "opus", "sonnet".',
+    );
+    expect(children).toHaveLength(0);
+  });
+
+  it("refuses an unknown name as before", async () => {
+    seed();
+    const { result, children } = await spawnWith("spawn@gpt-9: say hi");
+    expect(result.content).toBe('No model config named "gpt-9". Allowed (call list_models for their models): "opus", "sonnet".');
+    expect(children).toHaveLength(0);
   });
 });
 

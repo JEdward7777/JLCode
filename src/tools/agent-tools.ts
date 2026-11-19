@@ -55,18 +55,18 @@ export function spawnAgentTool(): Tool {
           "with your permissions. Returns its name at once. Your turn then ends — do not wait or poll for it. " +
           "When the sub-agent finishes a turn you are sent a notice; it does not send its results unless asked, " +
           "so say in `task` what to report back with send_message, or ask it afterwards. Write `task` so it stands " +
-          "on its own: the sub-agent cannot see your conversation. `model` is a name from list_models; omit it " +
-          "to use your own model. `mode` makes the sub-agent stricter than you — \"ask\" (read-only) or " +
+          "on its own: the sub-agent cannot see your conversation. `model` is a config name from list_models (an " +
+          "unambiguous model id also works); omit it to use your own model. `mode` makes the sub-agent stricter than you — \"ask\" (read-only) or " +
           "\"plan\" (markdown writes only) — never looser; omit it to give it your own mode.",
         parameters: {
           type: "object",
           properties: {
             task: { type: "string", description: "Everything the sub-agent needs to do the work and report back" },
-            model: { type: "string", description: "A model config name from list_models (default: your own)" },
+            model: { type: "string", description: "A model config name from list_models; an unambiguous model id also works. Omit it for your own model" },
             mode: {
               type: "string",
               enum: [...MODES],
-              description: "ask < plan < code. As strict as yours or stricter (default: your own mode)",
+              description: "ask < plan < code. As strict as yours or stricter; omit it for your own mode",
             },
           },
           required: ["task"],
@@ -133,7 +133,7 @@ export function listModelsTool(): Tool {
         name: LIST_MODELS,
         description:
           "List the models a sub-agent may run on — the model configs that share your OpenRouter key — by name " +
-          "and model id. Pass a name as spawn_agent's `model`.",
+          "and model id. Pass a name as spawn_agent's `model` (an unambiguous model id also works).",
         parameters: { type: "object", properties: {} },
       },
     },

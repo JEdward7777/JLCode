@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_10MNf620fe5hFdOWBkA5K6va","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"The color to use is BLUE.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1329,"completionTokens":24,"totalTokens":1353,"cachedTokens":0,"costUsd":0.00021375}}

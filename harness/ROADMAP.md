@@ -24,6 +24,24 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57; X-59 ✅).** **Next free ids: D-101, X-61, H-27.**
+>
+> Joshua asked for X-59, X-60 and X-57, in that order, through the ratchet, with the plan ratcheted first.
+> The plan is in "Phase 9 follow-ups" below and took five review rounds, R5 CLEAN. Joshua's calls:
+> - X-57: picking the current row cancels a pending pick.
+> - Paid re-records are approved up to **$1 in total**.
+> - X-43 is marked built (`982b207`).
+>
+> **X-59 ✅ (D-100):** spawn_agent's `model` accepts an unambiguous model id, and "default" gets a specific
+> refusal. Re-record cost **$0.0089**, which is the spend so far. 60 orphan fixtures were pruned, and H-26 is filed.
+> Build + free tiers green: **1304**.
+>
+> **Resume checklist if interrupted:**
+> 1. **X-60:** re-take the prune baseline on this tree (per the plan), then a fresh implementer, review, re-record and prune.
+> 2. **X-57:** a free slice, with a peek. Peek ports from 7871/9471 upward.
+>
+> Stop at the end of X-57, or if the $1 cap nears.
+
 > **Resume block — 2026-11-17 (H-25 ✅ — closes H-11).** **Next free ids: D-100, X-61, H-26.**
 >
 > **What happened:** a sub-agent hung forever in a real session. Its turn read `config.json` again (D-87)
@@ -2405,7 +2423,7 @@ cannot commit red, so each of these slices runs this way:
    for the slice's **success criterion** (below). Wording changes from this review cost another
    re-record. That is fine under the cap, but the reviewer should ask for one only on a real defect.
 
-### X-59 — the model passes the wrong thing as `spawn_agent`'s `model`
+### X-59 — the model passes the wrong thing as `spawn_agent`'s `model` ✅ *(2026-11-19, D-100 — one code round CLEAN, recorded review CLEAN; re-record $0.0089)*
 
 **Problem** (DECISIONS X-59): gpt-4o-mini passed `"default"` and once a raw slug (`openai/gpt-4.1-nano`),
 where `pickConfig` (`src/session/agents.ts`) wants a config *name*. Each mistake cost a billed
@@ -2485,6 +2503,11 @@ provide/send the results" message to a child whose notice said it had sent messa
 **Out of scope for all three:** H-24(c), the same cancel semantics for the *mode* toggle. It is noted as related, not built.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-26 — four tracked fixtures nothing reads.** Found 2026-11-19 by the X-59 prune baseline (a
+  `JLCODE_CACHE_LOG` full run). `3abceaf5…`, `9628d417…`, `a4214762…` and `d1a5a89b…` came from
+  `e6c09ca` (P6c Fable/BLUEJAY). They are deliberately left in place, next to G-01's stale fable-live
+  case (b), until that grant is spent. Prune them then, by the same method. **OPEN.**
 
 - **H-25 — a turn that throws can't leave a session silently stuck.** Found 2026-11-17 in a real
   session (a sub-agent hung on a `config.json` mid hand-edit). **Built 2026-11-17 (D-99), closing H-11.**

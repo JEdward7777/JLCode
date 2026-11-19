@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_Es91XrCfjq90JaWI66ALPaUm","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"agent-1\",\"text\":\"Please confirm the next step after the checkpoint.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1552,"completionTokens":28,"totalTokens":1580,"cachedTokens":1408,"costUsd":0.000144}}

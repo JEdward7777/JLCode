@@ -1,0 +1,1 @@
+{"text":"Task completed.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1342,"completionTokens":4,"totalTokens":1346,"cachedTokens":1280,"costUsd":0.0001077}}
