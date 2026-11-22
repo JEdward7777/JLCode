@@ -24,7 +24,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57 — all ✅, run complete).** **Next free ids: D-103, X-61, H-29.**
+> **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57 — all ✅, run complete).** **Next free ids: D-103, X-61, H-30.**
 >
 > Joshua asked for X-59, X-60 and X-57, in that order, through the ratchet, with the plan ratcheted first.
 > The plan is in "Phase 9 follow-ups" below and took five review rounds, R5 CLEAN. Joshua's calls:
@@ -2516,6 +2516,16 @@ provide/send the results" message to a child whose notice said it had sent messa
 **Out of scope for all three:** H-24(c), the same cancel semantics for the *mode* toggle. It is noted as related, not built.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-29 — fixture pruning should be mark-and-sweep.** Suggested by Joshua 2026-11-22. **OPEN, build when
+  pruning matters.** X-59/X-60 pruned by diffing orphan sets before and after, per file, with the
+  baseline subtracted. That works but it's fiddly. The simpler rule: **mark** = run the whole free tier
+  with `JLCODE_CACHE_LOG` on and collect every `hit`/`write` address; **sweep** = delete every tracked
+  `test/fixtures/llm-cache/**` file not marked. Make it one script (e.g. `npm run fixtures:prune`, dry
+  run by default and listing what it would delete). Guards: refuse to sweep if the run wasn't green
+  or if any fixture-reading test was skipped (its fixtures would look unused); and keep a
+  `keep` list for fixtures a pending grant will replace (today, G-01's stale case (b)). Once it exists,
+  H-26 becomes a single run.
 
 - **H-28 — the peek tool can't find Chrome on this machine.** Found 2026-11-19 building X-57. **OPEN.**
   `harness/peek/peek.mjs` crashes with an unhandled `spawn google-chrome ENOENT` when only Playwright's
