@@ -108,3 +108,103 @@ export function fileArgs(tool: string | undefined, raw: string | undefined): Fil
   if (typeof rec["path"] !== "string" || typeof rec["content"] !== "string") return null;
   return { path: rec["path"], body: rec["content"] };
 }
+
+/** One argument of a call, ready to show (X-61). */
+export interface ArgField {
+  key: string;
+  /** Strings verbatim (real newlines, no escapes); anything else as pretty JSON. */
+  text: string;
+  /** Long or multi-line → its own box under the key, instead of beside it. */
+  block: boolean;
+  /** Not a string, so `text` is JSON. */
+  json: boolean;
+}
+
+/**
+ * A call's arguments as labeled fields, not one JSON blob (X-61).
+ *
+ * The JSON view escapes every string. A `spawn_agent` task or a `send_message`
+ * text is prose, and `JSON.stringify` turns it into one long line of `\n`s,
+ * which is the opposite of what someone reading history needs. Here each
+ * string reads as written. Nested values (arrays, objects) stay JSON, because
+ * that is still the clearest flat rendering of a structure.
+ *
+ * Returns `null` (fall back to `prettyArgs`) for anything that isn't a JSON
+ * object: truncated or repaired args (D-31) must still show, exactly as sent.
+ */
+export function argFields(raw: string | undefined): ArgField[] | null {
+  if (raw === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  return Object.entries(parsed as Record<string, unknown>).map(([key, value]) => {
+    const json = typeof value !== "string";
+    const text = json ? JSON.stringify(value, null, 2) ?? String(value) : (value as string);
+    return { key, text, json, block: text.includes("\n") || text.length > 80 };
+  });
+}
+
+/** One anchored replacement in an `apply_edits` call (X-61). */
+export interface EditView {
+  old: string;
+  new: string;
+  /** `expected_count`, when the model set it (more than one site). */
+  count?: number;
+}
+
+export interface EditFileView {
+  path: string;
+  edits: EditView[];
+}
+
+/**
+ * `apply_edits`'s arguments as files and replacements, not nested JSON (X-61).
+ *
+ * The approval card showed a real diff, computed against the file as it was.
+ * History deliberately stores no diff, for the same reason `fileArgs` doesn't
+ * (X-23): the file may have changed since, and a diff against today's file is
+ * wrong. What *was* sent is each anchor and its replacement, and that stays
+ * true, so that is what this returns.
+ *
+ * `null` (fall back to JSON) for any shape it doesn't recognize, including
+ * extra keys, since hiding an argument is worse than showing JSON.
+ */
+export function editArgs(tool: string | undefined, raw: string | undefined): EditFileView[] | null {
+  if (tool !== "apply_edits" || raw === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const isRec = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const only = (rec: Record<string, unknown>, allowed: string[]) => Object.keys(rec).every((k) => allowed.includes(k));
+  if (!isRec(parsed) || !only(parsed, ["files"]) || !Array.isArray(parsed["files"])) return null;
+  const out: EditFileView[] = [];
+  for (const f of parsed["files"]) {
+    if (!isRec(f) || !only(f, ["path", "edits"]) || typeof f["path"] !== "string" || !Array.isArray(f["edits"])) {
+      return null;
+    }
+    const edits: EditView[] = [];
+    for (const e of f["edits"]) {
+      if (!isRec(e) || !only(e, ["old_string", "new_string", "expected_count"])) return null;
+      if (typeof e["old_string"] !== "string" || typeof e["new_string"] !== "string") return null;
+      const count = e["expected_count"];
+      if (count !== undefined && typeof count !== "number") return null;
+      edits.push({ old: e["old_string"], new: e["new_string"], ...(typeof count === "number" ? { count } : {}) });
+    }
+    out.push({ path: f["path"], edits });
+  }
+  return out;
+}
+
+/** `apply_edits`' collapsed header (X-61): which files, how many edits, not JSON. */
+export function editsGist(files: EditFileView[], max = 90): string {
+  const n = files.reduce((sum, f) => sum + f.edits.length, 0);
+  const names = files.map((f) => f.path).join(", ");
+  return clamp(`${n} ${n === 1 ? "edit" : "edits"} · ${names}`, max);
+}

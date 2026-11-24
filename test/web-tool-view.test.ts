@@ -6,7 +6,7 @@
  * output in the transcript instead of only in the journal.
  */
 import { describe, it, expect } from "vitest";
-import { fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "../web/src/tool-view";
+import { argFields, editArgs, editsGist, fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "../web/src/tool-view";
 
 describe("output stats (the size hint, X-11)", () => {
   it("reports lines and bytes", () => {
@@ -122,5 +122,58 @@ describe("write_file args read as a file, not as JSON (X-23)", () => {
 
   it("keeps an empty file an empty body, not a missing one", () => {
     expect(fileArgs("write_file", JSON.stringify({ path: "e.txt", content: "" }))).toEqual({ path: "e.txt", body: "" });
+  });
+});
+
+describe("argFields — arguments as labeled fields (X-61)", () => {
+  it("shows strings as written, newlines and all, and nested values as JSON", () => {
+    const f = argFields(JSON.stringify({ task: "first line\nsecond line", model: "Peek", files: ["a", "b"] }))!;
+    expect(f).toEqual([
+      { key: "task", text: "first line\nsecond line", block: true, json: false },
+      { key: "model", text: "Peek", block: false, json: false },
+      { key: "files", text: '[\n  "a",\n  "b"\n]', block: true, json: true },
+    ]);
+  });
+
+  it("puts a long single-line value in its own box", () => {
+    expect(argFields(JSON.stringify({ command: "x".repeat(81) }))![0]!.block).toBe(true);
+  });
+
+  it("falls back (null) for args that aren't a JSON object, so they still show raw", () => {
+    expect(argFields('{"command": "ls')).toBeNull();
+    expect(argFields("[1,2]")).toBeNull();
+    expect(argFields(undefined)).toBeNull();
+  });
+});
+
+describe("editArgs — apply_edits as anchors and replacements (X-61)", () => {
+  const call = {
+    files: [
+      { path: "a.txt", edits: [{ old_string: "alpha", new_string: "ALPHA" }] },
+      { path: "b.txt", edits: [{ old_string: "x\ny", new_string: "", expected_count: 2 }] },
+    ],
+  };
+
+  it("reads files and edits, with expected_count when set", () => {
+    expect(editArgs("apply_edits", JSON.stringify(call))).toEqual([
+      { path: "a.txt", edits: [{ old: "alpha", new: "ALPHA" }] },
+      { path: "b.txt", edits: [{ old: "x\ny", new: "", count: 2 }] },
+    ]);
+  });
+
+  it("is only for apply_edits", () => {
+    expect(editArgs("write_file", JSON.stringify(call))).toBeNull();
+  });
+
+  it("falls back on any shape it doesn't know, rather than hide an argument", () => {
+    expect(editArgs("apply_edits", JSON.stringify({ ...call, dry_run: true }))).toBeNull();
+    expect(editArgs("apply_edits", JSON.stringify({ files: [{ path: "a", edits: [{ old_string: "a" }] }] }))).toBeNull();
+    expect(editArgs("apply_edits", '{"files": [')).toBeNull();
+  });
+});
+
+describe("editsGist (X-61)", () => {
+  it("names the files and counts the edits", () => {
+    expect(editsGist([{ path: "a.txt", edits: [{ old: "a", new: "b" }, { old: "c", new: "d" }] }, { path: "b.txt", edits: [{ old: "x", new: "y" }] }])).toBe("3 edits · a.txt, b.txt");
   });
 });

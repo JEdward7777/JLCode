@@ -354,7 +354,7 @@ function describeAnswer(a: AskUserAnswer, hadOptions: boolean): string {
  *  does *not* when the answer's shape is itself the message: a decline, or text
  *  typed in the face of offered options. Both of those read as an ordinary
  *  answer once flattened, which is the bug (D-72). */
-function formatAnswers(payload: string | AskUserAnswer[], questions: AskUserQuestion[] = []): string {
+export function formatAnswers(payload: string | AskUserAnswer[], questions: AskUserQuestion[] = []): string {
   if (typeof payload === "string") return payload;
   const hadOptions = (i: number): boolean => (questions[i]?.options?.length ?? 0) > 0;
   // A blank counts as a decline whether or not the frontend said so: an empty

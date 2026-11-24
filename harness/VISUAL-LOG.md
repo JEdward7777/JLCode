@@ -1941,3 +1941,38 @@ The implementer peeked on 7871/9471, and the R1 reviewer on 7872/9472. Chrome wa
 
 Both are covered at Tier-0.
 
+
+---
+
+## X-61 — answered cards read as a record in history · 2026-11-24 · ✅ looked good
+
+**Screenshots:** before: [`visual/x61-before-ask.png`](visual/x61-before-ask.png),
+[`visual/x61-before-edits-run.png`](visual/x61-before-edits-run.png). After:
+[`visual/x61-ask-form.png`](visual/x61-ask-form.png), [`visual/x61-ask-single.png`](visual/x61-ask-single.png),
+[`visual/x61-edits.png`](visual/x61-edits.png), [`visual/x61-edits-collapsed.png`](visual/x61-edits-collapsed.png),
+[`visual/x61-other-cards.png`](visual/x61-other-cards.png).
+
+**Setup:** fake driver. Chrome came through a `google-chrome` symlink to Playwright's chromium on `PATH`
+(the H-28 workaround). Forms were answered through `POST /session/:id/answer`, so each answer shape is
+exact. The first navigate timed out once, as H-28 notes, and the retry worked.
+
+**Before (what Joshua reported):** an expanded `ask` was pretty JSON args above the model's result
+prose, and the D-72 decline note ran off the right edge. The collapsed line read
+`[{"header":"Store","question":"Which store s…`. `apply_edits` was nested `old_string`/`new_string` JSON.
+
+**Confirmed with my own eyes:**
+- **The `form:` card reads like the card that asked it.** The STORE/TARGETS/TICKET/NOTES chips and their
+  questions are shown, with `✓ sqlite` lit and `postgres` dimmed. `✓ dev` and `✓ prod` are lit beside `staging`.
+  REQUIRED is on Ticket, with its typed `JL-42` under an accent rule. Notes reads *Declined — no answer
+  given*, in muted italics. The header reads `4 questions — Store…` · `3 of 4 answered`.
+- **Single questions:** "Ship it today?" shows all three options dimmed, then `NONE OF THE OPTIONS · TYPED`
+  and "after the demo on Thursday". A declined one says `declined` in the header and shows the decline line.
+- **The raw result stays one click away** under "as the model read it", wrapped rather than running off the edge.
+- **`apply_edits`:** per file, `a.txt · 2 edits` with `alpha`/`ALPHA` and `gamma`/`GAMMA` as red/green
+  pairs, then `b.txt`. The collapsed line reads `3 edits · a.txt, b.txt`.
+- **`run_command`:** `command: ls -la` on one line, where it used to be a three-line JSON box.
+
+**Caught by looking:** the first decline wording, "none of these was picked", read wrong under a question
+that had no options. It is now "Declined — no answer given".
+
+Not exercised visually: a parent agent's reply to `ask@parent` and a stopped `ask`. Both are covered at Tier-0.

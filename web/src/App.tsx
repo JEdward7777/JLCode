@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { renderMarkdown, renderMermaid, hasMermaid } from "./markdown";
-import { fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "./tool-view";
+import { argFields, editArgs, editsGist, fileArgs, formatBytes, outputStats, prettyArgs, summarizeArgs } from "./tool-view";
+import { askGist, askStatus, readAsk, type AnswerShape, type AskRecord } from "./ask-view";
 import { abbreviatePath, folderName, tabTitle } from "./workspace";
 import { newAttentionMemory, stepAttention } from "./attention";
 import { createBlipper } from "./blip";
@@ -3593,12 +3594,20 @@ function Message({
 function ToolBlock({ entry, args }: { entry: EntryView; args?: string }) {
   const [open, setOpen] = useState(false);
   const content = entry.content ?? "";
+  // An answered question reads as questions and answers, the way the card that
+  // asked it did — not as its JSON and the prose written for the model (X-61).
+  const ask = entry.name === "ask" || entry.name === "ask_user" ? readAsk(args, content, entry.isError ?? false) : null;
+  if (ask) return <AskBlock record={ask} name={entry.name!} raw={content} open={open} onToggle={() => setOpen((o) => !o)} />;
   const stats = outputStats(content);
-  const gist = summarizeArgs(args);
   const images = entry.attachments ?? [];
   // A `write_file` call's args *are* a file (X-23) — show them as one, since
   // after the approval card is gone they are the only record of what was written.
   const file = fileArgs(entry.name, args);
+  // `apply_edits` as anchors and replacements, and everything else as labeled
+  // fields with its strings unescaped (X-61); JSON only for what reads no other way.
+  const edits = file ? null : editArgs(entry.name, args);
+  const fields = file || edits ? null : argFields(args);
+  const gist = edits ? editsGist(edits) : summarizeArgs(args);
   return (
     <div className={`tool-block ${entry.isError ? "err" : ""} ${open ? "open" : ""}`}>
       <button className="tool-head" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={open ? "hide output" : "show output"}>
@@ -3642,10 +3651,157 @@ function ToolBlock({ entry, args }: { entry: EntryView; args?: string }) {
               </div>
               <pre className="tool-out args">{file.body === "" ? "(empty file)" : file.body}</pre>
             </div>
+          ) : edits ? (
+            <EditsView files={edits} />
+          ) : fields ? (
+            fields.length > 0 ? <ArgFields fields={fields} /> : null
           ) : args ? (
             <pre className="tool-out args">{prettyArgs(args)}</pre>
           ) : null}
           <pre className="tool-out">{content === "" ? "(no output)" : content}</pre>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** A call's arguments as labeled fields (X-61): short values beside their key,
+ *  long or multi-line ones in their own box beneath it, strings as written. */
+function ArgFields({ fields }: { fields: ReturnType<typeof argFields> & object }) {
+  return (
+    <div className="arg-fields">
+      {fields.map((f) => (
+        <div key={f.key} className={`arg-field ${f.block ? "block" : ""}`}>
+          <span className="arg-key">{f.key}</span>
+          {f.block ? (
+            <pre className={`tool-out arg-val ${f.json ? "json" : ""}`}>{f.text}</pre>
+          ) : (
+            <code className={`arg-val ${f.json ? "json" : ""}`}>{f.text === "" ? "(empty)" : f.text}</code>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** `apply_edits` in history (X-61): per file, each anchor and what replaced it.
+ *  Not a diff — see `editArgs` for why history never recomputes one. */
+function EditsView({ files }: { files: NonNullable<ReturnType<typeof editArgs>> }) {
+  return (
+    <div className="edits-view">
+      {files.map((f, i) => (
+        <div className="tool-file" key={`${f.path}#${i}`}>
+          <div className="tool-file-head">
+            <code>{f.path}</code>
+            <span>
+              {f.edits.length} {f.edits.length === 1 ? "edit" : "edits"}
+            </span>
+          </div>
+          {f.edits.map((e, j) => (
+            <div className="edit-pair" key={j}>
+              {e.count !== undefined && e.count !== 1 ? <div className="edit-count">× {e.count} sites</div> : null}
+              <pre className="edit-old">{e.old === "" ? "(empty)" : e.old}</pre>
+              <pre className="edit-new">{e.new === "" ? "(removed)" : e.new}</pre>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** How one answer reads in the history block (X-61). */
+function AnswerLine({ answer }: { answer: AnswerShape }) {
+  if (answer.kind === "declined") {
+    return <div className="ask-a declined">Declined — no answer given</div>;
+  }
+  if (answer.kind === "typed") {
+    return (
+      <div className="ask-a">
+        {answer.instead ? <span className="ask-a-note">none of the options · typed</span> : null}
+        <div className="ask-a-text">{answer.text}</div>
+      </div>
+    );
+  }
+  return answer.typed ? (
+    <div className="ask-a">
+      <span className="ask-a-note">also typed</span>
+      <div className="ask-a-text">{answer.typed}</div>
+    </div>
+  ) : null;
+}
+
+/**
+ * An answered `ask` in history (X-61). The card that asked it is gone, so this
+ * is the record of what was asked and what came back. It is laid out like the
+ * card: header chip, question, the offered options with the picked ones lit,
+ * then the answer. A decline is shown as one, not as an empty space (D-72).
+ *
+ * When the result doesn't read back per question (a parent agent's prose, a
+ * stop, an unfamiliar shape), the questions still show and the result follows
+ * as written. Its raw text is always one click away under "as the model read it".
+ */
+function AskBlock({
+  record,
+  name,
+  raw,
+  open,
+  onToggle,
+}: {
+  record: AskRecord;
+  name: string;
+  raw: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className={`tool-block ask-block ${record.unanswered ? "err" : ""} ${open ? "open" : ""}`}>
+      <button className="tool-head" aria-expanded={open} onClick={onToggle} title={open ? "hide" : "show questions and answers"}>
+        <span className="tool-caret">{open ? "▾" : "▸"}</span>
+        <span className="tool-name">{name}</span>
+        <span className="tool-gist ask-gist">{askGist(record)}</span>
+        <span className="tool-size">{askStatus(record)}</span>
+      </button>
+      {open ? (
+        <div className="tool-body ask-body">
+          {record.to === "parent" ? <div className="ask-to">Asked of its parent agent</div> : null}
+          {record.questions.map((q, i) => {
+            const a = record.answers?.[i];
+            const chosen = a?.kind === "chose" ? a.chosen : [];
+            return (
+              <div className="q ask-q" key={i}>
+                <div className="q-head">
+                  {q.header ? <span className="q-header">{q.header}</span> : null}
+                  <span className="q-text">{q.question}</span>
+                  {q.multiSelect ? <span className="q-hint">choose any</span> : null}
+                  {q.required ? <span className="q-req">required</span> : null}
+                </div>
+                {q.options.length > 0 ? (
+                  <div className="opts">
+                    {q.options.map((opt) => (
+                      <span key={opt} className={chosen.includes(opt) ? "opt on" : "opt"}>
+                        {chosen.includes(opt) ? "✓ " : ""}
+                        {opt}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {a ? <AnswerLine answer={a} /> : null}
+              </div>
+            );
+          })}
+          {record.answers === null ? (
+            <div className="ask-a">
+              <span className="ask-a-note">
+                {record.unanswered ? "not answered" : record.answeredBy !== undefined ? `${record.answeredBy} replied` : "reply"}
+              </span>
+              <div className="ask-a-text">{record.fallback ?? ""}</div>
+            </div>
+          ) : null}
+          <details className="ask-raw">
+            <summary>as the model read it</summary>
+            <pre className="tool-out">{raw === "" ? "(no output)" : raw}</pre>
+          </details>
         </div>
       ) : null}
     </div>

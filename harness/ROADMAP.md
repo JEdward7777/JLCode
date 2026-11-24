@@ -24,6 +24,21 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
+>
+> Joshua reported that an answered `ask` card was very hard to read in history, and asked for the other cards to be checked too.
+> **Built (D-103), browser only, nothing new stored:**
+> - An answered `ask` reads as questions, options with the picked ones lit, and answers, with declines shown as declines.
+>   It is read back from `formatAnswers`' output, so old logs render too.
+> - `apply_edits` shows anchor/replacement pairs per file.
+> - Every other tool's args are labeled fields, with strings unescaped.
+>
+> Peeked (VISUAL-LOG "X-61"). Agent cards, `write_file`, and the todo/model-switch marks already had their own views.
+> Build + free tiers green: **1346**.
+>
+> **Next:** unchanged, the post-v1 backlog. H-27 is small and pairs with H-25's leftovers. H-28 bit again
+> (the symlink workaround worked).
+
 > **Resume block — 2026-11-19 (ratchet run X-59 → X-60 → X-57 — all ✅, run complete).** **Next free ids: D-103, X-61, H-30.**
 >
 > Joshua asked for X-59, X-60 and X-57, in that order, through the ratchet, with the plan ratcheted first.

@@ -2693,3 +2693,151 @@ button.model-chip.missing {
 .notice.info {
   color: var(--muted);
 }
+
+/* ==========================================================================
+   X-61 — tool blocks that read in history: the answered `ask`, `apply_edits`
+   as anchors and replacements, and arguments as labeled fields.
+   ========================================================================== */
+
+/* An answered question, laid out like the card that asked it. The options are
+   not buttons any more, just a record, so they are spans without a pointer. */
+.ask-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ask-q {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ask-q + .ask-q {
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.ask-body .opt {
+  cursor: default;
+  padding: 3px 11px;
+  font-size: 13px;
+}
+.ask-body .opt:not(.on) {
+  color: var(--muted);
+}
+.ask-gist {
+  font-family: inherit;
+}
+.ask-to {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ask-a {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 3px solid var(--accent);
+  padding: 2px 0 2px 9px;
+}
+.ask-a.declined {
+  border-left-color: var(--border);
+  color: var(--muted);
+  font-style: italic;
+}
+.ask-a-note {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+.ask-a-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ask-raw summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+.ask-raw .tool-out {
+  margin-top: 6px;
+  white-space: pre-wrap;
+}
+
+/* Arguments as fields: short values beside their key, long ones beneath it. */
+.arg-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.arg-field {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.arg-field.block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.arg-key {
+  flex: none;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.arg-key::after {
+  content: ":";
+}
+code.arg-val {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+pre.arg-val {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+}
+.arg-val.json {
+  color: var(--muted);
+}
+
+/* apply_edits: each anchor (red) and its replacement (green), per file. */
+.edits-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.edit-pair {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+}
+.edit-pair pre {
+  margin: 0;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow: auto;
+}
+.edit-old {
+  background: rgba(220, 80, 80, 0.13);
+  border-left: 3px solid rgba(220, 80, 80, 0.7);
+  border-radius: 4px 4px 0 0;
+}
+.edit-new {
+  background: rgba(80, 190, 110, 0.13);
+  border-left: 3px solid rgba(80, 190, 110, 0.7);
+  border-radius: 0 0 4px 4px;
+}
+.edit-count {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
