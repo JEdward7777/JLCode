@@ -31,7 +31,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
 > **1346** green on `69cc25a`.
 >
-> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). Next: plan review R4, then P10a.
+> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. Next: plan review R5, then P10a.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2705,6 +2705,35 @@ Subagents run on the session's default model (Fable is not available *as a Claud
 - **Background tasks end on `exit`:** a `cmd &` whose daemon keeps the pipe open never fires `close`.
   For background tasks, `finish` runs on `exit` and the fds close after the streams drain or a short
   grace. Foreground keeps today's `close` behaviour (filed as **H-31**, not changed here).
+
+### Plan review R4 — folded in (binding; wins over R1–R3 and the slice text where they differ)
+
+**Must-fixes:**
+1. **Wake ignores parking (P10c).** A parked notice has `inbound`, so `restState` reads "owes-reply" and
+   the rest UI offers Wake; `Session.wake` then calls `drainQueue({ admitted: true, woken: true })`.
+   `drainQueue({ woken: true })` **ignores the parked gate**: Wake is an explicit act by the person or the
+   root. `restState` stays as is. Tier-0: a Stop-killed notice leaves an idle session "owes-reply"; Wake
+   opens one turn that carries it.
+2. **A background task's end waits for its output, then seals (P10a/P10c).** On `exit`, wait for both
+   streams' `end`, capped at a short grace (about 1–2 s); only then run `finish` (status, line counts,
+   notice). After the grace the task's sink is **sealed**: every append for that task is a no-op, its
+   listeners are detached and `child.stdout`/`child.stderr` `destroy()`ed, and only then are its fds
+   closed. (A daemon's late `data` would otherwise `writeSync` to a closed fd — EBADF thrown in a stream
+   handler crashes the server — or to a reused fd, corrupting another file.) Tier-0:
+   `sh -c 'echo last; (sleep 5; echo late) &'` in the background → "last" is in the log before the
+   notice, "late" is never written, nothing throws.
+
+**Nits taken:**
+- R3's test needs a branch whose model is **missing** (`applyPendingSwitch()` returns `held` only for
+  `queue.length > 0 && modelMissing`), or it passes without the flag.
+- "Stop and kill processes" fans down and **each session decides by its own status**: running → hard
+  Stop plus kill; idle → kill only.
+- G13 is outdated: `StopControl`'s `active` already includes `slice.tasks.length > 0`. P10c leaves
+  background tasks **out** of plain Stop's `active` and enables only the new item for them.
+- D-106's flipped task was started with foreground handling: attach both `exit` and `close` listeners
+  and choose by the task's `background` flag when the event fires.
+- The "was stopped" child notice (`deliver(..., { openTurn: false })`) gets `parked` too, so
+  `afterRecovery` can't open a paid turn on it (pre-existing; the flag lands in P10c, so fix it there).
 
 ### P10a — process output on disk, and reading it
 
