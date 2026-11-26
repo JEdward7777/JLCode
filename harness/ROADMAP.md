@@ -24,14 +24,14 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-25 (Phase 10 planned — X-36 background processes, D-104; running as the ratchet).** **Next free ids: D-105, X-62, H-30.**
+> **Resume block — 2026-11-25 (Phase 10 planned — X-36 background processes, D-104; running as the ratchet).**
 >
-> Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
+> **Next free ids: D-106, X-62, H-31.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
 > below, slices **P10a** (output on disk + reading) → **P10b** (background launch, write, kill, list) →
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
 > **1346** green on `69cc25a`.
 >
-> **Status:** plan written; P10a not started.
+> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Next: plan review R2, then P10a.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2543,12 +2543,93 @@ provide/send the results" message to a child whose notice said it had sent messa
 
 Joshua designed this over nine questions on 2026-11-25. **D-104 is the spec**; SPEC §10/§26/§7 carry
 the summary. Each slice has its own implementer, review loop and commit, and is pushed before the
-next starts. **Next free ids at the start: D-105, X-62, H-30.** **Baseline: 1346 green across 91 test
+next starts. **Next free ids at the start: D-105, X-62, H-30** (D-105 and H-30 are taken by plan review R1, below; next free **D-106, X-62, H-31**). **Baseline: 1346 green across 91 test
 files** (2026-11-25, on `69cc25a` plus this plan).
 
 **Joshua's calls (2026-11-25):** all of D-104; paid re-recording of whatever fixtures a slice
 invalidates, **up to $5 in total** across the phase (grant **G-02**, TESTING.md), Fable included.
 Subagents run on the session's default model (Fable is not available *as a Claude Code subagent*).
+
+### Plan review R1 — folded in (binding on the slices below; where it and a slice's text differ, this wins)
+
+**Must-fixes:**
+1. **Close kills explicitly (P10a).** Today close kills tasks only through `session.stop("hard")` →
+   `stopNow` → `tasks.killAll("stop")` (`AgentCoordinator.close`'s `!m` branch and `unload`). P10a adds
+   `Session.disposeProcesses()`, called from both close paths after the stop. It kills every task
+   with no background filter, marks the registry disposed (later appends are no-ops, so a late
+   `data` event can't hit ENOENT and throw), closes the fds, and removes only that registry's own
+   directories, swallowing errors. P10b's Stop change must not touch it; P10b tests that close and
+   `close_agent` still kill a background task.
+2. **Kill: `tree-kill` on Windows only (P10a; D-105).** `tree-kill` on POSIX walks `ps`/`pgrep`
+   rather than the process group, races, misses reparented grandchildren, and its spawn has no
+   `error` listener, so a host without `ps` crashes the server. POSIX keeps `detached: true` and the
+   synchronous `process.kill(-pid)` group kill. win32 uses `tree-kill` (`taskkill /T /F`). Everyone
+   gets `windowsHide: true`. Unit-test the platform branch with the platform mocked.
+3. **`write_file(process:)` gating can't be bypassed (P10b).** `mode-gate.ts` decides from `args`, and
+   ignored arguments would still steer it (`path: "x.md"` passes Plan mode; `command: "git status"`
+   hits `PLAN_GIT_ALLOW` and auto-safe's allowlist). When `args.process` is set on `write_file`, check
+   that **first**: deny in Ask and Plan, allow in Code; policy `read-only` deny, `manual` prompt,
+   `auto-safe` **always prompt** (no allowlist), `full-auto` allow. Nothing consults `args.path` or
+   `args.command` for it. Tier-0 tests for both bypass shapes. (`gate.ts` is only `AllowAllGate`.)
+4. **Stop-killed processes don't start a turn (P10c).** A Stop never starts a turn (`notifyParent`'s
+   `openTurn: false`; `deliver` parks while `stopping`). Notices for processes killed with reason
+   `"stop"` are queued but parked (no `startNext`); they ride with the next turn. The person's
+   per-task Kill, a timeout, and a natural exit wake as D-104 says. Tier-0 test: "Stop and kill
+   processes" on an idle session leaves it idle with the notice queued.
+5. **Prune baseline at slice start (paid step).** Before the implementer starts each paid slice, the
+   coordinator takes the logged baseline **on the committed tree**: the full run's orphan set, plus
+   the addresses of the files it expects to re-record (`agents-p9g-live`, `title-live`,
+   `vision-live`). Prune set must be ⊆ those addresses, else stop (method bug).
+
+**Gaps, with the answers:**
+- **G1 Fence read/write (P10a).** `Sandbox` gains read-only roots and `resolve(input, access)`.
+  `fenceEscapes` passes `tool.kind === "read" ? "read" : "write"`; read tools (`read_file`, `list_dir`,
+  `grep`, `file_url`) resolve with "read"; `run_command`'s `cwd` is "write". `restoreRoots` leaves
+  read-only roots alone.
+- **G2 One owner (P10a).** A `ProcessStore` built in `runServe`, passed through
+  `SessionFactoryDeps`. It owns the base (`processesDir` in `JlcodePaths`), the set of directories it
+  owns, an unref'd 60 s heartbeat, and the startup sweep (before `listen`). **One heartbeat per
+  `processes/<conversation-id>/`** (not per process), written at creation. The sweep treats a
+  directory with no heartbeat as live if the directory's own mtime is under 10 minutes; it removes
+  conversation directories it emptied. Close deletes only its own process directories, then `<conv>/`
+  if empty. The registry's id comes from inside the Session (`this.conversation.id`); a sub-agent's
+  is `root~agent`, so each child has its own directory, matching D-104's ownership.
+- **G3 No data dir (P10a).** A Session built without a store (tests, direct `new Session`) uses a
+  per-session `mkdtemp` under `os.tmpdir()`, **never** `resolvePaths()`.
+- **G4 Memory flat (P10a).** Drop `InternalTask.output`; keep per-stream line counters in memory.
+  The watchdog's 4 KB tail reads the end of `combined.log`.
+- **G5 Reading logs (P10a).** The process path skips `classifyFile` (ANSI is not binary) and streams
+  to find the window rather than reading a multi-GB file whole. A trailing `\n` ends a line rather
+  than starting an empty one, so `offset: -1` is the last real line; same rule for files. `offset: 0`
+  stays an error.
+- **G6 Write ordering (P10a).** Synchronous `fs.writeSync` on open fds, so a read or result never
+  precedes the bytes. Close fds before removing a directory (Windows EBUSY).
+- **G7 Truncation note (P10a).** `MAX_OUTPUT` is bytes and can cut mid-line; the note's `offset` is
+  the first line not shown in full. Untruncated foreground results stay byte-identical.
+- **G8 Listing and notices are background-only (P10b/P10c; D-105).** Foreground tasks never appear in
+  `list_dir(processes: true)` and never send a notice; their ids stay readable by `read_file`.
+- **G9 Kill and stray paths (P10b).** `delete_file(process:)` is allowed in every mode and under every
+  policy, with no approval. When `process` is set on `write_file`/`delete_file`, `fenceEscapes` and
+  `preview` skip `path`.
+- **G10 Stdin errors (P10b).** Handle `error`/EPIPE on `child.stdin` → "the process has closed its
+  input". The registry gains `write` and `end` beside `kill`. (Every task already has a stdin pipe;
+  a stdin-reading foreground command hangs until the watchdog — pre-existing, filed as H-30.)
+- **G11 "Stop and kill processes" (P10b).** The hard scope plus processes, fanned down the subtree
+  through `AgentCoordinator.stop` as Stop already is; a flag on `POST /session/:id/stop`.
+- **G12 Notice bypasses the inbox (P10c).** `receive` persists to `store.inbox` and a reload
+  re-queues it, with read calls for ids the new registry doesn't know. The process notice skips inbox
+  recording (as the `mode` kind does via `setModeFromParent`), `from` is the process id, and it opens a
+  turn only through `drainQueue`'s `admit` path.
+- **G13 Stop item enabled when idle (P10c).** `StopControl` is disabled unless the session is
+  working; "Stop and kill processes" must be enabled whenever the session or its subtree has a running
+  background process.
+- **G14 Old ids after restart (P10a).** The new registry is empty; `read_file(process: <old>)` returns
+  the ordinary unknown-id error naming what is readable. The files stay readable by path until swept.
+- **Small:** the watchdog arms on every `task-start`, so skip it with a `background` flag on
+  `TaskView`; `pauseForApproval`'s preview context lacks `conversationId`; `run_command`'s close/error
+  handlers report `[killed by …]` from the registry's reason, not the signal; the web's `agentCard`
+  must handle the new `InboundMeta` kind. **P10c changes no hashed bytes** (no live test starts a
+  background process) and should need no paid step; P10a and P10b will.
 
 ### P10a — process output on disk, and reading it
 
@@ -2628,6 +2709,11 @@ Same method as Phase 9 follow-ups (above), adapted:
    each test is for.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-30 — a foreground command that reads stdin hangs until the watchdog.** Found 2026-11-25 by Phase 10's
+  plan review. **OPEN.** `spawn` gives every task a stdin pipe that is never written or ended, so `cat`,
+  `read`, or a prompt-for-input tool blocks forever (or until the D-34 watchdog/`timeout`). Fix shape: end
+  stdin at once for foreground tasks (background ones keep it, P10b). Changes nothing hashed.
 
 - **H-29 — fixture pruning should be mark-and-sweep.** Suggested by Joshua 2026-11-22. **OPEN, build when
   pruning matters.** X-59/X-60 pruned by diffing orphan sets before and after, per file, with the
