@@ -31,7 +31,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
 > **1346** green on `69cc25a`.
 >
-> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. R5 = FIX, folded in as one task-end lifecycle. Next: plan review R6, then P10a.
+> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. R5 = FIX, folded in as one task-end lifecycle. R6 = FIX (spawn failure; close always ends), folded in. Next: plan review R7, then P10a.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2762,6 +2762,40 @@ R4 and R5 both found defects in *how a task ends*. Rather than patch each path, 
 - **Wording:** when every queued inbound entry is parked, `describeStatus` and the web's `agentCard`/
   rest dot say "has process notices waiting" instead of "owes a reply", so a pane the person just
   stopped doesn't invite the Wake they declined. Wake still works on it (R4).
+
+### Plan review R6 — folded in (binding; wins over R1–R5 and the slice text where they differ)
+
+**Must-fix — `close` always ends a task.** A spawn failure (`cwd` gone after the fence check, EMFILE
+now that each task opens three log fds) emits `error` then `close(-2)` and **never `exit`**, with `pid`
+undefined. So: **`close` runs finish → seal in any state, for either flag** (it means every stdio
+stream is closed and the child is gone or never started). `error` with no prior `exit` records
+"failed to start: <message>" as the outcome; the read footer and the notice show that instead of
+"exited -2". Tier-0: `run_command(background: true)` with spawn failing (mock, or a `cwd` removed
+after the fence check) → the task is ended (not running) in `list_dir(processes: true)`, every fd is
+closed once, and (P10c) a "failed to start" notice is queued.
+
+**Nits taken — the lifecycle, pinned:**
+- **Signature:** `TaskRegistry.start(command, child, kill, { background, timeoutMs })` — the registry
+  owns the `ChildProcess`, its `exit`/`close`/`error` listeners and the per-call timeout timer (so
+  "cleared at finished, whichever path" is possible).
+- **Seal detaches only the registry's `data`/`end` listeners on stdout/stderr.** The child's
+  `exit`/`close` listeners — `run_command`'s included — stay until `close` fires, so a Stop-killed
+  foreground task that is disposed before its `close` still resolves its call (and `settleStopped`
+  still writes the tool result).
+- **Dispose runs finish (notices already off) then seal**, so `task-end` fires, `disarmWatchdog` runs
+  and the timeout timer clears. Dispose kills with reason `"stop"`.
+- **A kill after the child exited keeps the recorded exit as the outcome** (re-signal the group for a
+  lingering daemon, but a clean `exit 0` isn't relabelled "killed"). `write_file(process:)` treats an
+  exited child as ended (error) rather than waiting for EPIPE.
+- **The grace doesn't wait when the streams already ended** (track `end` flags from spawn, or
+  `readableEnded`); it only caps a drain that is still open.
+- **Record the signal at `exit` too**, so an OOM-killed process reads "killed by SIGKILL", not
+  "exited null".
+- **Names:** `TaskView.status` stays `"running"` until finish (`kill`, `list()` and `watchdogCheck`
+  rely on it); the internal "child has exited" flag is called `childExited`, not `exited`.
+- **Wording seam:** the "owes a reply" label is `agentStatus` in `web/src/agents.ts` (not `agentCard`),
+  read from the `queue` slice once `QueuedMessage` has `parked`; server-side it is `describeStatus` in
+  `src/session/agents.ts`.
 
 ### P10a — process output on disk, and reading it
 
