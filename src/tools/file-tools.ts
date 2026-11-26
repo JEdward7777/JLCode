@@ -216,6 +216,9 @@ function stdinPreview(args: Record<string, unknown>, ctx: ToolContext): StdinPre
   const close = args.close === true || args.close === "true";
   const { body, omitted } = capBody(content, MAX_PREVIEW_LINES);
   const view = ctx.tasks?.get(id);
+  // A child that has exited but is still in its drain grace (R4) reads
+  // "running" until it finishes — and `write` refuses it all the same.
+  const exited = view?.status === "running" && ctx.tasks?.childHasExited(id) === true;
   const ended = view && view.status !== "running";
   return {
     kind: "stdin",
@@ -229,7 +232,9 @@ function stdinPreview(args: Record<string, unknown>, ctx: ToolContext): StdinPre
       ? { error: `no process "${id}" in this conversation — this write will fail` }
       : ended
         ? { error: `process ${id} has ended (${describeState(view)}) — this write will fail` }
-        : {}),
+        : exited
+          ? { error: `process ${id} has exited — this write will fail` }
+          : {}),
   };
 }
 

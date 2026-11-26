@@ -37,8 +37,11 @@ export interface InboundMeta {
    *  `question`: a child's `ask(to: "parent")`, which its parent answers by
    *  replying with `send_message` (P9d, X-56 Q16); `mode`: the note that its
    *  parent agent changed its mode (`set_agent_mode`, P9f2) — never recorded in
-   *  the inbox, since it is owed no reply. */
-  kind: "task" | "message" | "finished" | "question" | "mode";
+   *  the inbox, since it is owed no reply; `process`: the notice that one of
+   *  its own background processes ended (P10c, D-104) — `from` is the process
+   *  id, and it is never recorded in the inbox either (G12): it asks nothing,
+   *  and after a restart the process it names is gone. */
+  kind: "task" | "message" | "finished" | "question" | "mode" | "process";
 }
 
 export interface UserEntry extends BaseEntry {

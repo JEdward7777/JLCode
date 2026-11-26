@@ -177,6 +177,33 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
+/** A command as a notice quotes it: one line, capped, so a heredoc doesn't
+ *  turn a one-line notice into a page. */
+function quoteCommand(command: string, max = 200): string {
+  const lines = command.split("\n");
+  let one = lines[0]!.trimEnd();
+  if (lines.length > 1) one += " …";
+  return one.length > max ? `${one.slice(0, max)}…` : one;
+}
+
+/**
+ * The completion notice a background process sends its thread when it ends
+ * (P10c, D-104): how it ended, its runtime, and the read call. `lines` is its
+ * combined output by the read rule (a last unterminated line counts once
+ * ended). The browser draws it as a card, reading these words back
+ * (`web/src/agents.ts`), so change the two together.
+ */
+export function processNoticeText(view: TaskView, lines: number): string {
+  const runtime = formatDuration((view.endedAt ?? Date.now()) - view.startedAt);
+  const id = view.id;
+  const output =
+    lines === 0
+      ? `It wrote no output; its log is still there: read_file(process: "${id}").`
+      : `Its output (${lines.toLocaleString("en-US")} line${lines === 1 ? "" : "s"}) stays readable: ` +
+        `read_file(process: "${id}") — offset: -20 for the last 20 lines; stream: "stdout" or "stderr" for one stream.`;
+  return `[Background process ${id} ended (${describeState(view)}) after ${runtime}: $ ${quoteCommand(view.command)}]\n${output}`;
+}
+
 /** One row of `list_dir(processes: true)` (D-104). */
 export interface ProcessRow {
   view: TaskView;
@@ -532,14 +559,32 @@ export class TaskRegistry {
     return true;
   }
 
+  /** Kill every task. Each kill is its own attempt: `kill` signals the tree
+   *  even past a throwing `task-update` listener, but then rethrows — which
+   *  must not leave the rest of the loop unkilled (P10b review nit). The first
+   *  error is rethrown once every task has been tried. */
   killAll(reason: KillReason): void {
-    for (const id of this.tasks.keys()) this.kill(id, reason);
+    this.killEach([...this.tasks.keys()], reason);
   }
 
   /** Stop's kill (D-104): foreground tasks only — background processes
    *  survive Stop; "Stop and kill processes" and closing the thread end them. */
   killForeground(reason: KillReason): void {
-    for (const [id, t] of this.tasks) if (!t.view.background) this.kill(id, reason);
+    this.killEach([...this.tasks].filter(([, t]) => !t.view.background).map(([id]) => id), reason);
+  }
+
+  private killEach(ids: string[], reason: KillReason): void {
+    let first: unknown;
+    let failed = false;
+    for (const id of ids) {
+      try {
+        this.kill(id, reason);
+      } catch (e) {
+        if (!failed) first = e;
+        failed = true;
+      }
+    }
+    if (failed) throw first;
   }
 
   /**
@@ -593,6 +638,13 @@ export class TaskRegistry {
         onError();
       }
     });
+  }
+
+  /** Has this task's child exited, though the task has not finished yet (a
+   *  background task in its drain grace, R4)? Such a task takes no input. */
+  childHasExited(id: string): boolean {
+    const t = this.tasks.get(id);
+    return t !== undefined && !t.finished && (t.childExited || t.child.exitCode !== null || t.child.signalCode !== null);
   }
 
   /** Resolves with the task's final view once it has finished, or `undefined`

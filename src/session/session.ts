@@ -49,7 +49,7 @@ import {
   type TodoWriteInput,
   type TodoWriteResult,
 } from "../conversation/todos.js";
-import { TaskRegistry, tempProcessDir } from "../tools/task-registry.js";
+import { TaskRegistry, tempProcessDir, processNoticeText } from "../tools/task-registry.js";
 import type { ProcessStore } from "../tools/process-store.js";
 import { realTarget, under } from "../tools/sandbox.js";
 import type { TaskView } from "../tools/task-registry.js";
@@ -71,6 +71,7 @@ import { buildTitleInstruction, driftedEnough, sanitizeTitle, TITLE_MAX_TOKENS, 
 import type { CompactionTrigger } from "../config/types.js";
 import {
   ModelConfigMissingError,
+  SessionBusyError,
   type AgentInfo,
   type InboundMessage,
   type PendingModelSwitch,
@@ -742,6 +743,9 @@ export class Session {
       // there (D-106).
       if (e.type === "task-start" && !e.task.background) this.armWatchdog(e.task.id);
       else if (e.type === "task-end" || (e.type === "task-update" && e.task.background)) this.disarmWatchdog(e.task.id);
+      // The completion notice (P10c, D-104): from `finish` only (R2 must-fix
+      // 2) — `task-end` is emitted there and nowhere else.
+      if (e.type === "task-end" && e.task.background) this.processEnded(e.task);
     });
     // Whole-tree spend survives resume: recompute from the stored usage of every
     // assistant entry across all branches (D-33), then grow it per new turn.
@@ -752,11 +756,15 @@ export class Session {
     // Agent messages a previous process recorded as sent but never delivered
     // (D-88) wait in the queue rather than vanish. Nothing auto-starts on load
     // (X-56 Q15): they land with whatever turn opens next.
-    this.queue = (this.conversation.inbox ?? []).map((m) => ({
-      id: newId("q"),
-      text: m.text,
-      inbound: { id: m.id, from: m.from, kind: m.kind },
-    }));
+    // A process notice is never in the inbox (G12); filtered all the same, so
+    // one can't come back pointing at a process this registry never had (R2).
+    this.queue = (this.conversation.inbox ?? [])
+      .filter((m) => m.kind !== "process")
+      .map((m) => ({
+        id: newId("q"),
+        text: m.text,
+        inbound: { id: m.id, from: m.from, kind: m.kind },
+      }));
     // A resumed thread whose branch was switched (D-87) reports — and runs
     // under — its own model from the start, not the binding's it was built
     // with. A deleted config is left for `send` to refuse, where the refusal
@@ -1249,14 +1257,52 @@ export class Session {
    * rides the queue, which the loop flushes at every tool-loop pass (D-52) —
    * which is how a correction reaches a working child before its next step.
    */
-  receive(message: InboundMessage): void {
+  receive(message: InboundMessage, opts: { parked?: boolean } = {}): void {
     this.emit({ type: "inbox", message });
     this.queue.push({
       id: newId("q"),
       text: message.text,
       inbound: { id: message.id, from: message.from, kind: message.kind },
+      // Sent from or about a stopped turn (a child's "was stopped" notice, R4
+      // nit): it rides the next turn but opens none — not even `afterRecovery`'s.
+      ...(opts.parked ? { parked: true } : {}),
     });
     this.emit({ type: "queue", queue: [...this.queue] });
+  }
+
+  /**
+   * One of this thread's background processes ended (P10c, D-104): queue the
+   * notice — like a sub-agent's (D-88), but never recorded in the inbox (G12):
+   * it asks nothing, and after a restart the process it names is gone. Idle,
+   * it opens a turn (through `drainQueue`'s `admit` path); mid-turn it lands
+   * at the next model call (D-52).
+   *
+   * None from a disposed registry (R2 must-fix 1) and none for the agent's own
+   * `delete_file` (it already got the outcome). A process a Stop killed — or one
+   * that ends while a Stop is unwinding the turn — is parked (R1 must-fix 4):
+   * a Stop never starts a turn.
+   */
+  private processEnded(view: TaskView): void {
+    if (this.tasks.isDisposed || view.killReason === "agent") return;
+    const log = this.tasks.log(view.id);
+    const lines = log ? log.lines + (log.partial ? 1 : 0) : 0;
+    const parked = view.killReason === "stop" || this.stopScope !== null;
+    this.queue.push({
+      id: newId("q"),
+      text: processNoticeText(view, lines),
+      inbound: { id: newId("msg"), from: view.id, kind: "process" },
+      ...(parked ? { parked: true } : {}),
+    });
+    this.emit({ type: "queue", queue: [...this.queue] });
+    if (parked) {
+      this.announceRest(); // idle to idle: it may owe a reply now
+      return;
+    }
+    // Off the registry's stack: `finish` can run inside a tool call (a log
+    // that failed to open), and a turn must not start in there.
+    queueMicrotask(() => {
+      this.startNext().catch((err: unknown) => this.reportInternal("a process notice could not open a turn", err, "error"));
+    });
   }
 
   /** Open a turn on the queue's head if idle — what a delivered message does to
@@ -1784,10 +1830,14 @@ export class Session {
       this.abortController?.abort();
       // Foreground only: background processes survive Stop (D-104).
       this.tasks?.killForeground("stop");
-      // Agent messages emptied out here will never be delivered: say so on
-      // disk, or a reload would hand them back as still owed (D-88).
-      this.dropInbound(this.queue);
-      this.queue = [];
+      // Process notices are kept, parked (R2 must-fix 2, R3 must-fix 1): they
+      // report facts and ask nothing, so they ride the next turn — but a Stop
+      // never starts one. Everything else is dropped; agent messages emptied
+      // out here will never be delivered: say so on disk, or a reload would
+      // hand them back as still owed (D-88).
+      const kept = this.queue.filter((m) => m.inbound?.kind === "process").map((m) => ({ ...m, parked: true }));
+      this.dropInbound(this.queue.filter((m) => m.inbound?.kind !== "process"));
+      this.queue = kept;
       // A remark that rode in on an approval belongs to the turn being stopped.
       this.pendingNote = undefined;
       // Nothing is answered here: mid-batch the head call is still running and
@@ -1798,7 +1848,9 @@ export class Session {
       this.pendingQuestion = undefined;
       this.pendingCompaction = undefined;
       this.pendingStall = undefined;
-      this.emit({ type: "queue", queue: [] });
+      // The kept entries go out too, or the browser's next text-keyed
+      // `setQueue` would drop them (R3 nit).
+      this.emit({ type: "queue", queue: [...this.queue] });
     }
     this.emit({ type: "stopped", scope });
     if (this.status !== "running") {
@@ -1824,8 +1876,8 @@ export class Session {
       // bump the generation so a settle tail still awaiting its title ask
       // (status idle, pin held) doesn't redo this work after us, and treat
       // this as the idle point it is — the in-view branch's config, then any
-      // pick made while it was busy. The hard stop has already emptied the
-      // queue, so there is nothing held to drain.
+      // pick made while it was busy. The hard stop has emptied the queue of
+      // all but parked process notices, so there is nothing to drain.
       if (ends) {
         this.turnLeaf = undefined;
         this.capReached = false;
@@ -1903,9 +1955,11 @@ export class Session {
     return before;
   }
 
-  /** Record that these queued agent messages will never be delivered (D-88). */
+  /** Record that these queued agent messages will never be delivered (D-88).
+   *  A process notice was never recorded in the inbox (G12), so it has nothing
+   *  to drop there (R3 nit). */
   private dropInbound(removed: QueuedMessage[]): void {
-    const ids = removed.flatMap((m) => (m.inbound ? [m.inbound.id] : []));
+    const ids = removed.flatMap((m) => (m.inbound && m.inbound.kind !== "process" ? [m.inbound.id] : []));
     if (ids.length > 0) this.emit({ type: "inbox-dropped", ids });
   }
 
@@ -2342,6 +2396,20 @@ export class Session {
     return restStateOf(this.conversation, this.conversation.activeLeaf, this.queue.some((m) => m.inbound));
   }
 
+  /**
+   * Is everything owed here parked (R5 wording)? `"process"` when every queued
+   * agent-side entry is a parked process notice, `"parked"` when they are all
+   * parked but not all process notices (a child's "was stopped" notice), null
+   * otherwise. A pane the person just stopped then reads "has process notices
+   * waiting", not "owes a reply" — not an invitation to the Wake they declined
+   * (Wake still works on it, R4).
+   */
+  get parkedWaiting(): "process" | "parked" | null {
+    const owed = this.queue.filter((m) => m.inbound);
+    if (owed.length === 0 || owed.some((m) => !m.parked)) return null;
+    return owed.every((m) => m.inbound!.kind === "process") ? "process" : "parked";
+  }
+
   private announceRest(): void {
     const rest = this.restState;
     if (rest === this.announcedRest) return;
@@ -2525,9 +2593,7 @@ export class Session {
     ) {
       throw new Error("Session is waiting for input; resolve it before sending.");
     }
-    if (this.status === "running") {
-      throw new Error("Session is busy; queue the message instead.");
-    }
+    if (this.status === "running") throw new SessionBusyError();
   }
 
   /**
@@ -3345,6 +3411,12 @@ export class Session {
     if (this.modelMissing) return;
     const next = this.queue[0];
     if (!next) return;
+    // Only an entry that may open a turn opens one (R3 must-fix 1): a parked
+    // entry — a Stop-killed process's notice, what a hard Stop kept, a child's
+    // "was stopped" notice — and X-31's machine-written todo nudge ride along
+    // with a turn something else opens. Wake is an explicit act by the person
+    // or the root, and ignores this (R4 must-fix 1).
+    if (!opts.woken && !this.queue.some((m) => !m.parked && !m.machine)) return;
     // Whether a person said any of this (D-89): they reset the budget, and they
     // never wait behind the tree's concurrency cap — a turn of agent traffic
     // does, `queued`, until the coordinator starts it (`startQueued`).

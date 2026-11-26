@@ -139,6 +139,16 @@ const lastContent = (req: ChatRequest): string => {
   const c = req.messages[req.messages.length - 1]?.content;
   return typeof c === "string" ? c : "";
 };
+/** Resolves with the text of the first process notice the session's
+ *  transcript takes in (P10c), once the turn carrying it has settled. */
+const noticeTurn = (s: Session): Promise<string> =>
+  new Promise((resolve) => {
+    let notice: string | undefined;
+    s.onEvent((e) => {
+      if (e.type === "user" && e.text.startsWith("[Background process")) notice ??= e.text;
+      if (notice !== undefined && e.type === "settled") resolve(notice);
+    });
+  });
 const toolResults = (s: Session) =>
   s.conversation.entries.filter((e) => e.type === "tool").map((e) => (e as { content: string }).content);
 
@@ -601,7 +611,9 @@ describe("the watchdog can background a command (D-106)", () => {
       async *streamChat(req): AsyncGenerator<StreamEvent> {
         const last = req.messages[req.messages.length - 1];
         const content = lastContent(req);
-        if (content.includes("[watchdog]")) {
+        if (last?.role === "user" && content.startsWith("[Background process")) {
+          yield* text("noted"); // its completion notice (P10c)
+        } else if (content.includes("[watchdog]")) {
           asks++;
           watchdogTools = req.tools;
           yield* toolCall("decide_kill", { action: "background", reason: "it is waiting for input" });
@@ -616,6 +628,7 @@ describe("the watchdog can background a command (D-106)", () => {
     };
     const reg = new TaskRegistry({ graceMs: 200 });
     const { session } = makeSession({ driver, watchdogMs: 30, reg });
+    const noticed = noticeTurn(session);
     await session.send("go");
     expect(asks).toBe(1); // backgrounded: never watched again
     const [moved, wrote] = toolResults(session);
@@ -627,6 +640,9 @@ describe("the watchdog can background a command (D-106)", () => {
     const end = await ended(id, reg);
     expect(end).toMatchObject({ status: "exited", exitCode: 0, background: true });
     expect(logOf(id, reg)).toContain("got hello");
+    // P10c (R3 must-fix 2 moved it here): the backgrounded command's end sends
+    // its notice, which the agent reads.
+    expect(await noticed).toMatch(new RegExp(`^\\[Background process ${id} ended \\(exited 0\\) after \\d+s: \\$ read x; echo got \\$x\\]`));
     // The question offers the third answer.
     const def = (watchdogTools as { function: { name: string; parameters: { properties: { action: { enum: string[] } }; required: string[] } } }[])[0]!;
     expect(def.function.name).toBe("decide_kill");
@@ -639,17 +655,19 @@ describe("the watchdog can background a command (D-106)", () => {
       async *streamChat(req): AsyncGenerator<StreamEvent> {
         const last = req.messages[req.messages.length - 1];
         if (lastContent(req).includes("[watchdog]")) yield* toolCall("decide_kill", { action: "background" });
-        else if (last?.role === "tool") yield* text("ok");
+        else if (last?.role === "tool" || lastContent(req).startsWith("[Background process")) yield* text("ok");
         else yield* toolCall("run_command", { command: "echo pid=$$; sleep 30 &" });
       },
     };
     const reg = new TaskRegistry({ graceMs: 200 });
     const { session } = makeSession({ driver, watchdogMs: 30, reg });
+    const noticed = noticeTurn(session);
     await session.send("go");
     const id = idOf(toolResults(session)[0]!);
     const end = await ended(id, reg);
     reap.push(Number(/pid=(\d+)/.exec(logOf(id, reg))![1]));
     expect(end).toMatchObject({ status: "exited", exitCode: 0, background: true });
+    expect(await noticed).toContain(`[Background process ${id} ended (exited 0)`); // P10c
   });
 
   it.skipIf(!posix)("the flip resolves run_command once with the moved text; the later close doesn't resolve it again", async () => {
@@ -725,7 +743,7 @@ describe("Stop spares background processes; 'Stop and kill processes' (D-104, R1
     expect(toolResults(session)[1]).toContain("[killed by global stop]");
   });
 
-  it.skipIf(!posix)("idle: kills the processes (reason stop) and nothing else — no queue clear, no stopped event", async () => {
+  it.skipIf(!posix)("idle: kills the processes (reason stop) and nothing else — no queue clear, no stopped event; the notice is parked (P10c)", async () => {
     const reg = new TaskRegistry({ graceMs: 200 });
     const { session, events } = makeSession({ driver: bgThen(async function* () { yield* text("ok"); }), reg });
     await session.send("go");
@@ -735,8 +753,12 @@ describe("Stop spares background processes; 'Stop and kill processes' (D-104, R1
     const [bg] = reg.all();
     session.stop("hard", { killProcesses: true });
     expect(await ended(bg!.id, reg)).toMatchObject({ status: "killed", killReason: "stop" });
-    expect(session.queuedMessages.map((q) => q.text)).toEqual(["held for later"]);
-    expect(events.slice(before).some((e) => e.type === "stopped" || e.type === "queue")).toBe(false);
+    // P10c: the process's notice joins the queue, parked — nothing was cleared.
+    const queued = session.queuedMessages;
+    expect(queued[0]).toMatchObject({ text: "held for later" });
+    expect(queued[1]).toMatchObject({ parked: true, inbound: { kind: "process", from: bg!.id } });
+    expect(queued).toHaveLength(2);
+    expect(events.slice(before).some((e) => e.type === "stopped")).toBe(false);
     expect(session.status).toBe("idle");
   });
 
@@ -812,7 +834,17 @@ describe("fake-driver commands for the peek (P10c)", () => {
     await session.send("procs:");
     expect(toolResults(session)[3]).toContain(`${id} · cat · running`);
     await session.send("eof:");
+    // Its exit sends a notice (P10c) that opens a turn of its own: wait for
+    // that turn to settle before typing again.
+    const noticed = new Promise<void>((resolve) => {
+      let opened = false;
+      session.onEvent((e) => {
+        if (e.type === "user" && e.text.startsWith("[Background process")) opened = true;
+        if (opened && e.type === "settled") resolve();
+      });
+    });
     expect(await ended(id, reg)).toMatchObject({ status: "exited", exitCode: 0 });
+    await noticed;
     await session.send("bg: sleep 30");
     const second = idOf(toolResults(session)[5]!);
     await session.send("kill:");

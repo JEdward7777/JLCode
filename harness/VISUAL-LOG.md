@@ -1976,3 +1976,44 @@ prose, and the D-72 decline note ran off the right edge. The collapsed line read
 that had no options. It is now "Declined — no answer given".
 
 Not exercised visually: a parent agent's reply to `ask@parent` and a stopped `ask`. Both are covered at Tier-0.
+
+---
+
+## P10c — process notices and the Stop dropdown · 2026-11-26 · ✅ looked good
+
+**Screenshots:** [`visual/p10c-stdin-card.png`](visual/p10c-stdin-card.png),
+[`visual/p10c-stop-menu.png`](visual/p10c-stop-menu.png), [`visual/p10c-notice-card.png`](visual/p10c-notice-card.png),
+[`visual/p10c-stop-kill.png`](visual/p10c-stop-kill.png),
+[`visual/p10c-processes-write-card.png`](visual/p10c-processes-write-card.png).
+
+**Setup:** fake driver on its own port pair, `JLCODE_PEEK_PORT=7811 JLCODE_PEEK_CDP_PORT=9421`, under the
+peek's default `manual` policy. Approvals went through `POST /session/:id/approve`. Chrome came through the
+H-28 symlink. The first `shot` timed out on `Page.navigate`, and the retry worked. Commands, in order:
+`bg: cat`, `stdin: hello there`, the panel's Kill, `bg: sleep 300` under full-auto, then ▾ → "Stop and kill
+processes", then a `write:` into the conversation's own `processes/` directory.
+
+**Confirmed with my own eyes:**
+- **The stdin card (P10b, first peek).** `write_file` has a COMMAND badge and "input to a running process —
+  approval required by policy". It shows a STDIN tag, "to process task_… · running", `12 B`, `$ cat`, and then
+  the exact bytes. There is no path field.
+- **The tasks panel.** It is headed "running commands". Each row has a `background` tag, the command, its
+  `task_…` id, the elapsed time and Kill.
+- **The Stop control on an idle pane with only a background process.** The big Stop is dimmed and the caret
+  is live. In the menu, "Stop LLM loop only" is greyed and "Stop and kill processes" is enabled, with its
+  hint. The rail reads "process run…". The composer offers **Send**, not Queue.
+- **The panel's Kill makes a notice that wakes the agent.** The card reads "process ended", then
+  `task_… · killed by the user · 52s`, then `$ cat`, with a red (warn) edge. The fake driver's turn
+  answered it. The panel went away, and Stop and its caret are both disabled.
+- **"Stop and kill processes" parks the notice.** The session stays idle and no turn opens. QUEUED holds
+  the `[Background process task_…` chip. The rail card carries the `wake` chip and reads "process noti…"
+  (truncated by the card's width). My next message (the `write:` below) took the parked notice along with
+  it, as R3 says. The notice landed **after** my message, as any queued agent message does, so the fake
+  driver answered the notice (its last user message) and not the `write:`. I had to **resend** the
+  `write:`; `p10c-processes-write-card.png` shows the first `write:`, the notice card and its answer above
+  the resent one.
+- **P10a's card for a write into `processes/` (first peek).** It shows "access outside the workspace"
+  with the path. It offers **Allow once / Deny**, and no Remember. Denied.
+
+**Not exercised visually:** a sub-agent's background process enabling the parent's kill item (covered at
+Tier-0 by `treeHasProcesses`), and the timeout notice (covered at Tier-0). The two small "▯" glyphs under
+replies are headless Chrome lacking the font for the reply controls. They are not a P10c change.

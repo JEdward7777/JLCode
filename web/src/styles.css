@@ -883,8 +883,14 @@ body.row-resizing {
   font-weight: 600;
   cursor: pointer;
 }
-.stop-menu button:hover {
+.stop-menu button:hover:not(:disabled) {
   background: var(--panel);
+}
+/* An item with nothing to act on (P10c): plain Stop's soft item while only
+   background processes run, the kill item while there are none. */
+.stop-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .stop-menu .hint {
   font-weight: 400;
@@ -909,6 +915,18 @@ body.row-resizing {
   border-radius: 6px;
   overflow-x: auto;
   white-space: nowrap;
+}
+/* A background process (D-104, P10c): survives Stop, sends a notice. */
+.task-tag {
+  font-size: 11px;
+  color: #9fb4ff;
+  border: 1px solid #3b4560;
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.task-id {
+  color: var(--muted);
+  font-size: 11px;
 }
 .task-time {
   color: var(--muted);
@@ -2538,6 +2556,10 @@ button.model-chip.missing {
 }
 .agent-card.finished {
   border-left-color: #4caf7d;
+}
+/* A background process ended (P10c): a fact from the machine, not a peer. */
+.agent-card.process {
+  border-left-color: #5b8def;
 }
 /* A parent's set_agent_mode, on either side (P9f2). */
 .agent-card.mode {

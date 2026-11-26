@@ -138,7 +138,9 @@ const MODE_MEANS: Record<Mode, string> = {
 /** A conversation with its pending inbox set to the agent messages still
  *  queued — what a reload of the file would fold (D-88). */
 function withInbox(conversation: Conversation, queue: readonly QueuedMessage[]): Conversation {
-  const inbox = queue.flatMap((m) => (m.inbound ? [{ ...m.inbound, text: m.text }] : []));
+  // A process notice is never an inbox item (G12, R2 must-fix 1): on a quick
+  // reopen it would point at a process the new registry never had.
+  const inbox = queue.flatMap((m) => (m.inbound && m.inbound.kind !== "process" ? [{ ...m.inbound, text: m.text }] : []));
   const { inbox: _stale, ...rest } = conversation;
   return inbox.length > 0 ? { ...rest, inbox } : rest;
 }
@@ -158,7 +160,13 @@ function describeStatus(s: Session): string {
       if (s.capReached) return "paused at the spend cap";
       const rest = s.restState;
       if (rest === "interrupted") return "interrupted mid-turn (the root's wake_agents resumes it)";
-      if (rest === "owes-reply") return "has a message it has not answered yet";
+      if (rest === "owes-reply") {
+        // Owed only parked notices (R5): what a Stop left, not a reply due.
+        const parked = s.parkedWaiting;
+        if (parked === "process") return "has process notices waiting";
+        if (parked === "parked") return "has notices waiting from before a Stop";
+        return "has a message it has not answered yet";
+      }
       return s.restedAs === "finished" ? "finished its turn, idle" : "idle";
     }
     default:
@@ -573,11 +581,14 @@ export class AgentCoordinator implements AgentHost {
     opts: { openTurn?: boolean } = {},
   ): string {
     const id = newId("msg");
-    to.session.receive({ id, from: from.name, kind, text: this.render(to, from, kind, body) });
     // Sent from a turn a person stopped — the rest of a soft-stopped batch, or a
     // spawn that finished after the Stop landed — it is delivered but parked:
-    // nothing in a stopped subtree starts a turn after the Stop (D-34).
-    if (opts.openTurn !== false && !from.session.stopping) this.later(() => to.session.startNext());
+    // nothing in a stopped subtree starts a turn after the Stop (D-34). Parked
+    // on the entry too (R4 nit), so no later drain — `afterRecovery`, a
+    // settle — can open a paid turn on it either.
+    const open = opts.openTurn !== false && !from.session.stopping;
+    to.session.receive({ id, from: from.name, kind, text: this.render(to, from, kind, body) }, open ? {} : { parked: true });
+    if (open) this.later(() => to.session.startNext());
     return id;
   }
 

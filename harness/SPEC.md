@@ -264,7 +264,10 @@ swept at startup only when its owning server's heartbeat has gone stale.
   reads its output (combined by default, or stdout/stderr) with `offset`/`limit` (a negative `offset`
   counts from the end); `write_file(process:, content, close?)` appends to stdin, gated as
   `run_command`; `delete_file(process:)` kills the tree; `list_dir(processes: true)` lists them. A
-  process ending on its own queues a notice to the agent like a sub-agent's. Each thread owns its
+  process that ends on its own, or is killed by the person, its timeout or "Stop and kill processes",
+  queues a notice to the agent like a sub-agent's. The notice says how it ended, the runtime and the
+  read call. None follows the agent's own `delete_file`. A notice for a process that Stop killed is
+  **parked**: it rides the next turn and opens none, though Wake delivers it (D-109). Each thread owns its
   own processes; closing the thread kills them. Output lives in the data store (§7), never the
   project. A foreground result cut at its cap also carries an id, so the rest is readable.
 

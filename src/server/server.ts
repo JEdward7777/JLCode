@@ -23,7 +23,7 @@ import { textMimeFor } from "../tools/file-url.js";
 import { agentConversationId, splitConversationId, type ConversationStore } from "../persist/conversation-store.js";
 import { governingSwitch } from "../conversation/tree.js";
 import { groupConfigsByKey, keyFingerprint } from "../config/operations.js";
-import { ModelConfigMissingError } from "../session/types.js";
+import { ModelConfigMissingError, SessionBusyError } from "../session/types.js";
 import type { DebugJournal } from "../persist/debug-journal.js";
 import { SessionManager } from "../session/manager.js";
 import { AgentCoordinator } from "../session/agents.js";
@@ -1132,7 +1132,16 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     // written on `activeLeaf` — the branch the person asked to continue.
     if (typeof body.leaf === "string" && body.leaf !== session.conversation.activeLeaf) {
       if (!materialized && session.status !== "idle") {
-        return c.json({ error: "session is busy; queue the message instead" }, 409);
+        // `code` lets the browser queue the text instead (P10c review R1): a
+        // background process's notice can open a turn between render and send.
+        // `sessionId`: the one to queue to — it may be a live session this
+        // request attached to by conversation, not the id the browser sent.
+        // Only `running` is "busy" (queueable); halted/awaiting-* must not be
+        // silently queued, so they get a plain refusal (P10c review R3).
+        if (session.status === "running") {
+          return c.json({ error: "session is busy; queue the message instead", code: "busy", sessionId: session.id }, 409);
+        }
+        return c.json({ error: `session is ${session.status}; it cannot take a message on another branch now` }, 409);
       }
       try {
         session.setActiveLeaf(body.leaf);
@@ -1154,6 +1163,12 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
       // browser has to land on it to open the picker there (X-56, P9b).
       if (err instanceof ModelConfigMissingError) {
         return c.json({ error: err.message, ...missingView(err), sessionId: session.id }, 409);
+      }
+      // A turn is running (a process notice can open one between the browser's
+      // render and this send, P10c): `code` tells it to queue instead, to the
+      // session named here (P10c review R2).
+      if (err instanceof SessionBusyError) {
+        return c.json({ error: err.message, code: err.code, sessionId: session.id }, 409);
       }
       return c.json({ error: (err as Error).message }, 409);
     }

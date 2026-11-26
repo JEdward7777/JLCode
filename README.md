@@ -183,6 +183,19 @@ request only, leaving background commands and your queued messages alone (Stop i
 still there for everything else). Blips you never see — a rate limit or a 5xx is
 re-sent automatically, with the backoff shown as it happens.
 
+The agent can start a command **in the background** and carry on while it runs. The
+running-commands panel above the composer lists it with a `background` tag, its
+process id and a **Kill**. **Stop leaves background processes running**: it ends
+the turn and any foreground command, nothing more. To end them too, pick **Stop and
+kill processes** from Stop's ▾ menu. It covers this thread and its sub-agents, and
+it works even when the thread is idle and only processes are running. When a
+background process ends, the agent gets a short notice saying how it ended. The
+notice shows in the transcript as a *process ended* card. If the process exited on
+its own, or was killed by you or by its timeout, the notice starts a turn. A notice
+caused by Stop waits quietly for the next turn: the rail reads *process notices
+waiting*, and **Wake** delivers it if you want. Closing a thread kills its
+processes.
+
 On a long piece of work JLCode eventually stops and asks: *"50 model turns on
 this message without finishing — still getting somewhere?"* with a **Continue**
 button that doubles the budget and picks up exactly where it paused. Nothing is

@@ -197,9 +197,18 @@ function lastUserMessage(req: ChatRequest): string {
   return typeof user?.content === "string" ? stripEnvironmentDetails(user.content).trim().replace(INBOUND_HEADER, "") : "";
 }
 
-/** The last process id anything in the conversation named (`task_…`), for the
- *  background-process commands' default target. */
+/** The newest process — the last one a launch result started (`Started in the
+ *  background as process …`, or the watchdog's `still running as process …`),
+ *  for the background-process commands' default target. A listing or a notice
+ *  names older ids after it, so the last id printed is not the newest (P10b
+ *  review nit). With no launch in view, the last id anything named. */
 function lastProcessId(req: ChatRequest): string {
+  const LAUNCH = /(?:Started in the background as|still running as) process (task_[0-9a-f]{12})/g;
+  for (let i = req.messages.length - 1; i >= 0; i--) {
+    const c = req.messages[i]!.content;
+    const ids = typeof c === "string" ? [...c.matchAll(LAUNCH)].map((m) => m[1]!) : [];
+    if (ids.length > 0) return ids[ids.length - 1]!;
+  }
   for (let i = req.messages.length - 1; i >= 0; i--) {
     const c = req.messages[i]!.content;
     const ids = typeof c === "string" ? c.match(/task_[0-9a-f]{12}/g) : null;

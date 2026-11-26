@@ -415,7 +415,7 @@ export function reduceEvent(s: SessionSlice, e: WireEvent): SessionSlice {
         working: false,
         notice:
           e.scope === "hard"
-            ? "Stopped — aborted the turn and killed all tasks."
+            ? "Stopped — aborted the turn and killed its foreground commands."
             : "Stopping after the current work — no further turn.",
         noticeKind: "stopped",
       };

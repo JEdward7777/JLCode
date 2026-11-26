@@ -18,6 +18,8 @@ import {
   resolveAgent,
   rollup,
   subtreeWorking,
+  treeHasProcesses,
+  isForeground,
   wakeCount,
   type AgentCard,
   type RailNode,
@@ -78,6 +80,8 @@ import {
   loadTree,
   openBus,
   sendChat,
+  sendOrQueue,
+  QueueFallbackError,
   fetchConfigs,
   switchModel as apiSwitchModel,
   cancelPendingModel,
@@ -753,12 +757,20 @@ export function App() {
         // The conversation rides along as the revival fallback (X-12): if this
         // tab's session died with a previous process, the server resumes from
         // disk instead of 404ing. Costs nothing when the session is alive.
-        const { sessionId } = await sendChat(id, text, { conversationId });
+        // Busy by the time it lands (a process notice opened a turn, P10c):
+        // queued instead, rather than refused after the composer was cleared.
+        const { sessionId } = await sendOrQueue(id, text, { ...(conversationId ? { conversationId } : {}) });
         if (sessionId !== id) focus(sessionId); // revived under a new id
       } catch (err) {
         // A deleted model config (X-56 Q2) refuses before anything is written:
         // open the picker, and give the text back rather than losing it.
         if (onMissing(id, "send", err, text)) return;
+        // Refused, so nothing was said: busy with a failed queue fallback, or
+        // any other 409 (waiting for input, halted, a stalled write…). Give
+        // the text back rather than lose it (P10c review R2).
+        if (err instanceof QueueFallbackError || (err instanceof ApiError && err.status === 409)) {
+          dispatch({ t: "restore-input", id, text });
+        }
         notify(id, (err as Error).message);
       }
     },
@@ -922,9 +934,9 @@ export function App() {
   );
 
   const stop = useCallback(
-    async (id: string, scope: "hard" | "soft") => {
+    async (id: string, scope: "hard" | "soft", opts: { killProcesses?: boolean } = {}) => {
       try {
-        await apiStop(id, scope);
+        await apiStop(id, scope, opts);
       } catch (err) {
         notify(id, (err as Error).message);
       }
@@ -1948,7 +1960,7 @@ function ChatPane({
   ) => void;
   onSubmitAnswer: (id: string, answers: AskAnswer[], asked: AskUserRequest) => void;
   onChangeCap: (id: string, v: number | null) => void;
-  onStop: (id: string, scope: "hard" | "soft") => void;
+  onStop: (id: string, scope: "hard" | "soft", opts?: { killProcesses?: boolean }) => void;
   onRetry: (id: string) => void;
   onKillTask: (id: string, taskId: string) => void;
   onCancelQueued: (id: string, qid: string) => void;
@@ -2088,11 +2100,12 @@ function ChatPane({
   }, [applyFollow]);
 
   // "Busy" = the agent can't take a fresh Send right now: the LLM is thinking, a
-  // background command is running, or a prompt is open. While busy, the composer
-  // queues (D-34) instead of sending.
+  // foreground command is running, or a prompt is open. While busy, the composer
+  // queues (D-34) instead of sending. A background process (D-104) doesn't make
+  // it busy: the agent is free to talk while it runs.
   const blocked =
     slice.working ||
-    slice.tasks.length > 0 ||
+    slice.tasks.some(isForeground) ||
     slice.pendingApproval !== null ||
     slice.pendingAsk !== null ||
     slice.pendingCompaction !== null ||
@@ -2122,8 +2135,9 @@ function ChatPane({
           {/* Live while its subtree works too (H-22a): a root that yielded after
               spawning is idle, and this Stop is the one that reaches its tree. */}
           <StopControl
-            active={slice.working || slice.tasks.length > 0 || subtreeWorking(live, id)}
-            onStop={(scope) => onStop(id, scope)}
+            active={slice.working || slice.tasks.some(isForeground) || subtreeWorking(live, id)}
+            processes={treeHasProcesses(live, id)}
+            onStop={(scope, opts) => onStop(id, scope, opts)}
           />
           <div className="seg" role="group" aria-label="mode">
             {MODES.map((m) => (
@@ -2981,20 +2995,39 @@ function SpendChip({
 }
 
 /** The big red Stop (hard abort) with a caret menu for the soft, loop-only stop
- *  that lets running commands finish (D-34). */
-function StopControl({ active, onStop }: { active: boolean; onStop: (scope: "hard" | "soft") => void }) {
+ *  that lets running commands finish (D-34), and "Stop and kill processes"
+ *  (P10c). `active` is whether plain Stop has anything to stop — background
+ *  processes don't count, it leaves them running (D-104, R4); `processes` is
+ *  whether this session or its subtree has one, which is what enables the
+ *  kill item even when nothing else is going on (R1 G13). */
+function StopControl({
+  active,
+  processes,
+  onStop,
+}: {
+  active: boolean;
+  processes: boolean;
+  onStop: (scope: "hard" | "soft", opts?: { killProcesses?: boolean }) => void;
+}) {
   const [menu, setMenu] = useState(false);
+  const caret = active || processes;
   return (
     <div className="stop-wrap">
-      <button className="stop" disabled={!active} onClick={() => onStop("hard")} title="stop everything now">
+      <button
+        className="stop"
+        disabled={!active}
+        onClick={() => onStop("hard")}
+        title={processes ? "stop everything now — background processes keep running" : "stop everything now"}
+      >
         ◼ Stop
       </button>
-      <button className="stop caret" disabled={!active} onClick={() => setMenu((m) => !m)} aria-label="stop options">
+      <button className="stop caret" disabled={!caret} onClick={() => setMenu((m) => !m)} aria-label="stop options">
         ▾
       </button>
-      {menu && active && (
+      {menu && caret && (
         <div className="stop-menu">
           <button
+            disabled={!active}
             onClick={() => {
               onStop("soft");
               setMenu(false);
@@ -3003,13 +3036,22 @@ function StopControl({ active, onStop }: { active: boolean; onStop: (scope: "har
             Stop LLM loop only
             <span className="hint">let running commands finish; take no further turn</span>
           </button>
+          <button
+            disabled={!processes}
+            onClick={() => {
+              onStop("hard", { killProcesses: true });
+              setMenu(false);
+            }}
+          >
+            Stop and kill processes
+            <span className="hint">stop, and kill the background processes here and in sub-agents</span>
+          </button>
         </div>
       )}
     </div>
   );
 }
 
-/** Running background commands (D-34): elapsed time + a per-task Kill. */
 /**
  * The shared todo list (X-31) — the person's half of it.
  *
@@ -3171,6 +3213,10 @@ function TodoPanel({
   );
 }
 
+/** Running commands (D-34): elapsed time + a per-task Kill. Each row names its
+ *  process id — what the agent's `read_file(process:)` calls it — and a
+ *  background process (D-104) is tagged: it survives a plain Stop, and killing
+ *  it here sends the agent a notice (P10c). */
 function TasksPanel({ tasks, onKill }: { tasks: TaskView[]; onKill: (id: string) => void }) {
   const [, setNow] = useState(Date.now());
   useEffect(() => {
@@ -3184,12 +3230,20 @@ function TasksPanel({ tasks, onKill }: { tasks: TaskView[]; onKill: (id: string)
   return (
     <div className="card tasks">
       <div className="card-head">
-        <span className="tool">background tasks</span>
+        <span className="tool">running commands</span>
         <span className="reason">running · killable</span>
       </div>
       {tasks.map((t) => (
         <div className="task" key={t.id}>
+          {t.background ? (
+            <span className="task-tag" title="a background process: it survives Stop, and the agent gets a notice when it ends">
+              background
+            </span>
+          ) : null}
           <code className="task-cmd">{t.command}</code>
+          <code className="task-id" title="its process id — what the agent reads it by">
+            {t.id}
+          </code>
           <span className="task-time">{elapsed(t.startedAt)}</span>
           <button className="danger" onClick={() => onKill(t.id)}>
             Kill

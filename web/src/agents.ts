@@ -6,7 +6,7 @@
  * Everything here is pure — slices and entries in, plain data out — so the
  * decisions are Tier-0 testable; `App.tsx` only draws what these return.
  */
-import type { ClosedAgent, EntryView, InboundMeta } from "./api";
+import type { ClosedAgent, EntryView, InboundMeta, QueuedMessage, TaskView } from "./api";
 import { isAwaiting, type SessionSlice } from "./session-state";
 
 // ---- The status dot. ----
@@ -38,7 +38,24 @@ export type StatusSlice = Pick<
   | "tasks"
   | "restedAs"
   | "rest"
+  | "queue"
 >;
+
+/** A foreground command — what keeps a session busy and what plain Stop
+ *  kills. A background process does neither (D-104). */
+export const isForeground = (t: TaskView): boolean => !t.background;
+
+/**
+ * Is everything this session is owed parked (P10c, R5)? `"process"` when the
+ * queue's agent-side entries are all parked process notices, `"parked"` when
+ * all parked but not all process notices (a child's "was stopped" notice),
+ * null otherwise — then "owes a reply" is the truth.
+ */
+export function parkedWaiting(queue: readonly QueuedMessage[]): "process" | "parked" | null {
+  const owed = queue.filter((m) => m.inbound);
+  if (owed.length === 0 || owed.some((m) => !m.parked)) return null;
+  return owed.every((m) => m.inbound!.kind === "process") ? "process" : "parked";
+}
 
 /**
  * Is this session waiting on **the person** (D-93's `waitsForYou`)? An
@@ -70,7 +87,7 @@ export function agentStatus(s: StatusSlice, sub: boolean): AgentStatus {
   if (s.capReached) return { dot: "attn", label: "cap reached" };
   if (s.working || s.status === "running") return { dot: "busy", label: "working…" };
   if (s.status === "queued") return { dot: "queued", label: "queued" };
-  if (s.tasks.length > 0) return { dot: "busy", label: "task running" };
+  if (s.tasks.some(isForeground)) return { dot: "busy", label: "task running" };
   if (s.status === "halted") return { dot: "halt", label: "halted" };
   // A question whose card has not landed: say "waiting…" without claiming it
   // is yours (the card will say who was asked).
@@ -80,7 +97,16 @@ export function agentStatus(s: StatusSlice, sub: boolean): AgentStatus {
   // At rest but cut off, as its log reads (P9f) — after a restart this is
   // the only thing that tells a stranded agent from a finished one (H-22k).
   if (s.rest === "interrupted") return { dot: "wake", label: "interrupted" };
-  if (s.rest === "owes-reply") return { dot: "wake", label: "owes a reply" };
+  if (s.rest === "owes-reply") {
+    // Owed only what a Stop parked (R5): not the Wake the person declined.
+    const parked = parkedWaiting(s.queue);
+    if (parked === "process") return { dot: "wake", label: "process notices waiting" };
+    if (parked === "parked") return { dot: "wake", label: "notices waiting" };
+    return { dot: "wake", label: "owes a reply" };
+  }
+  // At rest, with a background process still going (D-104): not busy — the
+  // agent can take a message — but worth a word.
+  if (s.tasks.length > 0) return { dot: "idle", label: "process running" };
   // A sub-agent loaded at rest on its own reply (after a restart, a reopen)
   // has no `settled` to go by, but its log says it finished just the same.
   if (sub && (s.restedAs === "finished" || (s.restedAs === null && s.rest === "quiescent"))) {
@@ -197,7 +223,27 @@ export function subtreeWorking(slices: readonly (StatusSlice & Pick<SessionSlice
     const at = queue.shift()!;
     for (const s of slices) {
       if (s.agent?.parentSessionId !== at || seen.has(s.id)) continue;
-      if (s.working || s.status === "running" || s.status === "queued" || s.tasks.length > 0) return true;
+      if (s.working || s.status === "running" || s.status === "queued" || s.tasks.some(isForeground)) return true;
+      seen.add(s.id);
+      queue.push(s.id);
+    }
+  }
+  return false;
+}
+
+/** Does `id` or anything below it have a background process running — what
+ *  puts "Stop and kill processes" on offer when nothing else is (R1 G13, R4:
+ *  plain Stop leaves those processes alone, so they don't enable it)? */
+export function treeHasProcesses(slices: readonly (Pick<SessionSlice, "id" | "agent" | "tasks">)[], id: string): boolean {
+  const seen = new Set<string>([id]);
+  const queue = [id];
+  const self = slices.find((s) => s.id === id);
+  if (self?.tasks.some((t) => t.background)) return true;
+  while (queue.length > 0) {
+    const at = queue.shift()!;
+    for (const s of slices) {
+      if (s.agent?.parentSessionId !== at || seen.has(s.id)) continue;
+      if (s.tasks.some((t) => t.background)) return true;
       seen.add(s.id);
       queue.push(s.id);
     }
@@ -269,7 +315,7 @@ export function lineage<S extends LinkSlice>(slices: readonly S[], s: LinkSlice)
  * to — and `body` what was said, its attribution header removed.
  */
 export interface AgentCard {
-  kind: "spawned" | "sent" | "received" | "finished" | "refused" | "mode";
+  kind: "spawned" | "sent" | "received" | "finished" | "refused" | "mode" | "process";
   peer: string | null;
   /** The card's head, without the peer: "spawned", "→", "task from" … */
   head: string;
@@ -366,7 +412,33 @@ function inboundCard(meta: InboundMeta, text: string): AgentCard {
         ...(failed || stopped ? { tone: "warn" as const } : {}),
       };
     }
+    case "process":
+      return processCard(meta, text);
     default:
       return { kind: "received", peer: meta.from, head: "←", body };
   }
+}
+
+/** The words of `processNoticeText` (src/tools/task-registry.ts), read back. */
+const PROCESS_NOTICE = /^\[Background process (\S+) ended \((.*?)\) after ([^:]+): \$ ([^\n]*)\]/;
+
+/**
+ * A background process's completion notice (P10c, D-104): not agent traffic
+ * and not the person, so a card of its own — "process ended", how it ended and
+ * how long it ran, the command. `peer` is null: a process id is nothing the
+ * rail can open. A kill, a failed start or a non-zero exit is warn-toned.
+ */
+function processCard(meta: InboundMeta, text: string): AgentCard {
+  const m = PROCESS_NOTICE.exec(text);
+  if (!m) return { kind: "process", peer: null, head: "process ended", body: text, detail: meta.from };
+  const [, id, how, runtime, command] = m as unknown as [string, string, string, string, string];
+  const clean = how === "exited 0";
+  return {
+    kind: "process",
+    peer: null,
+    head: "process ended",
+    detail: `${id} · ${how} · ${runtime}`,
+    body: `$ ${command}`,
+    ...(clean ? {} : { tone: "warn" as const }),
+  };
 }

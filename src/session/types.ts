@@ -18,6 +18,11 @@ export interface QueuedMessage {
   /** Written by JLCode itself — the parked todo nudge (X-31). Neither human
    *  input nor agent traffic: it never opens a turn and never resets a budget. */
   machine?: boolean;
+  /** Parked (P10c, R3 must-fix 1): it rides the next turn something else opens,
+   *  but never opens one itself — a notice for a process a Stop killed, every
+   *  entry a hard Stop keeps, a child's "was stopped" notice. `drainQueue`
+   *  opens a turn only if some entry is not parked; Wake ignores this (R4). */
+  parked?: boolean;
 }
 
 /** An agent message as it travels (D-88): the attribution plus the text the
@@ -444,5 +449,19 @@ export class ModelConfigMissingError extends Error {
       `This thread's model config "${snapshot.name}" (${snapshot.model}) no longer exists — pick another model for the thread.`,
     );
     this.name = "ModelConfigMissingError";
+  }
+}
+
+/**
+ * A send refused because a turn is already running (P10c review R2): the
+ * message can wait in the queue instead. Typed, so the server answers it with
+ * `code: "busy"` and the browser queues the text rather than drop it — a
+ * background process's notice can open a turn between render and send.
+ */
+export class SessionBusyError extends Error {
+  readonly code = "busy";
+  constructor() {
+    super("Session is busy; queue the message instead.");
+    this.name = "SessionBusyError";
   }
 }

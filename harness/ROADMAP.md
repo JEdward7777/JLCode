@@ -24,38 +24,30 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-26 (Phase 10 — P10a ✅, P10b ✅ committed; running as the ratchet).**
+> **Resume block — 2026-11-26 (Phase 10 ✅ complete — X-36 background processes; P10a, P10b, P10c pushed).**
 >
-> **Next free ids: D-109, X-62, H-32.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
-> below, slices **P10a** (output on disk + reading) → **P10b** (background launch, write, kill, list) →
-> **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02).
+> **Next free ids: D-110, X-62, H-33.** Joshua designed X-36 over nine questions (D-104) and asked for it
+> through the ratchet. All three slices are built, reviewed CLEAN and pushed:
+> - **P10a ✅ (D-107):** output on disk under `<data>/processes/<conv>/<task>/`, `read_file(process:, stream:)`,
+>   negative offsets everywhere, truncation note with id+offset, dispose on close, heartbeat sweep,
+>   read-only fence root, Win32 `tree-kill` (mock-tested only).
+> - **P10b ✅ (D-108):** `run_command(background: true)`, `write_file(process:)` stdin with its own gate and
+>   card, `delete_file(process:)` kill, `list_dir(processes: true)`, watchdog `action: background`, Stop
+>   spares background, `POST stop {killProcesses}`.
+> - **P10c ✅ (D-109):** completion notices (new `InboundMeta` kind `process`, none for `delete_file`),
+>   `QueuedMessage.parked` gating `drainQueue` (Wake bypasses; X-31's nudge treated as parked), hard Stop
+>   parks notices, browser notice card, tasks panel id + background tag, "Stop and kill processes" in the
+>   Stop menu, plain Stop off for background-only panes, busy send falls back to queue. Peeked
+>   (VISUAL-LOG "P10c"); README drive section updated. Code R1 CLEAN → R2 FIX (busy code never sent on
+>   the real path) → R3 CLEAN. No re-record needed.
 >
-> **P10a ✅ (D-107):** every command's output goes to `<data>/processes/<conv>/<task>/` and is read with
-> `read_file(process:, stream:)`. Negative offsets work on all reads. A truncated foreground result names
-> the id and offset for the rest. Close disposes processes. Startup sweep uses per-conversation heartbeats.
-> Fence gains a read-only root. Win32 kills via `tree-kill` (mock-tested only).
+> **G-02 consumed: total $0.079** (P10a $0.037, P10b $0.042). Free tiers green: **1470**.
 >
-> **P10b ✅ (D-108):** `run_command(background: true)`, `write_file(process:, content, close?)` (own gate:
-> Ask/Plan/read-only deny, manual/auto-safe prompt, full-auto allows; stdin approval card),
-> `delete_file(process:)` (kill, no approval), `list_dir(processes: true)` (ended shown once),
-> `decide_kill` action kill|keep|background, Stop spares background, `POST stop {killProcesses}` fanned
-> down. Fake driver `bg:`/`stdin:`/`eof:`/`kill:`/`procs:` for the P10c peek. Code R1 FIX (EPIPE on
-> close:true) → R2 CLEAN; recorded-tree review on the re-record.
+> **Open, filed:** H-31 (`cmd &` foreground never returns; also a daemon of a finished task outlives
+> close), H-32 (older tests leak temp dirs), H-27 (narrowed by `parked`). Windows paths of Phase 10
+> are mock-tested only — worth a real Windows run.
 >
-> **G-02 spend so far: $0.079** (P10a $0.037, P10b $0.042; 18 orphans pruned each time). Free tiers
-> green: **1432**.
->
-> **Carry into P10c:** (1) put "you'll get a notice when it ends" in `backgroundLaunchText` only (a tool
-> result no cached test produces) — the hashed definitions need no change, so P10c should cost no
-> re-record. (2) Peek the stdin approval card and P10a's Remember-hidden card. (3) Interim: plain Stop
-> on an idle pane with only background tasks still runs the queue clear (G13/R4 fixes it). (4) Nits:
-> `stdinPreview` misses a child that exited in its grace (`file-tools.ts` ~219); `killAll`/
-> `killForeground` loops stop early if a `task-update` listener throws; TTS `argHint` reads an ignored
-> `path`/`command` on a stdin card; fake `lastProcessId` picks the last printed id.
->
-> **Accepted limits:** a daemon forked by an already-finished task (`cmd &`) outlives thread close (H-31 family).
->
-> **Next:** P10c.
+> **Next:** the post-v1 backlog. This thread is long; a fresh thread resumes cleanly from here.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2563,7 +2555,7 @@ provide/send the results" message to a child whose notice said it had sent messa
 
 **Out of scope for all three:** H-24(c), the same cancel semantics for the *mode* toggle. It is noted as related, not built.
 
-## Phase 10 — Background processes through the file tools (X-36, D-104; planned 2026-11-25, run as the ratchet)
+## Phase 10 — Background processes through the file tools (X-36, D-104; planned 2026-11-25, run as the ratchet) ✅ *(2026-11-26)*
 
 Joshua designed this over nine questions on 2026-11-25. **D-104 is the spec**; SPEC §10/§26/§7 carry
 the summary. Each slice has its own implementer, review loop and commit, and is pushed before the
@@ -2891,7 +2883,7 @@ closed once, and (P10c) a "failed to start" notice is queued.
 - **Tests:** Tier-0 for each path, gating included (ask mode, manual approval). Fake-driver commands
   for the peek in P10c (`bg:`, `stdin:` or similar).
 
-### P10c — the completion notice and the browser
+### P10c — the completion notice and the browser ✅ *(2026-11-26, D-109 — code R1 CLEAN → R2 FIX → R3 CLEAN, no re-record)*
 
 - **Notice.** A background process that exits on its own, or is killed by the person, a timeout or
   "Stop and kill processes", queues an inbound entry like a sub-agent's (D-88, a new `InboundMeta`
@@ -2919,6 +2911,11 @@ Same method as Phase 9 follow-ups (above), adapted:
    each test is for.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-32 — test files leak temp dirs.** Found 2026-11-26 by the P10c implementer. **OPEN.** A full
+  `npm test` leaves `jlcode-intr-*`, `jlcode-spend-*` and `jlcode-auth-*` dirs in the system temp dir
+  (from `interruption.test.ts` and others; predates Phase 10). Phase 10's own `jlcode-processes-*`
+  leaks were fixed in P10a. Add `afterEach` cleanup per file.
 
 - **H-31 — a foreground command whose daemon keeps stdout open never returns.** Found 2026-11-25 by
   Phase 10's plan review R3. **OPEN.** `run_command` resolves on the child's `close`, which waits for
@@ -2956,6 +2953,9 @@ Same method as Phase 9 follow-ups (above), adapted:
   real driver aborts and takes `settleStopped()`, so the live window is just the title call. X-60's
   hard-Stop test asserts over queue ∪ log, so it holds either way.
   *(2026-11-25, Phase 10 plan review R2: a parked Stop-killed **process** notice (P10c) has the same window.)*
+  *(2026-11-26, P10c: `QueuedMessage.parked` now gates `drainQueue`, so the trailing drain no longer opens
+  a turn on a **parked** entry in this window — the "was stopped" notice included. What remains is an
+  unparked entry arriving there, which would have opened a turn anyway. Re-check before closing.)*
 
 - **H-26 — four tracked fixtures nothing reads.** Found 2026-11-19 by the X-59 prune baseline (a
   `JLCODE_CACHE_LOG` full run). `3abceaf5…`, `9628d417…`, `a4214762…` and `d1a5a89b…` came from

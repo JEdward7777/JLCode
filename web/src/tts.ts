@@ -370,6 +370,15 @@ export function speechFor(s: SessionSlice): Utterable[] {
   }
   if (s.pendingApproval) {
     const a = s.pendingApproval;
+    // Input to a running process (D-105d): `write_file(process:)` ignores
+    // `path` and `command`, so naming one aloud would describe something that
+    // is not being approved. Say what is: input, to which process.
+    if (a.preview?.kind === "stdin") {
+      const p = a.preview;
+      const target = p.command ? `process ${p.process}, ${argHint({ command: p.command })}` : `process ${p.process}`;
+      const what = p.bytes > 0 ? (p.close ? "send input, then end of input, to" : "send input to") : "close the input of";
+      return [{ key: `approval:${a.id}`, text: `Approval needed to ${what} ${target}.` }];
+    }
     const hint = argHint(a.args ?? {});
     return [{ key: `approval:${a.id}`, text: `Approval needed to run ${a.tool}${hint ? `: ${hint}` : ""}.` }];
   }

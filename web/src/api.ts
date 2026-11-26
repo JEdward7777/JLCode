@@ -50,7 +50,9 @@ export interface InboundMeta {
   id: string;
   /** The sender's agent name (`root`, `agent-2`). */
   from: string;
-  kind: "task" | "message" | "finished" | "question" | "mode";
+  /** `process`: one of this thread's background processes ended (P10c) —
+   *  `from` is the process id, not an agent. */
+  kind: "task" | "message" | "finished" | "question" | "mode" | "process";
 }
 
 /** Where a session sits in its agent tree (D-88) — mirrors the server's
@@ -289,12 +291,19 @@ export interface TaskView {
   status: "running" | "exited" | "killed";
   exitCode?: number | null;
   killReason?: "user" | "stop" | "watchdog" | "timeout" | "agent";
+  /** A background process (D-104): it survives a plain Stop, and sends a
+   *  notice when it ends (P10c). */
+  background?: boolean;
 }
 
 /** A message queued for the next turn boundary (D-34). */
 export interface QueuedMessage {
   id: string;
   text: string;
+  /** Sent by another agent, or a process notice (P10c) — not the person's. */
+  inbound?: InboundMeta;
+  /** Rides the next turn but opens none (P10c, R3) — what a Stop left. */
+  parked?: boolean;
 }
 
 /** One row of the shared todo list (X-31). The `id` is stable across rewording,
@@ -626,6 +635,51 @@ export function modelMissingOf(err: unknown): ModelMissing | null {
   return { code: "model-config-missing", configId: b.configId, snapshot: b.snapshot, message: b.message ?? b.error ?? err.message };
 }
 
+/** A send found the session busy and queueing the text failed too: nothing
+ *  reached the server, so the caller gives the text back. */
+export class QueueFallbackError extends Error {
+  constructor(readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "QueueFallbackError";
+  }
+}
+
+/** Did a send find the session busy (a 409 with `code: "busy"`)? */
+export function isBusyRefusal(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409 && err.body.code === "busy";
+}
+
+/**
+ * Send, or queue if the session turned busy in the meantime (P10c review R1).
+ * A pane with only background processes offers Send, and a process's notice
+ * can open a turn between the render and the POST. Then `/chat` refuses with
+ * "busy", and the text — already cleared from the composer — is queued instead
+ * of lost. A failed queue throws `QueueFallbackError` (the caller gives the
+ * text back); any other error is rethrown as it was.
+ */
+export async function sendOrQueue(
+  id: string,
+  text: string,
+  opts: { conversationId?: string } = {},
+  deps: { send: typeof sendChat; queue: (id: string, text: string) => Promise<void> } = { send: sendChat, queue: queueMessage },
+): Promise<{ sessionId: string; queued: boolean }> {
+  try {
+    return { ...(await deps.send(id, text, opts)), queued: false };
+  } catch (err) {
+    if (!isBusyRefusal(err)) throw err;
+    // The refusal names the session that is busy: it can be a live one the
+    // server attached to by conversation, not `id` (P10c review R2).
+    const named = (err as ApiError).body.sessionId;
+    const target = typeof named === "string" && named !== "" ? named : id;
+    try {
+      await deps.queue(target, text);
+    } catch (qErr) {
+      throw new QueueFallbackError(qErr);
+    }
+    return { sessionId: target, queued: true };
+  }
+}
+
 async function postJson(url: string, body: unknown): Promise<any> {
   const res = await fetch(url, {
     method: "POST",
@@ -758,10 +812,13 @@ export async function setCap(id: string, capUsd: number | null): Promise<void> {
   await postJson(`/session/${id}/cap`, { capUsd });
 }
 
-/** Global stop (D-34): "hard" aborts the LLM + kills tasks + clears the queue;
- *  "soft" lets running commands finish but takes no further LLM turn. */
-export async function stopSession(id: string, scope: "hard" | "soft"): Promise<void> {
-  await postJson(`/session/${id}/stop`, { scope });
+/** Global stop (D-34): "hard" aborts the LLM + kills foreground commands +
+ *  clears the queue; "soft" lets running commands finish but takes no further
+ *  LLM turn. Background processes survive both (D-104); `killProcesses` is
+ *  "Stop and kill processes" (P10b/P10c) — the hard Stop on a working session,
+ *  and on every session below it, plus every background process. */
+export async function stopSession(id: string, scope: "hard" | "soft", opts: { killProcesses?: boolean } = {}): Promise<void> {
+  await postJson(`/session/${id}/stop`, opts.killProcesses ? { scope, killProcesses: true } : { scope });
 }
 
 /** The session's settled state, pauses included — what to believe when a POST

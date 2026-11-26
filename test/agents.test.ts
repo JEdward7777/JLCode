@@ -979,6 +979,8 @@ describe("tree-wide controls", () => {
     expect(root.status).toBe("idle");
     expect(root.queuedMessages.map((q) => q.inbound?.kind)).toEqual(["finished"]);
     expect(root.queuedMessages[0]!.text).toContain("was stopped by the user");
+    // Parked on the entry too (P10c, R4 nit): no later drain opens a turn on it.
+    expect(root.queuedMessages[0]!.parked).toBe(true);
 
     // The card's call was answered by the Stop (H-10), so a later message to
     // the child makes a request every backend accepts.

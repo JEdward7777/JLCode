@@ -69,7 +69,8 @@ export function backgroundLaunchText(id: string, command: string, movedAfterMs?:
     `- read its output: read_file(process: "${id}") — offset/limit as for a file; a negative offset counts from the end\n` +
     `- write to its stdin: write_file(process: "${id}", content: "…") — sent exactly as given (end a line with \\n); add close: true to send EOF\n` +
     `- kill it: delete_file(process: "${id}")\n` +
-    `- list your processes: list_dir(processes: true)`
+    `- list your processes: list_dir(processes: true)\n` +
+    `When it ends you'll get a notice saying how, unless you killed it with delete_file.`
   );
 }
 
