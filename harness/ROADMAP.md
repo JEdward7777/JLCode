@@ -31,7 +31,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
 > **1346** green on `69cc25a`.
 >
-> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. Next: plan review R5, then P10a.
+> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. R5 = FIX, folded in as one task-end lifecycle. Next: plan review R6, then P10a.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2734,6 +2734,34 @@ Subagents run on the session's default model (Fable is not available *as a Claud
   and choose by the task's `background` flag when the event fires.
 - The "was stopped" child notice (`deliver(..., { openTurn: false })`) gets `parked` too, so
   `afterRecovery` can't open a paid turn on it (pre-existing; the flag lands in P10c, so fix it there).
+
+### Plan review R5 — folded in (binding; wins over R1–R4 and the slice text where they differ)
+
+R4 and R5 both found defects in *how a task ends*. Rather than patch each path, the end of a task is
+**one lifecycle in `TaskRegistry`**, and every path calls into it:
+
+- **States:** `running` → (`exited`: the child's `exit` has fired) → `ending` (draining, grace timer
+  armed) → `finished` (status, counts and notice done) → `sealed` (appends are no-ops, listeners
+  detached, streams `destroy()`ed, fds closed and the handles cleared). Each step is guarded by its
+  flag and **idempotent**; nothing outside the registry closes an fd or deletes a directory.
+- **Entry points:** the child's `exit` and `close` events (both always attached; record `exited` on
+  `exit`), the grace timer (`unref()`'d), D-106's flip, `disposeProcesses`, and the foreground
+  path. `close` for a foreground task runs finish → seal. `exit` for a background task arms the
+  drain-with-grace, which then runs finish → seal. **A flip to background on a child that has already
+  exited** (`exited` set, or `child.exitCode`/`signalCode` non-null — H-31's `cmd &` is the likely
+  case) starts the background end sequence at once. Tier-0: foreground `sh -c 'echo x; sleep 30 &'`,
+  watchdog answers background → the task ends, exit 0 (the notice assertion is P10c's).
+- **Dispose** seals every task and clears every pending grace timer; a grace or `close` arriving after
+  dispose touches no fd and no directory. Tier-0: dispose during the grace window, let the grace
+  expire → nothing throws, `closeSync` is called once per fd (spy on it).
+- **Dispose kills tasks that have exited but not finished** (still in their grace): that re-signals
+  the group and takes down a lingering daemon. Intended; comment it.
+- **The per-call `timeout` timer is cleared at `finished`**, whichever path got there (today only
+  `close` clears it).
+- **"Stop and kill processes" on an idle pane kills with reason `"stop"`**, so its notices are parked.
+- **Wording:** when every queued inbound entry is parked, `describeStatus` and the web's `agentCard`/
+  rest dot say "has process notices waiting" instead of "owes a reply", so a pane the person just
+  stopped doesn't invite the Wake they declined. Wake still works on it (R4).
 
 ### P10a — process output on disk, and reading it
 
