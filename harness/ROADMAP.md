@@ -26,12 +26,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 > **Resume block — 2026-11-25 (Phase 10 planned — X-36 background processes, D-104; running as the ratchet).**
 >
-> **Next free ids: D-106, X-62, H-31.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
+> **Next free ids: D-107, X-62, H-31.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
 > below, slices **P10a** (output on disk + reading) → **P10b** (background launch, write, kill, list) →
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
 > **1346** green on `69cc25a`.
 >
-> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Next: plan review R2, then P10a.
+> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. Next: plan review R3, then P10a.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2543,7 +2543,7 @@ provide/send the results" message to a child whose notice said it had sent messa
 
 Joshua designed this over nine questions on 2026-11-25. **D-104 is the spec**; SPEC §10/§26/§7 carry
 the summary. Each slice has its own implementer, review loop and commit, and is pushed before the
-next starts. **Next free ids at the start: D-105, X-62, H-30** (D-105 and H-30 are taken by plan review R1, below; next free **D-106, X-62, H-31**). **Baseline: 1346 green across 91 test
+next starts. **Next free ids at the start: D-105, X-62, H-30** (D-105, D-106 and H-30 taken during planning; next free **D-107, X-62, H-31**). **Baseline: 1346 green across 91 test
 files** (2026-11-25, on `69cc25a` plus this plan).
 
 **Joshua's calls (2026-11-25):** all of D-104; paid re-recording of whatever fixtures a slice
@@ -2613,7 +2613,7 @@ Subagents run on the session's default model (Fable is not available *as a Claud
   `preview` skip `path`.
 - **G10 Stdin errors (P10b).** Handle `error`/EPIPE on `child.stdin` → "the process has closed its
   input". The registry gains `write` and `end` beside `kill`. (Every task already has a stdin pipe;
-  a stdin-reading foreground command hangs until the watchdog — pre-existing, filed as H-30.)
+  a stdin-reading foreground command waits until the watchdog — correct, H-30 closed by D-106.)
 - **G11 "Stop and kill processes" (P10b).** The hard scope plus processes, fanned down the subtree
   through `AgentCoordinator.stop` as Stop already is; a flag on `POST /session/:id/stop`.
 - **G12 Notice bypasses the inbox (P10c).** `receive` persists to `store.inbox` and a reload
@@ -2630,6 +2630,48 @@ Subagents run on the session's default model (Fable is not available *as a Claud
   handlers report `[killed by …]` from the registry's reason, not the signal; the web's `agentCard`
   must handle the new `InboundMeta` kind. **P10c changes no hashed bytes** (no live test starts a
   background process) and should need no paid step; P10a and P10b will.
+
+### Plan review R2 — folded in (binding; wins over R1 and the slice text where they differ)
+
+**Must-fixes:**
+1. **A disposed registry emits no notices (P10a/P10c).** `disposeProcesses` turns notice generation
+   off **before** it kills, so a child's late `close` after `unload` can't push a notice into the
+   unloaded session's queue (which `withInbox` would then turn into an inbox item on a quick reopen,
+   pointing at deleted files). Every queue → inbox derivation (`withInbox`, the constructor's inbox →
+   queue mapping) excludes the process-notice kind. Tier-0: close a child with a running background
+   task, reopen it inside the writes-pending window, assert no process notice.
+2. **Notices come from `finish` only, and Stop doesn't drop them (P10c).** The notice is emitted only
+   from `finish` (the child's `close`), never from `kill`'s synchronous `task-update`. Hard Stop's
+   queue clear (`stopNow`'s `dropInbound`, and `forceStoppedRest`) **keeps** process-notice entries:
+   they report facts and ask nothing, so they are parked, not dropped. Tier-0: a background process
+   exits mid-turn, a hard Stop lands before the next model call, the notice is still queued after.
+3. **One line-count rule for live logs (P10a).** For process output, N counts **complete** lines
+   only. A trailing partial line is shown, marked "(line N+1 still being written)", and the
+   continuation offset points at it; once the process has ended it counts normally. Reads, footers,
+   listings and negative offsets all use this rule (the in-memory counters count `\n`). Ordinary
+   files keep G5's rule.
+
+**Nits taken:**
+- `reqInt` accepts `-?\d+`; `offset === 0` is the error (not `< 1`).
+- `file_url` is **not** a read tool for logs (its route re-fences against the workspace and
+  `classifyFile` refuses ANSI): drop it from G1.
+- A write aimed inside `processes/` never offers "remember this root": skip `suggestedRoot`/`addRoot`
+  for anything under `processesDir`.
+- The read-only root is added by the **Session** (the factory's `Sandbox` exists before the
+  conversation id is minted).
+- Dispose deletes the heartbeat and drops the directory from the store's owned set, then removes
+  `<conv>/` if empty.
+- G3's temp dir is created on the first task and removed on dispose.
+- `read_file`/`write_file`/`delete_file` drop `path` from `required` (and `list_dir` when
+  `processes` is set), or models send junk paths.
+- Read-classified MCP tools also read the process directory without a prompt — intended (D-104).
+- G13's browser needs a field: `SubtreeSummary`/`stateOf` gain a running-background-process count.
+- D-106 specifics: the shell tool's `close` still calls `handle.finish(code)` after an early resolve,
+  discarding its content; `watchdogCheck` never re-arms a backgrounded task; the post-await
+  `status !== "running"` check stays before backgrounding; the watchdog prompt text and
+  `required: ["kill"]` change; the per-call `timeout` stays armed after backgrounding. No cached
+  test reaches the watchdog, so D-106 costs nothing from G-02.
+- H-27's post-turn title window can also let a parked Stop-killed notice open a turn; noted on H-27.
 
 ### P10a — process output on disk, and reading it
 
@@ -2675,6 +2717,14 @@ Subagents run on the session's default model (Fable is not available *as a Claud
 - **`list_dir(processes: true)`** (`path` optional then): the one-line how-to, then id · command ·
   running/ended (exit) · runtime · lines per stream. An ended process appears in exactly one listing,
   then drops off (still readable). Track "shown" per process.
+- **The watchdog can background a command (D-106).** `decide_kill` gains `action: "kill" | "keep" |
+  "background"` (bare `kill: true/false` still works). "background" resolves the pending `run_command`
+  call at once with the background-launch text (id + calls, "moved to the background after N min"),
+  flips the task to background (listed, notice on exit, watchdog off), and leaves the process and its
+  files untouched. The registry needs a way to hand a running foreground task over and let
+  `run_command`'s promise resolve early; the later `close` must not try to resolve it again. Tier-0
+  tests: background via the watchdog, then `write_file(process:)` feeds a stdin-waiting command
+  (e.g. `read x; echo got $x`) to completion and the notice arrives.
 - **Stop.** Stop no longer kills background tasks; foreground still dies. Add a server action for
   "Stop and kill processes" (the browser item is P10c).
 - **Tool descriptions** state all of this briefly, so a model that has never seen it can use it.
@@ -2710,10 +2760,10 @@ Same method as Phase 9 follow-ups (above), adapted:
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
-- **H-30 — a foreground command that reads stdin hangs until the watchdog.** Found 2026-11-25 by Phase 10's
-  plan review. **OPEN.** `spawn` gives every task a stdin pipe that is never written or ended, so `cat`,
-  `read`, or a prompt-for-input tool blocks forever (or until the D-34 watchdog/`timeout`). Fix shape: end
-  stdin at once for foreground tasks (background ones keep it, P10b). Changes nothing hashed.
+- **H-30 — a foreground command that reads stdin waits until the watchdog.** Found 2026-11-25 by Phase 10's
+  plan review. **CLOSED — by design (Joshua, D-106).** Waiting on input is correct for a foreground
+  command; the watchdog's "background" answer (P10b) is how it gets unstuck, then `write_file(process:)`
+  feeds it. Don't refile.
 
 - **H-29 — fixture pruning should be mark-and-sweep.** Suggested by Joshua 2026-11-22. **OPEN, build when
   pruning matters.** X-59/X-60 pruned by diffing orphan sets before and after, per file, with the
@@ -2739,6 +2789,7 @@ Same method as Phase 9 follow-ups (above), adapted:
   turn (`notifyParent`). Seen only through the test driver's `hold:`, which ignores the abort signal. A
   real driver aborts and takes `settleStopped()`, so the live window is just the title call. X-60's
   hard-Stop test asserts over queue ∪ log, so it holds either way.
+  *(2026-11-25, Phase 10 plan review R2: a parked Stop-killed **process** notice (P10c) has the same window.)*
 
 - **H-26 — four tracked fixtures nothing reads.** Found 2026-11-19 by the X-59 prune baseline (a
   `JLCODE_CACHE_LOG` full run). `3abceaf5…`, `9628d417…`, `a4214762…` and `d1a5a89b…` came from
