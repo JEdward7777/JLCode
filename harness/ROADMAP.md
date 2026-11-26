@@ -26,12 +26,12 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 
 > **Resume block — 2026-11-25 (Phase 10 planned — X-36 background processes, D-104; running as the ratchet).**
 >
-> **Next free ids: D-107, X-62, H-31.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
+> **Next free ids: D-107, X-62, H-32.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
 > below, slices **P10a** (output on disk + reading) → **P10b** (background launch, write, kill, list) →
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
 > **1346** green on `69cc25a`.
 >
-> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. Next: plan review R3, then P10a.
+> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). Next: plan review R4, then P10a.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2543,7 +2543,7 @@ provide/send the results" message to a child whose notice said it had sent messa
 
 Joshua designed this over nine questions on 2026-11-25. **D-104 is the spec**; SPEC §10/§26/§7 carry
 the summary. Each slice has its own implementer, review loop and commit, and is pushed before the
-next starts. **Next free ids at the start: D-105, X-62, H-30** (D-105, D-106 and H-30 taken during planning; next free **D-107, X-62, H-31**). **Baseline: 1346 green across 91 test
+next starts. **Next free ids at the start: D-105, X-62, H-30** (D-105, D-106, H-30 and H-31 taken during planning; next free **D-107, X-62, H-32**). **Baseline: 1346 green across 91 test
 files** (2026-11-25, on `69cc25a` plus this plan).
 
 **Joshua's calls (2026-11-25):** all of D-104; paid re-recording of whatever fixtures a slice
@@ -2673,6 +2673,39 @@ Subagents run on the session's default model (Fable is not available *as a Claud
   test reaches the watchdog, so D-106 costs nothing from G-02.
 - H-27's post-turn title window can also let a parked Stop-killed notice open a turn; noted on H-27.
 
+### Plan review R3 — folded in (binding; wins over R1/R2 and the slice text where they differ)
+
+**Must-fixes:**
+1. **"Parked" is a per-entry flag, and every drain respects it (P10c).** Before Phase 10 a hard Stop
+   emptied the queue and code relies on that (`stopNow`'s "nothing held to drain"); with notices
+   kept, `advance`'s tail (`applyPendingSwitch()` → `drainQueue`), `runLoop`'s final-exit drain,
+   `switchModel`'s held drain and `afterRecovery` could open a paid turn on a kept notice. So:
+   `QueuedMessage.parked`. It is set when a notice is queued for a process killed with reason
+   `"stop"`, and `stopNow` sets it on **every** entry it keeps. `drainQueue` opens a turn only if at
+   least one queued entry is **not** parked; `startNext`, `afterRecovery` and the held drain all go
+   through it. Parked entries still ride the next turn the person or a real delivery opens
+   (`openTurn`/`flushPendingUser`). Tier-0: a background process exits mid-turn, a model pick is
+   pending, a hard Stop lands → the session ends idle, the notice is queued, no turn opened.
+2. **P10b's watchdog test stops at the log.** It asserts the backgrounded task exited 0 with "got …"
+   in its log. "The notice arrives after a watchdog background" moves to P10c's tests.
+
+**Nits taken:**
+- **Partial line, pinned:** the partial line shows only when the window reaches line N (N may be 0 —
+  a `read -p "Name: "` prompt is all partial) and doesn't count toward `limit`; `offset: -k` counts
+  complete lines; `offset: N+1` while running is legal and returns "no new lines yet · running"
+  (not the files' past-the-end error), so a tail cursor can poll.
+- `forceStoppedRest` never touches the queue; R2's mention of it is void. The only clear is `stopNow`.
+- `stopNow` emits the **kept** entries in its `queue` event (else the browser's next text-keyed
+  `setQueue` drops them); `dropInbound` gets only the dropped subset; `setQueue`'s `dropInbound` skips
+  the process kind (no `inbox-dropped` records for ids never recorded; D-101's handler untouched).
+- **"Stop and kill processes" on an idle pane** kills the processes and fans that down the subtree,
+  **without** the hard `stopNow` queue clear (which would drop parked todo nudges or a message held
+  for a missing model). While a turn runs, it is the hard Stop plus the kill.
+- `KillReason` gains `"agent"` for `delete_file(process:)`; `finish` suppresses the notice for it.
+- **Background tasks end on `exit`:** a `cmd &` whose daemon keeps the pipe open never fires `close`.
+  For background tasks, `finish` runs on `exit` and the fds close after the streams drain or a short
+  grace. Foreground keeps today's `close` behaviour (filed as **H-31**, not changed here).
+
 ### P10a — process output on disk, and reading it
 
 - **Store.** `TaskRegistry` (`src/tools/task-registry.ts`) writes each task's output to
@@ -2724,7 +2757,7 @@ Subagents run on the session's default model (Fable is not available *as a Claud
   files untouched. The registry needs a way to hand a running foreground task over and let
   `run_command`'s promise resolve early; the later `close` must not try to resolve it again. Tier-0
   tests: background via the watchdog, then `write_file(process:)` feeds a stdin-waiting command
-  (e.g. `read x; echo got $x`) to completion and the notice arrives.
+  (e.g. `read x; echo got $x`) to completion: exit 0 and "got …" in its log (the notice is P10c's).
 - **Stop.** Stop no longer kills background tasks; foreground still dies. Add a server action for
   "Stop and kill processes" (the browser item is P10c).
 - **Tool descriptions** state all of this briefly, so a model that has never seen it can use it.
@@ -2759,6 +2792,12 @@ Same method as Phase 9 follow-ups (above), adapted:
    each test is for.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
+
+- **H-31 — a foreground command whose daemon keeps stdout open never returns.** Found 2026-11-25 by
+  Phase 10's plan review R3. **OPEN.** `run_command` resolves on the child's `close`, which waits for
+  every holder of the stdio pipes; `cmd &` (or a daemon that doesn't detach its stdio) keeps the turn
+  waiting until the watchdog. P10's background tasks end on `exit` plus a drain grace instead; the
+  same could apply to foreground. Changes nothing hashed.
 
 - **H-30 — a foreground command that reads stdin waits until the watchdog.** Found 2026-11-25 by Phase 10's
   plan review. **CLOSED — by design (Joshua, D-106).** Waiting on input is correct for a foreground
