@@ -1,0 +1,1 @@
+{"text":"","toolCalls":[{"id":"call_tDnaM6bd1ggDYlwPff4OHEpI","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"test/fixtures/title-live-note.txt\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":784,"completionTokens":20,"totalTokens":804,"cachedTokens":0,"costUsd":0.0001296}}

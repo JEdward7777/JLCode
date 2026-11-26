@@ -24,14 +24,26 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-25 (Phase 10 planned — X-36 background processes, D-104; running as the ratchet).**
+> **Resume block — 2026-11-26 (Phase 10 — P10a ✅ committed; running as the ratchet).**
 >
-> **Next free ids: D-107, X-62, H-32.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
+> **Next free ids: D-108, X-62, H-32.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
 > below, slices **P10a** (output on disk + reading) → **P10b** (background launch, write, kill, list) →
-> **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
-> **1346** green on `69cc25a`.
+> **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02).
 >
-> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. R5 = FIX, folded in as one task-end lifecycle. R6 = FIX (spawn failure; close always ends), folded in. **R7 = CLEAN.** Next: P10a.
+> **P10a ✅ (D-107):** every command's output goes to `<data>/processes/<conv>/<task>/` and is read with
+> `read_file(process:, stream:)`. Negative offsets work on all reads. A truncated foreground result names
+> the id and offset for the rest. Close disposes processes (kill, seal, delete dir). Startup sweep uses
+> per-conversation heartbeats. Fence gains a read-only root. Win32 kills via `tree-kill` (mock-tested
+> only). Code review R1 CLEAN (nits folded), R2 CLEAN, recorded review on the re-recorded tree.
+> **G-02 spend so far: $0.037** (agents-p9g-live 13 fixtures, title-live 3, vision-live 2; 18 orphans
+> pruned). Free tiers green: **1385**.
+>
+> **Accepted limits:** a daemon forked by an already-finished task (`cmd &`) outlives thread close (H-31
+> family). The "Remember hidden without `suggestedRoot`" browser change is unpeeked; peek it in P10c.
+> R2 nit left open: a throwing `task-update` listener during dispose's kill skips `finish` (timers not
+> cleared); fd sealing is unaffected. Fold it into P10b.
+>
+> **Next:** P10b.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2809,7 +2821,7 @@ closed once, and (P10c) a "failed to start" notice is queued.
   inside the Session (or give an injected one a dir-binding call).
 - `TaskView` gains a signal field and a "failed to start" outcome for the footer, listing and notice.
 
-### P10a — process output on disk, and reading it
+### P10a — process output on disk, and reading it ✅ *(2026-11-26, D-107 — code R1/R2 CLEAN, re-record $0.037)*
 
 - **Store.** `TaskRegistry` (`src/tools/task-registry.ts`) writes each task's output to
   `<data dir>/processes/<conversation-id>/<process-id>/{combined,stdout,stderr}.log` as it arrives,

@@ -26,6 +26,9 @@ export interface JlcodePaths {
   readonly logsDir: string;
   /** Cached OpenRouter model catalog — context windows per model id (D-44c). */
   readonly modelsCacheFile: string;
+  /** Process output, `processes/<conversation-id>/<process-id>/*.log` (D-104).
+   *  Created on demand by the `ProcessStore`, not by `ensurePaths`. */
+  readonly processesDir: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -56,6 +59,7 @@ export function resolvePaths(env: Env = process.env): JlcodePaths {
     conversationsDir: path.join(dataDir, "conversations"),
     logsDir: path.join(dataDir, "logs"),
     modelsCacheFile: path.join(dataDir, "models.json"),
+    processesDir: path.join(dataDir, "processes"),
   };
 }
 

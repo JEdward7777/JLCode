@@ -49,7 +49,9 @@ import {
   type TodoWriteInput,
   type TodoWriteResult,
 } from "../conversation/todos.js";
-import { TaskRegistry } from "../tools/task-registry.js";
+import { TaskRegistry, tempProcessDir } from "../tools/task-registry.js";
+import type { ProcessStore } from "../tools/process-store.js";
+import { realTarget, under } from "../tools/sandbox.js";
 import type { TaskView } from "../tools/task-registry.js";
 import { computeCost } from "./spend.js";
 import {
@@ -187,8 +189,14 @@ export interface SessionOptions {
   conversation?: Conversation;
   /** Initial whole-tree spend cap in USD (D-33). Breach → no further LLM call. */
   spendCapUsd?: number;
-  /** Background-task registry (D-34); a fresh one is created if omitted. */
+  /** Background-task registry (D-34); a fresh one is created if omitted. Either
+   *  way the Session binds its process directory (R7): only it knows the
+   *  conversation the output belongs to. */
   tasks?: TaskRegistry;
+  /** Where process output lives (D-104, R1 G2) — the server's one store. Without
+   *  one (tests, a bare `new Session`), output goes to a private temp dir, never
+   *  the real data dir (G3). */
+  processes?: ProcessStore;
   /** How long a background command may run before the watchdog asks the model
    *  whether to kill it (D-34). Default 30 min; small values drive tests; `0`
    *  disables it. Set from `commands.watchdogMinutes` by the factory (X-33),
@@ -565,6 +573,10 @@ export class Session {
   private acceptsImages: boolean;
   /** Background-command registry (D-34): tracked, killable, watchdog-watched. */
   private readonly tasks: TaskRegistry;
+  /** The directory every process directory lives under — the store's
+   *  `processes/`, or this session's temp dir once made. Nothing under it is
+   *  ever offered as a "remember this root" (R2 nit). */
+  private processesBase: string | undefined;
   /** Messages queued mid-turn, applied FIFO at each turn boundary (D-34). */
   private queue: QueuedMessage[] = [];
   /** A remark carried in on an approval decision (D-51), waiting for the tool
@@ -695,6 +707,7 @@ export class Session {
     this.triggerMode = activeTriggerMode(options.config.compaction);
     this.watchdogMs = options.watchdogMs ?? WATCHDOG_MS;
     this.tasks = options.tasks ?? new TaskRegistry();
+    this.bindProcesses(options.processes);
     this.onInternalError = options.onInternalError;
     // Both live reads go through one guard, here, so every caller — the
     // per-request re-resolve, the turn top, `modelMissing`, a pick — gets the
@@ -708,7 +721,8 @@ export class Session {
     // per-task watchdog (D-34).
     this.tasks.onEvent((e) => {
       this.emit(e);
-      if (e.type === "task-start") this.armWatchdog(e.task.id);
+      // No watchdog for a background task (D-104).
+      if (e.type === "task-start" && !e.task.background) this.armWatchdog(e.task.id);
       else if (e.type === "task-end") this.disarmWatchdog(e.task.id);
     });
     // Whole-tree spend survives resume: recompute from the stored usage of every
@@ -1962,6 +1976,51 @@ export class Session {
     if (this.queue.some((m) => m.inbound)) await this.drainQueue();
   }
 
+  /**
+   * Give the task registry this conversation's process directory (D-104) and
+   * open the fence to it for reads (R1 G1). The Session does this, not the
+   * factory: the factory's `Sandbox` exists before the conversation id does
+   * (R2 nit). With a store the directory's place is known now, so an existing
+   * one — a reopened thread's — is readable by path at once (G14); a temp dir
+   * is made on the first task (G3) and opened then.
+   */
+  private bindProcesses(store: ProcessStore | undefined): void {
+    const conversationId = this.conversation.id;
+    if (store) {
+      this.processesBase = store.base;
+      this.sandbox?.addReadOnlyRoot(store.dirFor(conversationId));
+      this.tasks.bindDir(() => store.lease(conversationId));
+      return;
+    }
+    this.tasks.bindDir(() => {
+      const lease = tempProcessDir();
+      this.processesBase = lease.path;
+      this.sandbox?.addReadOnlyRoot(lease.path);
+      return lease;
+    });
+  }
+
+  /** Is real path `p` under the process directories (R2 nit: never remembered)? */
+  private underProcesses(p: string): boolean {
+    if (this.processesBase === undefined) return false;
+    const base = realTarget(path.resolve(this.processesBase));
+    return base !== undefined && under(p, base);
+  }
+
+  /**
+   * Closing the thread (R1 must-fix 1): kill every task, with no background
+   * filter, and delete their output. Called by both close paths after their
+   * hard Stop. Turns notices off first (R2), seals every task, removes only this
+   * registry's own directories. Idempotent; never throws.
+   */
+  disposeProcesses(): void {
+    try {
+      this.tasks.dispose();
+    } catch (err) {
+      this.reportInternal("could not dispose this thread's processes", err, "warn");
+    }
+  }
+
   /** The background tasks currently running (D-34), for the UI list. */
   get taskList(): TaskView[] {
     return this.tasks.list();
@@ -2018,8 +2077,9 @@ export class Session {
     // config throws, which the caller treats as "keep it, ask again later".
     this.alignOutOfTurn();
     const elapsedMin = Math.round(this.tasks.elapsedMs(taskId) / 60000);
-    const output = this.tasks.output(taskId);
-    const tail = output.length > 4000 ? "…" + output.slice(-4000) : output;
+    // The end of `combined.log`, not an in-memory copy (R1 G4).
+    const output = this.tasks.outputTail(taskId, 4000);
+    const tail = output.truncated ? "…" + output.text : output.text;
     const messages = this.wire();
     messages.push({
       role: "user",
@@ -2577,7 +2637,16 @@ export class Session {
         // Approving without choosing a root is refused rather than quietly treated
         // as "remember", because widening the fence must stay something the user
         // did on purpose and can see afterwards.
-        if (escapes.length > 0 && pending.tool.classifyPaths && !decision.addRoot) {
+        // Nothing under the process directories is ever remembered (R2 nit):
+        // a native tool gets the one-shot allowance it was approved for, and an
+        // MCP server — which could remember the path — gets nothing (H-08).
+        const intoProcesses = escapes.some((e) => this.underProcesses(e.escapedPath));
+        if (escapes.length > 0 && pending.tool.classifyPaths && intoProcesses) {
+          denial =
+            "denied: this path is in JLCode's process-output directory, and it was sent to an MCP " +
+            "server, which can remember it — that directory can neither be remembered as a root " +
+            "nor allowed just once for such a tool.";
+        } else if (escapes.length > 0 && pending.tool.classifyPaths && !decision.addRoot) {
           denial =
             "denied: this path is outside the workspace, and it was sent to an MCP server, " +
             "which can remember it — so it cannot be allowed just once. Approve it with " +
@@ -2585,8 +2654,13 @@ export class Session {
         } else {
           if (escapes.length > 0 && this.sandbox) {
             for (const e of escapes) {
-              if (decision.addRoot) {
-                const dir = typeof decision.addRoot === "string" ? decision.addRoot : path.dirname(e.escapedPath);
+              const dir = decision.addRoot
+                ? typeof decision.addRoot === "string"
+                  ? decision.addRoot
+                  : path.dirname(e.escapedPath)
+                : undefined;
+              const dirReal = dir === undefined ? undefined : realTarget(path.resolve(this.sandbox.primary, dir));
+              if (dir !== undefined && !this.underProcesses(e.escapedPath) && !(dirReal && this.underProcesses(dirReal))) {
                 this.sandbox.addRoot(dir);
                 remember.push(dir);
               } else {
@@ -3740,7 +3814,7 @@ export class Session {
     let preview: ToolPreview | undefined;
     if (tool.preview && this.sandbox) {
       try {
-        preview = tool.preview(args, { sandbox: this.sandbox, tasks: this.tasks });
+        preview = tool.preview(args, { sandbox: this.sandbox, tasks: this.tasks, conversationId: this.conversation.id });
       } catch {
         preview = undefined;
       }
@@ -3758,7 +3832,11 @@ export class Session {
               // Parallel to `paths` — which arg produced each escape, so the UI
               // can drop one the user just reclassified as prose (D-48).
               fields: escapes.map((e) => e.arg),
-              suggestedRoot: path.dirname(escapes[0]!.escapedPath),
+              // A process directory is never offered as a root to remember
+              // (R2 nit): reads there need no prompt, and writes must keep asking.
+              ...(escapes.some((e) => this.underProcesses(e.escapedPath))
+                ? {}
+                : { suggestedRoot: path.dirname(escapes[0]!.escapedPath) }),
               // A bridged tool (the one that classifies its own args, D-47d) can
               // remember what it is given, so a one-shot grant is unenforceable
               // past this call — H-08.
@@ -3809,6 +3887,8 @@ export class Session {
    *  (D-47d) — an unclassified path-looking value is fenced until answered. */
   private fenceEscapes(tool: Tool, args: Record<string, unknown>): { arg: string; escapedPath: string }[] {
     if (!this.sandbox) return [];
+    // A call on a process ignores `path` (D-104), so there is nothing to fence.
+    if (tool.processAware && args.process !== undefined) return [];
     const candidates: { arg: string; value: string }[] = tool.classifyPaths
       ? tool.classifyPaths(args).paths.map((p) => ({ arg: p.field, value: p.value }))
       : (tool.pathArgs ?? []).flatMap((argName) => {
@@ -3825,8 +3905,11 @@ export class Session {
           return [];
         });
     const escapes: { arg: string; escapedPath: string }[] = [];
+    // Reads may enter the conversation's own process directory; everything
+    // else resolves as a write, the strict side (R1 G1).
+    const access = tool.kind === "read" ? "read" : "write";
     for (const { arg, value } of candidates) {
-      const r = this.sandbox.resolve(value);
+      const r = this.sandbox.resolve(value, access);
       if (!r.ok && r.kind === "escape") escapes.push({ arg, escapedPath: r.escapedPath });
     }
     return escapes;

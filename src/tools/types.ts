@@ -137,6 +137,11 @@ export interface Tool {
   mutates: boolean;
   /** Names of args that are file paths, fence-checked before execution (D-19). */
   pathArgs?: string[];
+  /** When `args.process` is set the tool works on a process and ignores its
+   *  path args (D-104), so the fence skips them — no approval prompt for a path
+   *  nothing will touch (R1 G9; `read_file` now, `write_file`/`delete_file` in
+   *  P10b). */
+  processAware?: boolean;
   /** The function schema advertised to the model. */
   def: ToolDef;
   /**

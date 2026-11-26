@@ -767,6 +767,10 @@ export class AgentCoordinator implements AgentHost {
     const m = this.members.get(session.id);
     if (!m) {
       session.stop("hard");
+      // Closing kills explicitly (R1 must-fix 1): every task, background ones
+      // included, and their output goes. Stop alone is not enough once Stop
+      // spares background processes (P10b).
+      session.disposeProcesses();
       this.deps.onUnloaded?.([session]);
       return [session];
     }
@@ -783,6 +787,9 @@ export class AgentCoordinator implements AgentHost {
     // and its parent must not be told it was stopped by the user (H-17f).
     for (const x of all) x.unsub();
     for (const x of all) x.session.stop("hard");
+    // Each closed thread's processes die with it and their output goes (R1
+    // must-fix 1, D-104) — `close_agent`'s subtree included.
+    for (const x of all) x.session.disposeProcesses();
     for (const x of all.reverse()) {
       if (x.agentId !== null) m.tree.offline.set(x.agentId, x.session.spendUsd);
       x.session.clearAgentHost();

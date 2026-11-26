@@ -1,1 +1,0 @@
-{"text":"I successfully wrote 'DONE' into note.txt.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1688,"completionTokens":11,"totalTokens":1699,"cachedTokens":1536,"costUsd":0.0001446}}

@@ -215,7 +215,10 @@ export interface ApprovalRequest {
   outOfFence?: {
     paths: string[];
     fields: string[];
-    suggestedRoot: string;
+    /** The directory "remember this root" would add. Absent when an escape is
+     *  under JLCode's process-output directory, which is never remembered
+     *  (D-104, R2 nit): only allow-once (or deny) is offered then. */
+    suggestedRoot?: string;
     /** **Allow-once is not offered** (H-08). True for a bridged MCP tool: JLCode
      *  resolves a native tool's paths itself, so "once" is a promise it can keep,
      *  but an MCP server may *remember* what it is handed — `file_utils` keeps a

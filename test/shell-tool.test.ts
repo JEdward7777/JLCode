@@ -30,7 +30,11 @@ beforeEach(() => {
   tasks = new TaskRegistry();
   ctx = { sandbox: new Sandbox([root]), tasks };
 });
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  // The registry's logs live in a private temp dir until disposed (D-104, G3).
+  tasks.dispose();
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 const run = (args: Record<string, unknown>, over: Partial<ToolContext> = {}) =>
   runCommandTool().execute(args, { ...ctx, ...over });

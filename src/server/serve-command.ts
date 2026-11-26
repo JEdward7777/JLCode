@@ -16,6 +16,7 @@ import { ModelCatalog, describeWindowSource } from "../llm/models.js";
 import { fakeAgentDriver } from "../session/fake.js";
 import { applyCompactorFit, computeBudget, describeThresholdSource } from "../session/compaction.js";
 import { createSessionFactory, createSessionRetarget, resolveWindows } from "./session-factory.js";
+import { ProcessStore } from "../tools/process-store.js";
 import { McpManager, mcpSettingsFiles } from "../mcp/client.js";
 import { ConversationStore } from "../persist/conversation-store.js";
 import { DebugJournal } from "../persist/debug-journal.js";
@@ -90,7 +91,21 @@ export async function runServe(args: string[]): Promise<number> {
   // network (they get the fallback, which is a real window).
   const catalog = new ModelCatalog({ file: paths.modelsCacheFile });
   const log = createLogger({ dir: paths.logsDir });
-  const factoryDeps = { paths, cwd, makeDriver, mcpTools: () => mcp.tools(), catalog, resolveBinding: resolveConfig, logger: log };
+  // Process output on disk (D-104, R1 G2): one owner per server. The sweep runs
+  // here, before we listen — it deletes only the output of conversations whose
+  // heartbeat went stale (another server, long gone), never a live one's.
+  const processes = new ProcessStore(paths.processesDir);
+  processes.sweep();
+  const factoryDeps = {
+    paths,
+    cwd,
+    makeDriver,
+    mcpTools: () => mcp.tools(),
+    catalog,
+    resolveBinding: resolveConfig,
+    logger: log,
+    processes,
+  };
   const newSession = createSessionFactory(factoryDeps);
   // How a `jlcode config model` switch reaches a thread that is already open
   // (X-40, D-82a): the server re-resolves at the top of each user turn and hands

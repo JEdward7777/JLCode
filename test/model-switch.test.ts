@@ -220,9 +220,14 @@ function makeApp(
 ) {
   const deps = { paths, cwd: workspace, makeDriver, mcpTools: () => [], catalog };
   const retarget = createSessionRetarget(deps);
+  const factory = createSessionFactory(deps);
   const server = createServer({
     resolveConfig: () => resolveForCwd(loadConfig(paths), workspace),
-    newSession: createSessionFactory(deps),
+    newSession: (...args: Parameters<typeof factory>) => {
+      const s = factory(...args);
+      opened.push(s);
+      return s;
+    },
     retargetSession: (session, config) => {
       opts.onRetarget?.(config);
       return retarget(session, config);
@@ -236,6 +241,10 @@ function makeApp(
   lastManager = server.manager;
   return server.app;
 }
+
+/** Every session the servers built: a command's output sits in a temp dir until
+ *  the thread is closed (D-104, G3), so afterEach closes them. */
+const opened: Session[] = [];
 
 /** The last {@link makeApp}'s session manager, for a test that watches events. */
 let lastManager: ReturnType<typeof createServer>["manager"];
@@ -274,6 +283,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const s of opened.splice(0)) s.disposeProcesses();
   await store.close();
   process.env.JLCODE_CONFIG_DIR = saved.config;
   process.env.JLCODE_DATA_DIR = saved.data;

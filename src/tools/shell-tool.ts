@@ -26,11 +26,31 @@
  * question any other path argument would raise.
  */
 import fs from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { Tool } from "./types.js";
 import type { KillReason } from "./task-registry.js";
+import { killTree, shellSpawnOptions } from "./kill-tree.js";
 
-const MAX_OUTPUT = 100_000;
+/** The foreground result's cap, in **bytes** of output (whole chunks kept). */
+export const MAX_OUTPUT = 100_000;
+
+/**
+ * The note on a capped foreground result (D-104, R1 G7). The output is all on
+ * disk, so the note names the process and the exact call that reads on. The cap
+ * is bytes and can cut mid-line, so the offset is the **first line not shown in
+ * full**: the shown text is a prefix of `combined.log`, and its `\n` count + 1 is
+ * that line. Without a registry there is no log, and the note says only that.
+ */
+export function truncationNote(shown: string, processId: string | undefined): string {
+  if (processId === undefined) return "\n[output truncated]";
+  let newlines = 0;
+  for (let i = shown.indexOf("\n"); i !== -1; i = shown.indexOf("\n", i + 1)) newlines++;
+  const offset = newlines + 1;
+  return (
+    `\n[output truncated at ${MAX_OUTPUT.toLocaleString("en-US")} bytes — the full output is process ${processId}; ` +
+    `read the rest with read_file(process: "${processId}", offset: ${offset})]`
+  );
+}
 
 export interface ShellToolOptions {
   /** The configured watchdog interval, in minutes, so the description can state
@@ -149,42 +169,36 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
       }
 
       return new Promise((resolve) => {
-        // Own process group (detached) so a kill can take the whole tree.
-        const child = spawn(command, { cwd, shell: true, detached: true });
+        // Own process group on POSIX, `windowsHide` everywhere (D-105a).
+        let child: ChildProcess;
+        try {
+          child = spawn(command, shellSpawnOptions(cwd));
+        } catch (e) {
+          resolve({ content: `spawn failed: ${(e as Error).message}`, isError: true });
+          return;
+        }
+        const killGroup = (): void => killTree(child);
 
-        const killGroup = (): void => {
-          try {
-            if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-          } catch {
-            try {
-              child.kill("SIGKILL"); // fall back to the child alone
-            } catch {
-              /* already gone */
-            }
-          }
-        };
+        // Register as a task (D-34, D-104). The registry owns the child from here:
+        // its logs on disk, its end-of-life and the per-call bound (X-33, R6) —
+        // killing *through the registry* is what makes a timeout read as a kill
+        // in the task list and in the result below.
+        const tasks = ctx.tasks;
+        const handle = tasks?.start(command, child, killGroup, {
+          ...(timeoutSec !== undefined ? { timeoutMs: timeoutSec * 1000 } : {}),
+        });
 
-        // Register as a killable background task (D-34). The killer signals the
-        // whole group; if there's no registry (bare tests), it's a no-op handle.
-        const handle = ctx.tasks?.start(command, killGroup);
-
-        // The per-call bound (X-33). Killing *through the registry* is what makes
-        // a timeout read as a kill in the task list and in `killReasonOf` below,
-        // rather than as an exit nobody can explain. Without a registry there is
-        // nothing to record it on, so the group is signalled directly and the
-        // note is carried in `timedOut`.
+        // Without a registry (bare embeddings, R7) there is nothing to record a
+        // timeout on, so the group is signalled directly and the note is carried
+        // in `timedOut`.
         let timedOut = false;
         const timer =
-          timeoutSec === undefined
+          handle || timeoutSec === undefined
             ? undefined
-            : setTimeout(
-                () => {
-                  timedOut = true;
-                  if (handle && ctx.tasks) ctx.tasks.kill(handle.id, "timeout");
-                  else killGroup();
-                },
-                timeoutSec * 1000,
-              );
+            : setTimeout(() => {
+                timedOut = true;
+                killGroup();
+              }, timeoutSec * 1000);
         timer?.unref?.(); // a pending timeout must not hold the process open
 
         let out = "";
@@ -194,16 +208,21 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
           bytes += d.length;
           if (bytes <= MAX_OUTPUT) out += d.toString();
           else overflow = true;
-          handle?.appendOutput(d.toString());
         };
-        child.stdout.on("data", onData);
-        child.stderr.on("data", onData);
+        child.stdout?.on("data", onData);
+        child.stderr?.on("data", onData);
 
         child.on("close", (code, signal) => {
           if (timer) clearTimeout(timer);
-          handle?.finish(code);
-          const killReason = handle ? ctx.tasks?.killReasonOf(handle.id) : timedOut ? "timeout" : undefined;
-          const tail = overflow ? "\n[output truncated]" : "";
+          // The registry's own `close` listener ran first (it was attached in
+          // `start`), so the task's outcome is already settled here.
+          const view = handle ? tasks?.get(handle.id) : undefined;
+          if (view?.failedToStart) {
+            resolve({ content: view.failedToStart, isError: true });
+            return;
+          }
+          const killReason = view ? view.killReason : timedOut ? "timeout" : undefined;
+          const tail = overflow ? truncationNote(out, handle?.id) : "";
           const status = killReason
             ? killNote(killReason, timeoutSec)
             : signal
@@ -212,8 +231,10 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
           resolve({ content: `${out}${tail}\n${status}`, isError: killReason !== undefined || code !== 0 });
         });
         child.on("error", (e) => {
+          // Only a child that never started has failed to spawn: a failed kill
+          // raises `error` too (R7), and its `close` still reports the outcome.
+          if (child.pid !== undefined) return;
           if (timer) clearTimeout(timer);
-          handle?.finish(null);
           resolve({ content: `spawn failed: ${e.message}`, isError: true });
         });
       });

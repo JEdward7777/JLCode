@@ -323,7 +323,9 @@ describe("read_file paging (D-53)", () => {
     write("s.txt", "l1\nl2\nl3\nl4\nl5\n");
     const res = await run({ path: "s.txt", offset: 2, limit: 2 });
     expect(res.content.startsWith("l2\nl3\n")).toBe(true);
-    expect(res.content).toContain("[lines 2-3 of 6");
+    // A trailing newline ends the last line, it doesn't start a sixth (D-104,
+    // R1 G5) — the rule that makes `offset: -1` the last real line.
+    expect(res.content).toContain("[lines 2-3 of 5");
   });
 
   it("says how to reach the tail — the gap that left the agent anchoring blind", async () => {
@@ -336,7 +338,7 @@ describe("read_file paging (D-53)", () => {
     write("s.txt", "l1\nl2\n");
     const res = await run({ path: "s.txt", offset: 1, limit: 99 });
     expect(res.content).not.toContain("continue with offset");
-    expect(res.content).toContain("of 3]");
+    expect(res.content).toContain("of 2]"); // G5: no phantom empty last line
   });
 
   it("pages a file past the 100K char cap all the way to its last line", async () => {

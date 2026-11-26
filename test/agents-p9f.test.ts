@@ -16,7 +16,7 @@
  * Tier 0: the fake driver and hand-written JSONL; waits are on the bag's bus
  * and the coordinator's own in-flight work, never on a clock.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -547,6 +547,18 @@ describe("closing and reopening (X-56 Q18–Q20)", () => {
     expect(store.agents(root.conversation.id).find((r) => r.name === "agent-1")?.closed).toBe(true);
     // load() ignores the control record: the root's own tree is untouched.
     expect(store.load(root.conversation.id)!.entries.length).toBe(root.conversation.entries.length);
+  });
+
+  it("every close path disposes the closed threads' processes: close_agent's subtree and a root's tree (R1 must-fix 1, P10a)", async () => {
+    const { app, manager, agents, root } = await tree();
+    const a1 = named(manager, "agent-1")!;
+    const a2 = named(manager, "agent-2")!;
+    const spies = [root, a1, a2].map((s) => vi.spyOn(s, "disposeProcesses"));
+    agents.closeChild(root, "agent-1");
+    expect(spies.map((x) => x.mock.calls.length)).toEqual([0, 1, 0]);
+    await post(app, `/session/${root.id}/close`);
+    await agents.idle();
+    expect(spies.map((x) => x.mock.calls.length)).toEqual([1, 1, 1]);
   });
 
   it("a child closed on its question card sends no 'stopped by the user' notice either (H-17f)", async () => {

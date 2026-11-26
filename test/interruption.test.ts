@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -43,6 +43,13 @@ function textEvents(text: string): StreamEvent[] {
   ];
 }
 
+/** Sessions that ran commands: their output sits in a private temp dir until
+ *  the thread is closed (D-104, G3), so each test closes its own. */
+const opened: Session[] = [];
+afterEach(() => {
+  for (const s of opened.splice(0)) s.disposeProcesses();
+});
+
 function toolSession(driver: LlmDriver, watchdogMs?: number, cfg: ModelConfig = config) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jlcode-intr-"));
   const session = new Session({
@@ -52,6 +59,7 @@ function toolSession(driver: LlmDriver, watchdogMs?: number, cfg: ModelConfig = 
     sandbox: new Sandbox([tmp]),
     watchdogMs,
   });
+  opened.push(session);
   return { session, tmp };
 }
 

@@ -30,7 +30,8 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "diff": "^7.0.0",
     "file-type": "^22.0.2",
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "tree-kill": "^1.2.2"
   },
   "devDependencies": {
     "@types/diff": "^7.0.2",

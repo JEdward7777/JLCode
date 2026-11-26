@@ -8,6 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { editTools, renderDiff } from "./edit-tools.js";
 import { MAX_IMAGE_BYTES, classifyFile, humanBytes, looksBinary } from "./media.js";
+import { readProcess } from "./process-read.js";
+import type { ProcessStream } from "./task-registry.js";
 import type { FilePreview, Tool, ToolContext, ToolPreview, ToolResult } from "./types.js";
 
 const MAX_READ_CHARS = 100_000;
@@ -105,8 +107,9 @@ function reqStr(args: Record<string, unknown>, key: string): string | undefined 
 function reqInt(args: Record<string, unknown>, key: string): number | undefined {
   const v = args[key];
   if (typeof v === "number" && Number.isInteger(v)) return v;
-  // Models sometimes stringify numeric args; accept a clean integer string.
-  if (typeof v === "string" && /^\d+$/.test(v.trim())) return Number(v.trim());
+  // Models sometimes stringify numeric args; accept a clean integer string —
+  // signed, since `offset` counts from the end when negative (D-104, R2 nit).
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return undefined;
 }
 
@@ -173,6 +176,7 @@ function readFileTool(options: FileToolsOptions): Tool {
     kind: "read",
     mutates: false,
     pathArgs: ["path"],
+    processAware: true,
     def: {
       type: "function",
       function: {
@@ -180,7 +184,10 @@ function readFileTool(options: FileToolsOptions): Tool {
         description:
           "Read a UTF-8 text file within the workspace. Large files are capped, so use 'offset' and 'limit' " +
           "to page through one that doesn't fit — the reply says how many lines the file has and where the " +
-          "returned window sits, so you can always reach the tail." +
+          "returned window sits, so you can always reach the tail. A negative 'offset' counts from the end " +
+          "('offset: -50' reads the last 50 lines). Set 'process' instead of 'path' to read a command's " +
+          "output by its process id (the id a capped run_command result names), as lines like a file; the " +
+          "reply says how far the output has got and whether the process is still running." +
           (acceptsImages
             ? " PNG, JPEG, GIF and WebP files come back as pictures you can actually look at: this tool's " +
               "reply names the file, and the image itself is attached to the message right after it."
@@ -189,21 +196,51 @@ function readFileTool(options: FileToolsOptions): Tool {
           type: "object",
           properties: {
             path: { type: "string", description: "Workspace-relative or absolute path" },
-            offset: { type: "integer", description: "1-based line number to start at (default 1)" },
+            offset: {
+              type: "integer",
+              description: "1-based line number to start at (default 1); negative counts from the end (-1 = last line)",
+            },
             limit: { type: "integer", description: "How many lines to return (default: as many as fit)" },
+            process: { type: "string", description: "A process id: read that command's output instead of a file" },
+            stream: {
+              type: "string",
+              enum: ["stdout", "stderr"],
+              description: "With 'process': one stream only. Default: both, interleaved as they arrived",
+            },
           },
-          required: ["path"],
+          // No `required: ["path"]` (R2 nit): with `process` set it is not
+          // needed, and a required one only teaches models to send junk paths.
         },
       },
     },
     async execute(args, ctx) {
-      const p = reqStr(args, "path");
-      if (p === undefined) return err("read_file requires a string 'path'");
       const offset = reqInt(args, "offset");
       const limit = reqInt(args, "limit");
-      if (offset !== undefined && offset < 1) return err("read_file 'offset' is a 1-based line number");
+      // Lines are 1-based; negative counts back from the end (D-104). Zero is
+      // neither, so it is the one offset refused (R2 nit).
+      if (offset === 0) return err("read_file 'offset' is a 1-based line number, or negative to count from the end; 0 is neither");
       if (limit !== undefined && limit < 1) return err("read_file 'limit' must be at least 1");
-      const r = ctx.sandbox.resolve(p);
+
+      // A process's output (D-104): `path` is ignored when `process` is set.
+      if (args.process !== undefined) {
+        const id = reqStr(args, "process");
+        if (id === undefined || id.trim() === "") return err("read_file 'process' must be a process id string");
+        const stream = args.stream ?? "combined";
+        if (stream !== "combined" && stream !== "stdout" && stream !== "stderr") {
+          return err("read_file 'stream' must be \"stdout\" or \"stderr\" (leave it out for both, interleaved)");
+        }
+        return readProcess(ctx.tasks, {
+          id: id.trim(),
+          stream: stream as ProcessStream,
+          ...(offset !== undefined ? { offset } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+          maxChars: MAX_READ_CHARS,
+        });
+      }
+
+      const p = reqStr(args, "path");
+      if (p === undefined) return err("read_file requires a string 'path' (or 'process' to read a command's output)");
+      const r = ctx.sandbox.resolve(p, "read");
       if (!r.ok) return err(r.reason);
       try {
         // What is this, actually? Decided from a sample before any decode (P8a,
@@ -245,9 +282,14 @@ function readFileTool(options: FileToolsOptions): Tool {
         // Whole file, unwindowed, within the cap: hand back exactly what's on disk.
         if (offset === undefined && limit === undefined && data.length <= MAX_READ_CHARS) return ok(data);
 
-        const lines = data.split("\n");
+        // A trailing newline ends the last line rather than starting an empty
+        // one (R1 G5), so `offset: -1` is the last real line.
+        const lines = data === "" ? [] : data.replace(/\n$/, "").split("\n");
         const total = lines.length;
-        const from = (offset ?? 1) - 1;
+        if (total === 0) return ok(`[${p} is empty — 0 lines]`);
+        // Negative counts from the end; past the start clamps to line 1 rather
+        // than erroring — "the last 500 lines" of a 20-line file is all of it.
+        const from = offset === undefined ? 0 : offset < 0 ? Math.max(0, total + offset) : offset - 1;
         if (from >= total) return err(`offset ${offset} is past the end of ${p} (${total} lines)`);
         const window = lines.slice(from, limit === undefined ? undefined : from + limit);
 
@@ -447,7 +489,7 @@ const listDir: Tool = {
   },
   async execute(args, ctx) {
     const p = reqStr(args, "path") ?? ".";
-    const r = ctx.sandbox.resolve(p);
+    const r = ctx.sandbox.resolve(p, "read");
     if (!r.ok) return err(r.reason);
     try {
       const entries = fs.readdirSync(r.path, { withFileTypes: true });
@@ -520,7 +562,7 @@ const grep: Tool = {
     if (pattern === undefined) return err("grep requires a string 'pattern'");
     const searchPath = reqStr(args, "path") ?? ".";
     const includeIgnored = args.include_ignored === true || args.include_ignored === "true";
-    const r = ctx.sandbox.resolve(searchPath);
+    const r = ctx.sandbox.resolve(searchPath, "read");
     if (!r.ok) return err(r.reason);
     let re: RegExp;
     try {

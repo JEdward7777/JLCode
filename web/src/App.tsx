@@ -4336,13 +4336,17 @@ function ApprovalCard({
                 Allow once
               </button>
             )}
-            <button
-              className="primary"
-              disabled={!!jsonErr}
-              onClick={() => onResolve({ approve: true, editedArgs, addRoot: true, learned })}
-            >
-              Remember <code>{fence.suggestedRoot}</code>
-            </button>
+            {/* No root to remember under JLCode's process-output directory
+                (D-104): the server leaves `suggestedRoot` out, and so do we. */}
+            {fence.suggestedRoot === undefined ? null : (
+              <button
+                className="primary"
+                disabled={!!jsonErr}
+                onClick={() => onResolve({ approve: true, editedArgs, addRoot: true, learned })}
+              >
+                Remember <code>{fence.suggestedRoot}</code>
+              </button>
+            )}
             <button className="danger" onClick={() => onResolve({ approve: false, learned })}>
               Deny
             </button>

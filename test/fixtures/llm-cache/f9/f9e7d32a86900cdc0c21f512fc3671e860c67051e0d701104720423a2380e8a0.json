@@ -1,0 +1,1 @@
+{"text":"It shows a fluffy brown tabby cat with amber eyes.","toolCalls":[],"finishReason":"stop","provider":"Claude Platform on AWS","usage":{"promptTokens":2320,"completionTokens":24,"totalTokens":2344,"cachedTokens":1909,"costUsd":0.0082415}}

@@ -23,6 +23,7 @@ import { agentTools } from "../tools/agent-tools.js";
 import { Sandbox } from "../tools/sandbox.js";
 import { ModeApprovalGate } from "../tools/mode-gate.js";
 import type { Tool } from "../tools/types.js";
+import type { ProcessStore } from "../tools/process-store.js";
 import type { Conversation } from "../conversation/types.js";
 import type { Logger } from "../logger.js";
 
@@ -41,6 +42,9 @@ export interface SessionFactoryDeps {
   /** The diagnostic log (D-11) a session reports what it rode out or died of
    *  to — an unreadable config store, a turn that threw (D-99). */
   logger?: Pick<Logger, "error" | "warn">;
+  /** The server's one owner of process output on disk (D-104, R1 G2). Absent
+   *  in tests, where each session falls back to a private temp dir (G3). */
+  processes?: ProcessStore;
 }
 
 export interface WindowResolution {
@@ -176,6 +180,9 @@ export function createSessionFactory(deps: SessionFactoryDeps) {
       watchdogMs: watchdogMinutes * 60_000,
       maxToolIterations: toolRounds,
       sandbox: new Sandbox(roots),
+      // Where its commands' output goes (D-104); the session binds its own
+      // conversation's directory and opens the fence to it for reads.
+      ...(deps.processes ? { processes: deps.processes } : {}),
       // Live-switchable gate (D-07/D-08): rebuilt when the user changes
       // mode/approval from the browser. Starts from the config defaults.
       mode: config.defaultMode,
