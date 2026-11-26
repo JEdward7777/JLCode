@@ -142,6 +142,19 @@ so a grant cannot be accidentally honored twice.
 
 ---
 
+**G-02 — re-record fixtures that Phase 10 (X-36) invalidates.** *Granted by Joshua, 2026-11-25. Unspent.*
+
+Phase 10 changes the definitions of `run_command`, `read_file`, `write_file`, `delete_file` and
+`list_dir`, which `requestSignature` hashes, so recorded requests that carry them miss. A probe on
+`69cc25a` (all five descriptions changed) broke exactly three: `agents-p9g-live` (e) and
+`title-live`'s tool-turn case, both on gpt-4o-mini, and `vision-live` on Fable.
+- **Covers:** re-recording any cached test whose hash a Phase 10 slice changes, across all Phase 10
+  slices, **up to $5 in total**, on whatever model that test uses (Fable included). The coordinator
+  runs it, never a subagent, with the snapshot/retry/prune method in ROADMAP Phase 10.
+- **Not covered:** G-01's stale safe-harbor case, which stays its own grant.
+- **Consumed** when Phase 10 is done (or the budget runs out): delete this block in that commit and
+  record the total spend in the ROADMAP resume block.
+
 **G-01 — re-record the stale Fable safe-harbor fixture.** *Granted by Joshua, 2026-09-10. Unspent.*
 
 `test/fable-live.test.ts`'s safe-harbor compaction case (b) can no longer replay: D-81 (`9cfbd16`)

@@ -205,6 +205,10 @@ It holds:
 
 Nothing project-specific is written into the project folder.
 
+The **data store** (`JLCODE_DATA_DIR`, default XDG data) holds conversations, logs, and — while their
+thread is open — background-process output under `processes/<conversation>/<process>/` (D-104),
+swept at startup only when its owning server's heartbeat has gone stale.
+
 ## 8. Conversations: persistence & history
 
 - Conversations **persist to disk and can be resumed** after a restart (history +
@@ -254,6 +258,15 @@ Nothing project-specific is written into the project folder.
   forwarding to any MCP server.
 
 ## 10. Shell execution
+
+- **Background processes (X-36, D-104).** `run_command(background: true)` returns at once with a
+  process id. The agent drives the process **through the file tools**: `read_file(process:, stream?)`
+  reads its output (combined by default, or stdout/stderr) with `offset`/`limit` (a negative `offset`
+  counts from the end); `write_file(process:, content, close?)` appends to stdin, gated as
+  `run_command`; `delete_file(process:)` kills the tree; `list_dir(processes: true)` lists them. A
+  process ending on its own queues a notice to the agent like a sub-agent's. Each thread owns its
+  own processes; closing the thread kills them. Output lives in the data store (§7), never the
+  project. A foreground result cut at its cap also carries an id, so the rest is readable.
 
 - Runs **locally inside JLCode** (not pushed into the shared `file_utils` server, which
   is happy without it).
@@ -642,9 +655,10 @@ behind the per-case handling (truncation §23, approvals §6).
 - **Queued message.** You can type a message mid-turn; it **queues and applies at the next turn
   boundary** rather than interrupting the in-flight turn (FIFO; editable/cancelable before it
   applies). Lets you drop in an idea without derailing the current turn.
-- **Global stop button.** Kills **all activity at once** — the agent loop *and* every background
-  task. The big red button, distinct from the gentle queued-message path and the targeted
-  per-task kill.
+- **Global stop button.** Kills **all activity at once** — the agent loop *and* every foreground
+  command. The big red button, distinct from the gentle queued-message path and the targeted
+  per-task kill. **Agent-started background processes survive Stop (D-104)**; the Stop dropdown's
+  "Stop and kill processes" ends them too. Closing a thread always kills its processes.
 - All three are POST actions on the transport (§11); status and kill/stop states flow back over SSE.
 - **The watchdog asks the model, and says so (X-33).** A command still running after
   `commands.watchdogMinutes` (default **30**, `0` disables) pauses for one out-of-band
@@ -652,7 +666,8 @@ behind the per-case handling (truncation §23, approvals §6).
   never joins the conversation. The interval is **stated in `run_command`'s own description**,
   because a mechanism the model cannot see is one it cannot use — the tool previously said "there
   is no timeout" and hid its own escape hatch. A per-call `timeout` (§10) covers the shorter
-  scale the watchdog cannot.
+  scale the watchdog cannot. **Background processes have no watchdog (D-104)** — running a long
+  time is what they are for.
 
 ## 27. Concurrency, sessions & orchestration
 

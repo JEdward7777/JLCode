@@ -24,6 +24,15 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-11-25 (Phase 10 planned — X-36 background processes, D-104; running as the ratchet).** **Next free ids: D-105, X-62, H-30.**
+>
+> Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
+> below, slices **P10a** (output on disk + reading) → **P10b** (background launch, write, kill, list) →
+> **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
+> **1346** green on `69cc25a`.
+>
+> **Status:** plan written; P10a not started.
+
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
 > Joshua reported that an answered `ask` card was very hard to read in history, and asked for the other cards to be checked too.
@@ -2529,6 +2538,94 @@ provide/send the results" message to a child whose notice said it had sent messa
 - **Peek** (VISUAL-LOG "X-57"): a busy thread, a pick shows `→ X · pending`, the current row is clicked and the suffix goes away, and when the turn ends the model is unchanged.
 
 **Out of scope for all three:** H-24(c), the same cancel semantics for the *mode* toggle. It is noted as related, not built.
+
+## Phase 10 — Background processes through the file tools (X-36, D-104; planned 2026-11-25, run as the ratchet)
+
+Joshua designed this over nine questions on 2026-11-25. **D-104 is the spec**; SPEC §10/§26/§7 carry
+the summary. Each slice has its own implementer, review loop and commit, and is pushed before the
+next starts. **Next free ids at the start: D-105, X-62, H-30.** **Baseline: 1346 green across 91 test
+files** (2026-11-25, on `69cc25a` plus this plan).
+
+**Joshua's calls (2026-11-25):** all of D-104; paid re-recording of whatever fixtures a slice
+invalidates, **up to $5 in total** across the phase (grant **G-02**, TESTING.md), Fable included.
+Subagents run on the session's default model (Fable is not available *as a Claude Code subagent*).
+
+### P10a — process output on disk, and reading it
+
+- **Store.** `TaskRegistry` (`src/tools/task-registry.ts`) writes each task's output to
+  `<data dir>/processes/<conversation-id>/<process-id>/{combined,stdout,stderr}.log` as it arrives,
+  instead of only the in-memory string. Every task gets one, foreground included. The registry needs
+  the owning session (thread) and conversation; find the right seam (the session constructs tool
+  contexts). Each thread sees only its own tasks.
+- **Heartbeat and sweep.** The server touches a heartbeat file in each process directory it owns
+  about once a minute. At startup it deletes process directories whose heartbeat is older than 10
+  minutes and nothing else. Timestamps only, no PIDs.
+- **Close deletes.** Closing a thread (including `close_agent`'s subtree close) kills that thread's
+  tasks — check what happens today — and deletes their output directories.
+- **`read_file(process: id, stream?)`.** `path` is not needed when `process` is set. Combined by default.
+  `offset`/`limit` as for files; it reports "lines A–B of N so far · running" (or "· exited 0",
+  "· killed"). An unknown or another thread's id is an error naming what *is* readable.
+- **Negative `offset` for every `read_file`**, files included: `-N` starts N lines from the end;
+  `limit` still counts forward. Past the start clamps to line 1 rather than erroring (decide and test).
+- **Foreground truncation carries the id.** `run_command`'s cap note names the process and the
+  `read_file(process:, offset:)` call that reads the rest.
+- **Fence.** Read-only access to the conversation's own `processes/<conversation-id>/` by path, with no
+  out-of-fence prompt. Writes there and other conversations' directories stay fenced.
+- **Cross-platform kill.** Replace `killGroup`'s negative-PID kill with the `tree-kill` package
+  (D-45), and spawn with `windowsHide: true`. Untestable on Windows here: unit-test the call shape
+  with the platform mocked, and say so in the report.
+- **Tests:** Tier-0 for the store, the sweep (two fake owners, one stale), the read paths, negative
+  offsets on files, the fence exception, truncation id. The definitions change, so expect the
+  cached-live misses below.
+
+### P10b — background launch, write, kill, list
+
+- **`run_command(background: true)`** returns at once: the id, the command, and the exact calls —
+  `read_file(process: "…")`, `write_file(process: "…", content: "…")`, `delete_file(process: "…")`.
+  No watchdog for background tasks (the D-34 watchdog keeps foreground). The per-call `timeout`
+  still applies.
+- **`write_file(process: id, content, close?)`** appends exactly `content` to stdin; other arguments are
+  ignored except `close: true` (EOF). **Gated as `run_command`** — mode and approval — not as a file
+  write; get this right in `mode-gate.ts` / `gate.ts` and the approval card (the card should read
+  as stdin to a process, not a file write). Writing to an ended process is an error. Background
+  tasks need a stdin pipe; foreground stays as today.
+- **`delete_file(process: id)`** kills the tree (through P10a's kill). No approval. Its result says
+  how the process ended.
+- **`list_dir(processes: true)`** (`path` optional then): the one-line how-to, then id · command ·
+  running/ended (exit) · runtime · lines per stream. An ended process appears in exactly one listing,
+  then drops off (still readable). Track "shown" per process.
+- **Stop.** Stop no longer kills background tasks; foreground still dies. Add a server action for
+  "Stop and kill processes" (the browser item is P10c).
+- **Tool descriptions** state all of this briefly, so a model that has never seen it can use it.
+- **Tests:** Tier-0 for each path, gating included (ask mode, manual approval). Fake-driver commands
+  for the peek in P10c (`bg:`, `stdin:` or similar).
+
+### P10c — the completion notice and the browser
+
+- **Notice.** A background process that exits on its own, or is killed by the person, a timeout or
+  "Stop and kill processes", queues an inbound entry like a sub-agent's (D-88, a new `InboundMeta`
+  kind) that wakes an idle agent and is read at the next model call mid-turn (D-52). It says how it
+  ended, the runtime, and the read calls. None when the agent killed it with `delete_file`.
+- **Browser.** The notice renders as a card (P9e style). The background tasks panel shows the
+  process id and marks background ones; its Kill already works and must produce a notice. Stop's
+  dropdown gains "Stop and kill processes". **Peek it** (VISUAL-LOG), on the reviewer's own ports.
+- **README:** if how a user drives JLCode changed (it did: the Stop dropdown), update it.
+
+### The paid step (every slice that changes hashed bytes)
+
+Same method as Phase 9 follow-ups (above), adapted:
+1. The implementer's only allowed failures are cached-live misses ("live-cache MISS with
+   JLCODE_LIVE unset"), listed by test name.
+2. Review until CLEAN with that allowance.
+3. **The coordinator re-records**, one file per command (`JLCODE_LIVE=1 npx vitest run <file>`),
+   snapshotting `git status --porcelain --untracked-files=all test/fixtures/llm-cache` before each.
+   Spend = sum of `usage.costUsd` over the new fixtures, kept against G-02's $5. One retry per file,
+   only after reading the failed recording shows plain model variance; a slice-caused steer is a
+   product finding — stop and report.
+4. **Prune** the orphans this slice created: the before/after orphan-set diff with `JLCODE_CACHE_LOG`
+   (H-29's script doesn't exist yet). Never touch H-26's four old orphans or G-01's fixtures.
+5. A fresh reviewer checks the re-recorded tree is green and the recordings still show the behaviour
+   each test is for.
 
 ## Hardening / known issues (discovered defects — separate from the phase plan)
 
