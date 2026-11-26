@@ -31,7 +31,7 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02). Baseline
 > **1346** green on `69cc25a`.
 >
-> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. R5 = FIX, folded in as one task-end lifecycle. R6 = FIX (spawn failure; close always ends), folded in. Next: plan review R7, then P10a.
+> **Status:** plan written; plan review R1 = FIX, folded in (D-105, H-30). Joshua added D-106 (watchdog can background; H-30 closed by design). Plan review R2 = FIX, folded in. R3 = FIX, folded in (H-31 filed). R4 = FIX, folded in. R5 = FIX, folded in as one task-end lifecycle. R6 = FIX (spawn failure; close always ends), folded in. **R7 = CLEAN.** Next: P10a.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2796,6 +2796,18 @@ closed once, and (P10c) a "failed to start" notice is queued.
 - **Wording seam:** the "owes a reply" label is `agentStatus` in `web/src/agents.ts` (not `agentCard`),
   read from the `queue` slice once `QueuedMessage` has `parked`; server-side it is `describeStatus` in
   `src/session/agents.ts`.
+
+### Plan review R7 — **CLEAN** (2026-11-25). Notes for the implementer (settle in code):
+- Open the three log fds **before** `spawn` (or catch an `openSync` throw in `start`, kill the group and
+  return "failed to start"): an EMFILE there is a synchronous throw, not an `error`/`close` event.
+- Detect "failed to start" by `child.pid === undefined`, not "`error` before `exit`" (`ChildProcess.kill`
+  can raise `error` too).
+- `ToolContext.tasks` is optional (`test/shell-tool.test.ts` runs a timeout with `tasks: undefined`):
+  keep `runCommandTool`'s own timer/`timedOut` fallback for that path, or drop the bare path and update
+  that test deliberately.
+- `options.tasks` injection: once the registry needs a conversation id and a directory, build it
+  inside the Session (or give an injected one a dir-binding call).
+- `TaskView` gains a signal field and a "failed to start" outcome for the footer, listing and notice.
 
 ### P10a — process output on disk, and reading it
 
