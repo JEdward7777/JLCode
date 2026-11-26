@@ -161,8 +161,8 @@ describe("what the description tells the model (X-33)", () => {
       properties: Record<string, unknown>;
       required: string[];
     };
-    expect(Object.keys(props.properties).sort()).toEqual(["command", "cwd", "timeout"]);
-    expect(props.required).toEqual(["command"]); // both stay optional
+    expect(Object.keys(props.properties).sort()).toEqual(["background", "command", "cwd", "timeout"]);
+    expect(props.required).toEqual(["command"]); // the rest stay optional
   });
 });
 

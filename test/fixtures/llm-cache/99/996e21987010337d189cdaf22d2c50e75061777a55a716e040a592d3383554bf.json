@@ -1,1 +1,0 @@
-{"text":"The sub-agent successfully wrote 'DONE' to note.txt.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":1901,"completionTokens":13,"totalTokens":1914,"cachedTokens":1792,"costUsd":0.00015855}}

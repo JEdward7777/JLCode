@@ -1,1 +1,0 @@
-{"text":"","toolCalls":[{"id":"toolu_011CVfj9SPrxMozf9V6p27pJ","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"cat.jpg\"}"}}],"finishReason":"tool_calls","provider":"Claude Platform on AWS","usage":{"promptTokens":1911,"completionTokens":52,"totalTokens":1963,"cachedTokens":0,"costUsd":0.0264825}}

@@ -24,26 +24,38 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
-> **Resume block — 2026-11-26 (Phase 10 — P10a ✅ committed; running as the ratchet).**
+> **Resume block — 2026-11-26 (Phase 10 — P10a ✅, P10b ✅ committed; running as the ratchet).**
 >
-> **Next free ids: D-108, X-62, H-32.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
+> **Next free ids: D-109, X-62, H-32.** Joshua designed X-36 over nine questions (D-104) and asked for it through the ratchet. Plan: "Phase 10"
 > below, slices **P10a** (output on disk + reading) → **P10b** (background launch, write, kill, list) →
 > **P10c** (completion notice + browser). Paid re-records are granted up to **$5** (G-02).
 >
 > **P10a ✅ (D-107):** every command's output goes to `<data>/processes/<conv>/<task>/` and is read with
 > `read_file(process:, stream:)`. Negative offsets work on all reads. A truncated foreground result names
-> the id and offset for the rest. Close disposes processes (kill, seal, delete dir). Startup sweep uses
-> per-conversation heartbeats. Fence gains a read-only root. Win32 kills via `tree-kill` (mock-tested
-> only). Code review R1 CLEAN (nits folded), R2 CLEAN, recorded review on the re-recorded tree.
-> **G-02 spend so far: $0.037** (agents-p9g-live 13 fixtures, title-live 3, vision-live 2; 18 orphans
-> pruned). Free tiers green: **1385**.
+> the id and offset for the rest. Close disposes processes. Startup sweep uses per-conversation heartbeats.
+> Fence gains a read-only root. Win32 kills via `tree-kill` (mock-tested only).
 >
-> **Accepted limits:** a daemon forked by an already-finished task (`cmd &`) outlives thread close (H-31
-> family). The "Remember hidden without `suggestedRoot`" browser change is unpeeked; peek it in P10c.
-> R2 nit left open: a throwing `task-update` listener during dispose's kill skips `finish` (timers not
-> cleared); fd sealing is unaffected. Fold it into P10b.
+> **P10b ✅ (D-108):** `run_command(background: true)`, `write_file(process:, content, close?)` (own gate:
+> Ask/Plan/read-only deny, manual/auto-safe prompt, full-auto allows; stdin approval card),
+> `delete_file(process:)` (kill, no approval), `list_dir(processes: true)` (ended shown once),
+> `decide_kill` action kill|keep|background, Stop spares background, `POST stop {killProcesses}` fanned
+> down. Fake driver `bg:`/`stdin:`/`eof:`/`kill:`/`procs:` for the P10c peek. Code R1 FIX (EPIPE on
+> close:true) → R2 CLEAN; recorded-tree review on the re-record.
 >
-> **Next:** P10b.
+> **G-02 spend so far: $0.079** (P10a $0.037, P10b $0.042; 18 orphans pruned each time). Free tiers
+> green: **1432**.
+>
+> **Carry into P10c:** (1) put "you'll get a notice when it ends" in `backgroundLaunchText` only (a tool
+> result no cached test produces) — the hashed definitions need no change, so P10c should cost no
+> re-record. (2) Peek the stdin approval card and P10a's Remember-hidden card. (3) Interim: plain Stop
+> on an idle pane with only background tasks still runs the queue clear (G13/R4 fixes it). (4) Nits:
+> `stdinPreview` misses a child that exited in its grace (`file-tools.ts` ~219); `killAll`/
+> `killForeground` loops stop early if a `task-update` listener throws; TTS `argHint` reads an ignored
+> `path`/`command` on a stdin card; fake `lastProcessId` picks the last printed id.
+>
+> **Accepted limits:** a daemon forked by an already-finished task (`cmd &`) outlives thread close (H-31 family).
+>
+> **Next:** P10c.
 
 > **Resume block — 2026-11-24 (X-61 ✅ — answered cards read as a record in history).** **Next free ids: D-104, X-62, H-30.**
 >
@@ -2849,7 +2861,7 @@ closed once, and (P10c) a "failed to start" notice is queued.
   offsets on files, the fence exception, truncation id. The definitions change, so expect the
   cached-live misses below.
 
-### P10b — background launch, write, kill, list
+### P10b — background launch, write, kill, list ✅ *(2026-11-26, D-108 — code R1 FIX → R2 CLEAN, re-record $0.042)*
 
 - **`run_command(background: true)`** returns at once: the id, the command, and the exact calls —
   `read_file(process: "…")`, `write_file(process: "…", content: "…")`, `delete_file(process: "…")`.

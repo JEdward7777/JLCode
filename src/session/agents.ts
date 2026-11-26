@@ -746,11 +746,13 @@ export class AgentCoordinator implements AgentHost {
   // ---- Stop, close, cap — the tree-wide controls (D-33, D-34).
 
   /** Stop a session and everything below it, top-down: a parent stopped first
-   *  parks its children's "was stopped" notices instead of acting on them. */
-  stop(session: Session, scope: "hard" | "soft"): void {
+   *  parks its children's "was stopped" notices instead of acting on them.
+   *  `killProcesses` ("Stop and kill processes", R1 G11) fans down the same
+   *  way, and each session decides by its own status what that means (R4). */
+  stop(session: Session, scope: "hard" | "soft", opts: { killProcesses?: boolean } = {}): void {
     const m = this.members.get(session.id);
-    for (const x of m ? [m, ...this.descendants(m)] : []) x.session.stop(scope);
-    if (!m) session.stop(scope);
+    for (const x of m ? [m, ...this.descendants(m)] : []) x.session.stop(scope, opts);
+    if (!m) session.stop(scope, opts);
   }
 
   /**

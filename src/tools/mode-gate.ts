@@ -5,7 +5,7 @@
  * all?*, then for a mutating tool the policy decides *allow / prompt / deny*.
  */
 import type { ApprovalPolicy, Mode } from "../config/types.js";
-import type { GateDecision, Tool, ToolGate } from "./types.js";
+import { onProcess, type GateDecision, type Tool, type ToolGate } from "./types.js";
 
 /** Commands Plan mode may run (to commit its plan) — SPEC §5. */
 const PLAN_GIT_ALLOW = ["git add", "git commit", "git status", "git diff", "git log"];
@@ -44,7 +44,35 @@ export class ModeApprovalGate implements ToolGate {
     return this.allowlist.some((prefix) => cmd.startsWith(prefix));
   }
 
+  /**
+   * A call on a process has its own rule, checked first (D-105d, R1 must-fix 3,
+   * G9). Nothing here reads `args.path` or `args.command`: the call ignores
+   * them, so they must not steer the gate — `path: "x.md"` would pass Plan
+   * mode's markdown rule and `command: "git status"` its git allowlist (and
+   * auto-safe's), for what is really stdin to a shell.
+   */
+  private processRule(tool: Tool): GateDecision {
+    if (tool.processGate === "kill") return { kind: "allow" };
+    // "stdin": gated as running a command, minus every allowlist.
+    if (this.mode === "ask") {
+      return { kind: "deny", reason: `Ask mode is read-only; writing to a process's stdin (${tool.name}) is not allowed` };
+    }
+    if (this.mode === "plan") {
+      return { kind: "deny", reason: `Plan mode can't write to a process's stdin (${tool.name}) — it is gated as running a command` };
+    }
+    switch (this.policy) {
+      case "read-only":
+        return { kind: "deny", reason: "read-only approval policy blocks all side effects" };
+      case "full-auto":
+        return { kind: "allow" };
+      case "manual":
+      case "auto-safe":
+        return { kind: "prompt" };
+    }
+  }
+
   check(tool: Tool, args: Record<string, unknown>): GateDecision {
+    if (tool.processGate !== undefined && onProcess(tool, args)) return this.processRule(tool);
     const allowed = modeAllows(this.mode, tool, args);
     if (!allowed.ok) return { kind: "deny", reason: allowed.reason };
 

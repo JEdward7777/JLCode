@@ -905,14 +905,19 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
     return c.json(stateOf(session));
   });
 
-  // Global stop (D-34): {scope: "hard"|"soft"}. hard = abort LLM + kill tasks +
-  // clear queue; soft = let running commands finish but take no further LLM turn.
+  // Global stop (D-34): {scope: "hard"|"soft", killProcesses?: true}. hard =
+  // abort LLM + kill foreground commands + clear queue; background processes
+  // survive it (D-104). soft = let running commands finish but take no further
+  // LLM turn. killProcesses = "Stop and kill processes" (R1 G11): the hard scope
+  // plus every background process, down the subtree; an idle session just has
+  // its processes killed (R4).
   app.post("/session/:id/stop", async (c) => {
     const session = manager.get(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const body = (await c.req.json().catch(() => ({}))) as { scope?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { scope?: unknown; killProcesses?: unknown };
     const scope = body.scope === "soft" ? "soft" : "hard"; // default to the big red button
-    agents.stop(session, scope); // and every sub-agent below it (D-34)
+    const killProcesses = body.killProcesses === true;
+    agents.stop(session, scope, killProcesses ? { killProcesses } : {}); // and every sub-agent below it (D-34)
     return c.json(stateOf(session));
   });
 

@@ -116,6 +116,12 @@ function toolCall(name: string, args: unknown): StreamEvent[] {
  *   delete: <path>              → a delete_file call (approval card, X-23 preview)
  *   edit: <path> | <a> => <b>   → an apply_edits batch (unified-diff card, D-53)
  *   run: <command>              → a run_command call (approval card, edit-approve)
+ *   bg: <command>               → run_command(background: true) (D-104)
+ *   stdin: [id |] <text>        → write_file(process:) — text plus a newline (stdin card)
+ *   eof: [id]                   → write_file(process:, close: true)
+ *   kill: [id]                  → delete_file(process:)
+ *   procs:                      → list_dir(processes: true)
+ *                                 (no id: the last process id the conversation named)
  *   read: <path>                → a read_file call
  *   loop: [path]                → read_file, over and over, until the tool-round
  *                                 budget pauses the turn (D-79). The one surface
@@ -189,6 +195,17 @@ let flakyLeft = 2;
 function lastUserMessage(req: ChatRequest): string {
   const user = [...req.messages].reverse().find((m) => m.role === "user" && typeof m.content === "string");
   return typeof user?.content === "string" ? stripEnvironmentDetails(user.content).trim().replace(INBOUND_HEADER, "") : "";
+}
+
+/** The last process id anything in the conversation named (`task_…`), for the
+ *  background-process commands' default target. */
+function lastProcessId(req: ChatRequest): string {
+  for (let i = req.messages.length - 1; i >= 0; i--) {
+    const c = req.messages[i]!.content;
+    const ids = typeof c === "string" ? c.match(/task_[0-9a-f]{12}/g) : null;
+    if (ids) return ids[ids.length - 1]!;
+  }
+  return "task_unknown";
 }
 
 function fakeAgentScript(req: ChatRequest): StreamEvent[] {
@@ -288,6 +305,27 @@ function fakeAgentScript(req: ChatRequest): StreamEvent[] {
     // `delete: <path>` — the delete_file approval card and its file preview (X-23).
     if (msg.startsWith("delete:")) return toolCall("delete_file", { path: after("delete:") || "note.txt" });
     if (msg.startsWith("run:")) return toolCall("run_command", { command: after("run:") || "echo hi" });
+    // Background processes (D-104), so P10c's peek can drive them offline:
+    //   `bg: <command>`        run_command(background: true)
+    //   `stdin: [id |] text`   write_file(process:) — `text` plus a newline
+    //   `eof: [id]`            write_file(process:, close: true)
+    //   `kill: [id]`           delete_file(process:)
+    //   `procs:`               list_dir(processes: true)
+    // A missing id means the most recent process this conversation named.
+    if (msg.startsWith("bg:")) {
+      return toolCall("run_command", { command: after("bg:") || "sleep 60", background: true });
+    }
+    if (msg.startsWith("stdin:")) {
+      const body = after("stdin:");
+      const bar = body.indexOf("|");
+      const named = bar >= 0 ? body.slice(0, bar).trim() : "";
+      const id = /^task_\w+$/.test(named) ? named : lastProcessId(req);
+      const text = /^task_\w+$/.test(named) ? body.slice(bar + 1).trim() : body;
+      return toolCall("write_file", { process: id, content: `${text}\n` });
+    }
+    if (msg.startsWith("eof:")) return toolCall("write_file", { process: after("eof:") || lastProcessId(req), close: true });
+    if (msg.startsWith("kill:")) return toolCall("delete_file", { process: after("kill:") || lastProcessId(req) });
+    if (msg.startsWith("procs:")) return toolCall("list_dir", { processes: true });
     if (msg.startsWith("read:")) return toolCall("read_file", { path: after("read:") || "README.md" });
     // `show:` is `read:`'s opposite number (X-43): the file goes to *Joshua*, not
     // to the model, so the peek can see a picture the fake driver never looked at.

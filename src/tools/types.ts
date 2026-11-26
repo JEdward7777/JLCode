@@ -127,8 +127,31 @@ export interface FilePreview {
   error?: string;
 }
 
+/**
+ * Bytes about to go to a running process's stdin (D-104): `write_file(process:)`
+ * on the approval card. It must read as input to a command — which is how it is
+ * gated (D-105d) — not as a file write.
+ */
+export interface StdinPreview {
+  kind: "stdin";
+  process: string;
+  /** The command the process is running, when the id is known. */
+  command?: string;
+  /** "running", "exited 0", … — when the id is known. */
+  state?: string;
+  /** Exactly what will be written, already capped for display. */
+  body: string;
+  bytes: number;
+  /** Lines of the content the cap withheld, if any. */
+  omitted?: number;
+  /** `close: true` — EOF follows the content. */
+  close: boolean;
+  /** Why this write will fail (unknown id, ended process). */
+  error?: string;
+}
+
 /** What a tool can show at an approval pause beyond its raw args (D-53, X-23). */
-export type ToolPreview = DiffPreview | FilePreview;
+export type ToolPreview = DiffPreview | FilePreview | StdinPreview;
 
 export interface Tool {
   name: string;
@@ -139,9 +162,20 @@ export interface Tool {
   pathArgs?: string[];
   /** When `args.process` is set the tool works on a process and ignores its
    *  path args (D-104), so the fence skips them — no approval prompt for a path
-   *  nothing will touch (R1 G9; `read_file` now, `write_file`/`delete_file` in
-   *  P10b). */
-  processAware?: boolean;
+   *  nothing will touch (R1 G9: `read_file`, `write_file`, `delete_file`).
+   *  `"processes"` is `list_dir`'s form: `processes: true` lists processes and
+   *  ignores `path`. See `onProcess`. */
+  processAware?: boolean | "processes";
+  /**
+   * How the mode gate treats a call on a process (D-105d, R1 must-fix 3,
+   * G9), checked **first** so arguments the call ignores (`path`, `command`)
+   * can't steer it: `"stdin"` is gated as running a command (deny in Ask/Plan;
+   * `manual` and `auto-safe` prompt — auto-safe never consults its allowlist;
+   * `full-auto` allows; `read-only` denies); `"kill"` is allowed in every mode
+   * and under every policy, with no approval — it can only reach the thread's
+   * own processes.
+   */
+  processGate?: "stdin" | "kill";
   /** The function schema advertised to the model. */
   def: ToolDef;
   /**
@@ -169,6 +203,13 @@ export interface Tool {
    *  Must be side-effect free — it runs while the call is still unapproved. */
   preview?(args: Record<string, unknown>, ctx: ToolContext): ToolPreview | undefined;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
+}
+
+/** Does this call work on a process rather than a path (D-104)? Then the
+ *  fence and the preview skip its path args (G9) and `processGate` applies. */
+export function onProcess(tool: Tool, args: Record<string, unknown>): boolean {
+  if (tool.processAware === "processes") return args.processes === true || args.processes === "true";
+  return tool.processAware === true && args.process !== undefined;
 }
 
 /** Decision an approval/mode gate returns for a tool call (Phase 3b fills 'prompt'). */

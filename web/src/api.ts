@@ -208,8 +208,23 @@ export interface ToolPreviewFile {
   error?: string;
 }
 
+/** Bytes about to go to a running process's stdin (D-104) — gated, and shown,
+ *  as input to a command rather than a file write (D-105d). */
+export interface ToolPreviewStdin {
+  kind: "stdin";
+  process: string;
+  command?: string;
+  state?: string;
+  body: string;
+  bytes: number;
+  omitted?: number;
+  /** EOF follows the content. */
+  close: boolean;
+  error?: string;
+}
+
 /** A tool's own rendering of a pending call (D-53, X-23). */
-export type ToolPreview = ToolPreviewDiff | ToolPreviewFile;
+export type ToolPreview = ToolPreviewDiff | ToolPreviewFile | ToolPreviewStdin;
 
 /** One MCP server as `GET /mcp` reports it (P7b). */
 export interface McpToolStatus {
@@ -273,7 +288,7 @@ export interface TaskView {
   startedAt: number;
   status: "running" | "exited" | "killed";
   exitCode?: number | null;
-  killReason?: "user" | "stop" | "watchdog" | "timeout";
+  killReason?: "user" | "stop" | "watchdog" | "timeout" | "agent";
 }
 
 /** A message queued for the next turn boundary (D-34). */

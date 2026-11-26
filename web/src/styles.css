@@ -1199,6 +1199,20 @@ body.row-resizing {
   color: var(--danger);
   border-color: rgba(224, 121, 107, 0.5);
 }
+/* Input to a running process (D-104): a command's input, not a file, so it
+   takes the command colour rather than create/delete's. */
+.file-preview .file-action.stdin {
+  color: #d9b45c;
+  border-color: rgba(217, 180, 92, 0.5);
+}
+.file-preview .stdin-target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
 .file-preview .file-path {
   flex: 1;
   min-width: 0;

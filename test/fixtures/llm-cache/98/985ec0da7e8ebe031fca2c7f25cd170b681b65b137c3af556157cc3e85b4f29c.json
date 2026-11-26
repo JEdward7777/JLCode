@@ -1,0 +1,1 @@
+{"text":"The sub-agent \"agent-1\" has successfully written 'DONE' into note.txt.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":2035,"completionTokens":19,"totalTokens":2054,"cachedTokens":1920,"costUsd":0.00017265}}

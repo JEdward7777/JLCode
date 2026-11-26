@@ -1,1 +1,0 @@
-{"text":"","toolCalls":[{"id":"call_IIm5bOmHm6pytlQ4xOfYdYsn","type":"function","function":{"name":"send_message","arguments":"{\"to\":\"parent\",\"text\":\"Successfully wrote 'DONE' to note.txt.\"}"}}],"finishReason":"tool_calls","provider":"OpenAI","usage":{"promptTokens":1740,"completionTokens":26,"totalTokens":1766,"cachedTokens":1664,"costUsd":0.0001518}}

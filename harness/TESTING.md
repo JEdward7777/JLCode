@@ -142,7 +142,7 @@ so a grant cannot be accidentally honored twice.
 
 ---
 
-**G-02 — re-record fixtures that Phase 10 (X-36) invalidates.** *Granted by Joshua, 2026-11-25. Spent so far: $0.037 (P10a).*
+**G-02 — re-record fixtures that Phase 10 (X-36) invalidates.** *Granted by Joshua, 2026-11-25. Spent so far: $0.079 (P10a $0.037, P10b $0.042).*
 
 Phase 10 changes the definitions of `run_command`, `read_file`, `write_file`, `delete_file` and
 `list_dir`, which `requestSignature` hashes, so recorded requests that carry them miss. A probe on

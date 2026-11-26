@@ -47,8 +47,10 @@ export type TaskStatus = "running" | "exited" | "killed";
  *  differently from a natural exit (D-34). `timeout` is the per-call bound the
  *  model set on `run_command` itself (X-33); it goes through the same kill path
  *  as the rest so the task list can say why, rather than showing a task that
- *  stopped for no stated reason. */
-export type KillReason = "user" | "stop" | "watchdog" | "timeout";
+ *  stopped for no stated reason. `agent` is the agent's own
+ *  `delete_file(process:)` (R3 nit) — it already got the outcome as that call's
+ *  result, so no notice follows (P10c). */
+export type KillReason = "user" | "stop" | "watchdog" | "timeout" | "agent";
 
 /** The three logs every task writes (D-104). `combined` is both streams in
  *  arrival order — what a terminal would show, near enough. */
@@ -85,9 +87,13 @@ export interface TaskHandle {
 }
 
 export interface StartOptions {
-  /** Start as a background task (D-104). Nothing launches one yet (P10b); the
-   *  lifecycle already ends one on `exit` rather than waiting for `close`. */
+  /** Start as a background task (D-104): no watchdog, listed, ended on `exit`
+   *  plus a drain rather than waiting for `close` (R3). */
   background?: boolean;
+  /** Called once if a running foreground task is handed to the background
+   *  (D-106) — `run_command` resolves its pending call from here, at once,
+   *  with the background-launch text; its later `close` must not resolve again. */
+  onBackground?: () => void;
   /** The per-call bound (X-33), owned here so it is cleared at `finished`
    *  whichever path got there (R5). */
   timeoutMs?: number;
@@ -152,6 +158,8 @@ export function describeState(view: TaskView): string {
         return "killed by the watchdog";
       case "timeout":
         return "killed by its timeout";
+      case "agent":
+        return "killed with delete_file";
       default:
         return "killed";
     }
@@ -159,6 +167,41 @@ export function describeState(view: TaskView): string {
   if (view.signal) return `killed by ${view.signal}`;
   return `exited ${view.exitCode ?? "?"}`;
 }
+
+/** A runtime the way a person says it: "4s", "2m 13s", "1h 02m". */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** One row of `list_dir(processes: true)` (D-104). */
+export interface ProcessRow {
+  view: TaskView;
+  /** `finished` — the outcome is settled. */
+  ended: boolean;
+  /** Lines per stream, by the read rule (R2 must-fix 3): complete lines while
+   *  running, a last unterminated line counted once ended. */
+  lines: { stdout: number; stderr: number };
+}
+
+/** What `write` did (G10). The tool turns it into words. */
+export type WriteOutcome =
+  | { kind: "unknown" }
+  /** Finished, killed, or its child has exited (R6: no waiting for EPIPE). */
+  | { kind: "ended"; view: TaskView }
+  /** Running, but its stdin is closed — by `close: true` earlier, or by the
+   *  process itself (EPIPE). */
+  | { kind: "input-closed"; view: TaskView }
+  /** Handed to the pipe. `pending`: the pipe was full and the process has not
+   *  read it yet when the wait ran out — it is queued, not lost. */
+  | { kind: "written"; view: TaskView; bytes: number; closed: boolean; pending: boolean };
+
+/** How long `write` waits for the pipe to take the bytes before answering
+ *  "queued" — a process that isn't reading must not hang the turn. */
+export const WRITE_WAIT_MS = 2000;
 
 interface InternalTask {
   view: TaskView;
@@ -180,6 +223,12 @@ interface InternalTask {
   timeout?: ReturnType<typeof setTimeout>;
   /** Removes the registry's `data`/`end` listeners — and only those (R6). */
   detach: () => void;
+  /** Its stdin raised `error` (EPIPE: the process closed its input), G10. */
+  stdinFailed: boolean;
+  /** An ended background task has been in one `list_dir(processes: true)`
+   *  (D-104): it drops off the next. */
+  shown: boolean;
+  onBackground?: () => void;
 }
 
 /** Write all of `buf` — `writeSync` may write less than asked. */
@@ -264,8 +313,17 @@ export class TaskRegistry {
       finished: false,
       sealed: false,
       detach: () => {},
+      stdinFailed: false,
+      shown: false,
+      ...(options.onBackground ? { onBackground: options.onBackground } : {}),
     };
     this.tasks.set(id, task);
+    // An `error` on stdin (EPIPE once the process stops reading, G10) with no
+    // listener would be an uncaught exception — a server crash. Recorded, so a
+    // later write says the input is closed rather than throwing.
+    child.stdin?.on("error", () => {
+      task.stdinFailed = true;
+    });
 
     // Lifecycle listeners first, so nothing can slip past them. They stay
     // attached until `close` (R6): seal detaches only the data listeners.
@@ -299,7 +357,7 @@ export class TaskRegistry {
       try {
         this.emit({ type: "task-start", task: { ...task.view } });
       } finally {
-        this.end(task); // a throwing listener must not leave the task open
+        this.endTask(task); // a throwing listener must not leave the task open
       }
       return { id };
     }
@@ -349,7 +407,7 @@ export class TaskRegistry {
 
   private streamEnd(task: InternalTask, stream: "stdout" | "stderr"): void {
     task.streamEnded[stream] = true;
-    if (task.ending && task.streamEnded.stdout && task.streamEnded.stderr) this.end(task);
+    if (task.ending && task.streamEnded.stdout && task.streamEnded.stderr) this.endTask(task);
   }
 
   private onExit(task: InternalTask, code: number | null, signal: NodeJS.Signals | null): void {
@@ -365,7 +423,7 @@ export class TaskRegistry {
    *  started, so it ends the task in any state, for either flag (R6). */
   private onClose(task: InternalTask, code: number | null, signal: NodeJS.Signals | null): void {
     task.exit ??= { code, signal };
-    this.end(task);
+    this.endTask(task);
   }
 
   private onError(task: InternalTask, e: Error): void {
@@ -375,7 +433,7 @@ export class TaskRegistry {
     task.view.failedToStart ??= `failed to start: ${e.message}`;
     // `close` normally follows; ending here as well means a spawn failure can
     // never leave a task "running" if it doesn't.
-    this.end(task);
+    this.endTask(task);
   }
 
   /** Arm a background task's drain (R4): wait for both streams, capped. */
@@ -383,12 +441,12 @@ export class TaskRegistry {
     if (task.ending || task.finished) return;
     task.ending = true;
     // Streams already ended: no reason to wait (R6 nit).
-    if (task.streamEnded.stdout && task.streamEnded.stderr) return this.end(task);
-    task.grace = setTimeout(() => this.end(task), this.graceMs);
+    if (task.streamEnded.stdout && task.streamEnded.stderr) return this.endTask(task);
+    task.grace = setTimeout(() => this.endTask(task), this.graceMs);
     task.grace.unref?.();
   }
 
-  private end(task: InternalTask): void {
+  private endTask(task: InternalTask): void {
     // Seal in a finally (review R1): `finish` emits `task-end`, and a listener
     // that throws must not skip closing the fds.
     try {
@@ -460,11 +518,16 @@ export class TaskRegistry {
     if (task.view.status === "killed") return false;
     task.view.status = "killed";
     task.view.killReason = reason;
-    this.emit({ type: "task-update", task: { ...task.view } });
     try {
-      task.kill(reason);
-    } catch {
-      /* the process may already be gone */
+      this.emit({ type: "task-update", task: { ...task.view } });
+    } finally {
+      // A throwing listener must not leave the tree running (P10b, folding
+      // P10a's R2 nit): the signal goes regardless.
+      try {
+        task.kill(reason);
+      } catch {
+        /* the process may already be gone */
+      }
     }
     return true;
   }
@@ -473,17 +536,121 @@ export class TaskRegistry {
     for (const id of this.tasks.keys()) this.kill(id, reason);
   }
 
+  /** Stop's kill (D-104): foreground tasks only — background processes
+   *  survive Stop; "Stop and kill processes" and closing the thread end them. */
+  killForeground(reason: KillReason): void {
+    for (const [id, t] of this.tasks) if (!t.view.background) this.kill(id, reason);
+  }
+
   /**
-   * Hand a running foreground task over to the background (D-106's flip — wired
-   * by P10b). A child that has already exited (H-31's `cmd &`) starts the
-   * background end at once (R5). Returns false for a task that has finished.
+   * Append exactly `content` to a task's stdin, then send EOF if `close` (D-104,
+   * G10). An ended task — finished, killed, or one whose child has exited — is
+   * refused at once (R6) rather than left to fail later with EPIPE. Resolves
+   * when the pipe has taken the bytes, or after `WRITE_WAIT_MS` with
+   * `pending: true` if the process isn't reading.
+   */
+  write(id: string, content: string, close: boolean): Promise<WriteOutcome> {
+    const task = this.tasks.get(id);
+    if (!task) return Promise.resolve({ kind: "unknown" });
+    const c = task.child;
+    const view = (): TaskView => ({ ...task.view });
+    if (task.finished || task.childExited || task.view.status !== "running" || c.exitCode !== null || c.signalCode !== null) {
+      return Promise.resolve({ kind: "ended", view: view() });
+    }
+    const stdin = c.stdin;
+    if (!stdin || task.stdinFailed || stdin.destroyed || stdin.writableEnded) {
+      return Promise.resolve({ kind: "input-closed", view: view() });
+    }
+    const bytes = Buffer.byteLength(content);
+    return new Promise((resolve) => {
+      let done = false;
+      const settle = (o: WriteOutcome): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        stdin.off("error", onError);
+        resolve(o);
+      };
+      const onError = (): void => settle({ kind: "input-closed", view: view() });
+      const written = (pending: boolean): WriteOutcome => ({ kind: "written", view: view(), bytes, closed: close, pending });
+      stdin.once("error", onError);
+      const timer = setTimeout(() => settle(written(true)), WRITE_WAIT_MS);
+      timer.unref?.();
+      const after = (e?: Error | null): void => (e ? onError() : settle(written(false)));
+      try {
+        if (close) {
+          // `end(chunk, cb)` writes then closes; the callback fires once flushed.
+          // The callback carries EPIPE before any `error` listener runs (review
+          // R1): pass it on, or a closed input reads as a successful close.
+          if (bytes > 0) stdin.end(content, (e?: Error | null) => after(e));
+          else stdin.end((e?: Error | null) => after(e));
+        } else if (bytes > 0) {
+          stdin.write(content, after);
+        } else {
+          settle(written(false));
+        }
+      } catch {
+        onError();
+      }
+    });
+  }
+
+  /** Resolves with the task's final view once it has finished, or `undefined`
+   *  after `ms` — for `delete_file(process:)`, which reports how it ended. */
+  whenEnded(id: string, ms: number): Promise<TaskView | undefined> {
+    const task = this.tasks.get(id);
+    if (!task) return Promise.resolve(undefined);
+    if (task.finished) return Promise.resolve({ ...task.view });
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        off();
+        resolve(undefined);
+      }, ms);
+      timer.unref?.();
+      const off = this.onEvent((e) => {
+        if (e.type !== "task-end" || e.task.id !== id) return;
+        clearTimeout(timer);
+        off();
+        resolve({ ...e.task });
+      });
+    });
+  }
+
+  /**
+   * The rows of `list_dir(processes: true)` (D-104, G8): background tasks only.
+   * An ended one appears in exactly one listing — this call marks it shown —
+   * and then drops off; it stays readable by id.
+   */
+  listBackground(): ProcessRow[] {
+    const rows: ProcessRow[] = [];
+    for (const t of this.tasks.values()) {
+      if (!t.view.background || (t.finished && t.shown)) continue;
+      if (t.finished) t.shown = true;
+      const count = (s: "stdout" | "stderr"): number => t.lines[s] + (t.finished && t.partial[s] ? 1 : 0);
+      rows.push({ view: { ...t.view }, ended: t.finished, lines: { stdout: count("stdout"), stderr: count("stderr") } });
+    }
+    return rows;
+  }
+
+  /**
+   * Hand a running foreground task over to the background (D-106's flip): the
+   * watchdog's "background" answer. Its `onBackground` resolves the pending
+   * `run_command` call at once; the process and its files are untouched. A
+   * child that has already exited (H-31's `cmd &`) starts the background end at
+   * once (R5). Returns false for a task that has finished.
    */
   toBackground(id: string): boolean {
     const task = this.tasks.get(id);
     if (!task || task.finished) return false;
     if (!task.view.background) {
       task.view.background = true;
-      this.emit({ type: "task-update", task: { ...task.view } });
+      const hand = task.onBackground;
+      task.onBackground = undefined;
+      try {
+        this.emit({ type: "task-update", task: { ...task.view } });
+      } finally {
+        hand?.(); // the call resolves even past a throwing listener
+      }
     }
     const c = task.child;
     if (!task.childExited && (c.exitCode !== null || c.signalCode !== null)) {
@@ -513,8 +680,14 @@ export class TaskRegistry {
       try {
         try {
           if (!task.finished) {
-            this.kill(task.view.id, "stop");
-            this.finish(task);
+            try {
+              this.kill(task.view.id, "stop");
+            } finally {
+              // A throwing `task-update` listener inside `kill` must not skip
+              // this (P10a review R2 nit): unfinished, the timers would stay
+              // armed and `task-end` would fire after dispose, from `close`.
+              this.finish(task);
+            }
           }
         } finally {
           this.seal(task); // even past a throwing `task-update`/`task-end` listener

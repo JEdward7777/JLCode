@@ -662,8 +662,10 @@ behind the per-case handling (truncation §23, approvals §6).
 - All three are POST actions on the transport (§11); status and kill/stop states flow back over SSE.
 - **The watchdog asks the model, and says so (X-33).** A command still running after
   `commands.watchdogMinutes` (default **30**, `0` disables) pauses for one out-of-band
-  kill-or-keep decision by the model, carrying its elapsed time and output so far; the exchange
-  never joins the conversation. The interval is **stated in `run_command`'s own description**,
+  kill, keep or **background** decision by the model (D-106), carrying its elapsed time and output
+  so far; the exchange never joins the conversation. "Background" returns the pending call at once
+  with the process id, leaving the process running (a command waiting on stdin is then fed with
+  `write_file(process:)`). The interval is **stated in `run_command`'s own description**,
   because a mechanism the model cannot see is one it cannot use — the tool previously said "there
   is no timeout" and hid its own escape hatch. A per-call `timeout` (§10) covers the shorter
   scale the watchdog cannot. **Background processes have no watchdog (D-104)** — running a long

@@ -28,7 +28,7 @@
 import fs from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Tool } from "./types.js";
-import type { KillReason } from "./task-registry.js";
+import { formatDuration, type KillReason } from "./task-registry.js";
 import { killTree, shellSpawnOptions } from "./kill-tree.js";
 
 /** The foreground result's cap, in **bytes** of output (whole chunks kept). */
@@ -52,6 +52,27 @@ export function truncationNote(shown: string, processId: string | undefined): st
   );
 }
 
+/**
+ * What a background launch returns (D-104) — and what the watchdog's
+ * "background" answer resolves the pending call with (D-106, `movedAfterMs`).
+ * It names the exact calls, so a model that never read the descriptions still
+ * knows how to read, feed, kill and list it.
+ */
+export function backgroundLaunchText(id: string, command: string, movedAfterMs?: number): string {
+  const head =
+    movedAfterMs === undefined
+      ? `Started in the background as process ${id}: $ ${command}`
+      : `Moved to the background after ${formatDuration(movedAfterMs)} — still running as process ${id}: $ ${command}\n` +
+        `Its output so far stays readable from line 1.`;
+  return (
+    `${head}\n` +
+    `- read its output: read_file(process: "${id}") — offset/limit as for a file; a negative offset counts from the end\n` +
+    `- write to its stdin: write_file(process: "${id}", content: "…") — sent exactly as given (end a line with \\n); add close: true to send EOF\n` +
+    `- kill it: delete_file(process: "${id}")\n` +
+    `- list your processes: list_dir(processes: true)`
+  );
+}
+
 export interface ShellToolOptions {
   /** The configured watchdog interval, in minutes, so the description can state
    *  it. `undefined` = the 30-minute default; `0` = switched off, and the
@@ -70,6 +91,8 @@ function killNote(reason: KillReason, timeoutSec?: number): string {
       return "[killed by the watchdog — you decided to terminate this long-running command]";
     case "timeout":
       return `[timed out after ${timeoutSec}s — the 'timeout' you set on this call, not a failure of the command]`;
+    case "agent":
+      return "[killed with delete_file]";
   }
 }
 
@@ -84,8 +107,8 @@ function watchdogSentence(minutes: number | undefined): string {
   }
   return (
     `There is no default time limit, but a command still running after ~${m} min pauses to ask *you* ` +
-    `whether to kill it (you will be shown its output so far and answer kill/keep), so a long build is ` +
-    `not lost and a runaway is not permanent.`
+    `whether to kill it, keep waiting, or move it to the background (you will be shown its output so far), ` +
+    `so a long build is not lost and a runaway is not permanent.`
   );
 }
 
@@ -107,7 +130,12 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
           "Run a shell command; returns combined stdout/stderr and the exit code. " +
           watchdogSentence(options.watchdogMinutes) +
           " Set 'timeout' (seconds) to bound a call yourself — you get the output collected so far. " +
-          "Set 'cwd' to run in a subdirectory instead of prefixing the command with 'cd'.",
+          "Set 'cwd' to run in a subdirectory instead of prefixing the command with 'cd'. " +
+          "Set 'background: true' for a server, watcher or long job: it returns at once with a process id, " +
+          "and you drive the process through the file tools — read_file(process: id) reads its output, " +
+          "write_file(process: id, content) writes to its stdin, delete_file(process: id) kills it, " +
+          "list_dir(processes: true) lists yours. A background process has no watchdog ('timeout' still " +
+          "applies), survives Stop, and is killed when this conversation is closed.",
         parameters: {
           type: "object",
           properties: {
@@ -121,6 +149,10 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
               type: "number",
               description:
                 "Seconds before the command is killed and its partial output returned. Omit for no limit.",
+            },
+            background: {
+              type: "boolean",
+              description: "Start it and return at once with a process id instead of waiting for it to finish.",
             },
           },
           required: ["command"],
@@ -143,6 +175,15 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
           });
         }
         timeoutSec = t;
+      }
+
+      // Models sometimes stringify booleans; accept the obvious spelling.
+      const background = args.background === true || args.background === "true";
+      if (background && !ctx.tasks) {
+        return Promise.resolve({
+          content: "run_command 'background' needs a process registry, and this context has none",
+          isError: true,
+        });
       }
 
       // Resolve `cwd` through the fence. The session has already refused or had
@@ -184,9 +225,48 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
         // killing *through the registry* is what makes a timeout read as a kill
         // in the task list and in the result below.
         const tasks = ctx.tasks;
+        const startedAt = Date.now();
+        // Resolved exactly once: by `close`, by a spawn failure, or early — at
+        // launch for a background task, or when the watchdog moves a foreground
+        // one to the background (D-106), after which `close` must not resolve
+        // again.
+        let settled = false;
+        const finish = (r: { content: string; isError?: boolean }): void => {
+          if (settled) return;
+          settled = true;
+          resolve(r);
+        };
         const handle = tasks?.start(command, child, killGroup, {
           ...(timeoutSec !== undefined ? { timeoutMs: timeoutSec * 1000 } : {}),
+          ...(background
+            ? { background: true }
+            : {
+                onBackground: () => {
+                  // The output is on disk from line 1; stop collecting a copy.
+                  child.stdout?.off("data", onData);
+                  child.stderr?.off("data", onData);
+                  if (handle) finish({ content: backgroundLaunchText(handle.id, command, Date.now() - startedAt) });
+                },
+              }),
         });
+
+        if (background && handle && tasks) {
+          // Return once the child has started (or failed to): a spawn failure
+          // is reported now rather than as a "started" that never was (R6).
+          const launched = (): void => {
+            const view = tasks.get(handle.id);
+            if (view?.failedToStart) finish({ content: view.failedToStart, isError: true });
+            else finish({ content: backgroundLaunchText(handle.id, command) });
+          };
+          if (tasks.get(handle.id)?.failedToStart) return launched(); // its log couldn't open
+          child.once("spawn", launched);
+          child.once("error", (e) => {
+            if (child.pid !== undefined) return; // a failed kill, not a failed start (R7)
+            const view = tasks.get(handle.id);
+            finish({ content: view?.failedToStart ?? `spawn failed: ${e.message}`, isError: true });
+          });
+          return;
+        }
 
         // Without a registry (bare embeddings, R7) there is nothing to record a
         // timeout on, so the group is signalled directly and the note is carried
@@ -204,11 +284,11 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
         let out = "";
         let bytes = 0;
         let overflow = false;
-        const onData = (d: Buffer) => {
+        function onData(d: Buffer): void {
           bytes += d.length;
           if (bytes <= MAX_OUTPUT) out += d.toString();
           else overflow = true;
-        };
+        }
         child.stdout?.on("data", onData);
         child.stderr?.on("data", onData);
 
@@ -218,7 +298,7 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
           // `start`), so the task's outcome is already settled here.
           const view = handle ? tasks?.get(handle.id) : undefined;
           if (view?.failedToStart) {
-            resolve({ content: view.failedToStart, isError: true });
+            finish({ content: view.failedToStart, isError: true });
             return;
           }
           const killReason = view ? view.killReason : timedOut ? "timeout" : undefined;
@@ -228,14 +308,14 @@ export function runCommandTool(options: ShellToolOptions = {}): Tool {
             : signal
               ? `[killed by ${signal}]`
               : `[exit ${code}]`;
-          resolve({ content: `${out}${tail}\n${status}`, isError: killReason !== undefined || code !== 0 });
+          finish({ content: `${out}${tail}\n${status}`, isError: killReason !== undefined || code !== 0 });
         });
         child.on("error", (e) => {
           // Only a child that never started has failed to spawn: a failed kill
           // raises `error` too (R7), and its `close` still reports the outcome.
           if (child.pid !== undefined) return;
           if (timer) clearTimeout(timer);
-          resolve({ content: `spawn failed: ${e.message}`, isError: true });
+          finish({ content: `spawn failed: ${e.message}`, isError: true });
         });
       });
     },

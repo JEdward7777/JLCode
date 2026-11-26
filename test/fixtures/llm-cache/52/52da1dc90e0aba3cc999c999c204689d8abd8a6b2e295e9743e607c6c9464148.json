@@ -1,0 +1,1 @@
+{"text":"The sub-agent \"agent-1\" has been successfully closed.","toolCalls":[],"finishReason":"stop","provider":"OpenAI","usage":{"promptTokens":2135,"completionTokens":14,"totalTokens":2149,"cachedTokens":2048,"costUsd":0.00017505}}

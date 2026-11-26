@@ -31,7 +31,7 @@ import { buildWireMessages, endsWithUnansweredToolCall, pinnedProvider } from ".
 import type { Attachment, Conversation, Entry, InboundMeta, ModelSwitchEntry, SharedFile } from "../conversation/types.js";
 import type { Sandbox } from "../tools/sandbox.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { AgentAccess, Tool, ToolGate, ToolPreview } from "../tools/types.js";
+import { onProcess, type AgentAccess, type Tool, type ToolGate, type ToolPreview } from "../tools/types.js";
 import { AllowAllGate } from "../tools/gate.js";
 import { isAskTool } from "../tools/ask-user.js";
 import { TODO_GUIDANCE, TODO_READ } from "../tools/todo-tools.js";
@@ -266,23 +266,40 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** The structured yes/no the watchdog asks the model out-of-band (D-34). */
+/** The structured decision the watchdog asks the model out-of-band (D-34,
+ *  D-106): kill, keep waiting, or move the command to the background. */
 const DECIDE_KILL_TOOL: ToolDef = {
   type: "function",
   function: {
     name: "decide_kill",
     description:
-      "Decide whether to kill a long-running background command. kill=true terminates it now; kill=false lets it keep running.",
+      "Decide what to do with a long-running command the conversation is waiting on. action=kill terminates " +
+      "it now; action=keep keeps waiting (you'll be asked again later); action=background stops waiting and " +
+      "returns its process id at once, leaving it running — its output stays readable, and it can be fed " +
+      "stdin or killed later.",
     parameters: {
       type: "object",
       properties: {
-        kill: { type: "boolean", description: "true to terminate the command now" },
+        action: { type: "string", enum: ["kill", "keep", "background"], description: "What to do with the command" },
         reason: { type: "string", description: "brief rationale" },
       },
-      required: ["kill"],
+      required: ["action"],
     },
   },
 };
+
+/** The watchdog's three answers (D-106). */
+export type WatchdogAction = "kill" | "keep" | "background";
+
+/** Read a `decide_kill` call's arguments: `action`, or a bare `kill: true/false`
+ *  as kill/keep (D-106). Anything else keeps the command — the safe default. */
+export function parseWatchdogDecision(args: unknown): WatchdogAction {
+  if (!args || typeof args !== "object") return "keep";
+  const a = args as { action?: unknown; kill?: unknown };
+  if (a.action === "kill" || a.action === "keep" || a.action === "background") return a.action;
+  if (a.kill === true || a.kill === "true") return "kill";
+  return "keep";
+}
 
 type StepOutcome = "done" | "paused-approval" | "paused-input";
 
@@ -721,9 +738,10 @@ export class Session {
     // per-task watchdog (D-34).
     this.tasks.onEvent((e) => {
       this.emit(e);
-      // No watchdog for a background task (D-104).
+      // No watchdog for a background task (D-104) — nor for one just moved
+      // there (D-106).
       if (e.type === "task-start" && !e.task.background) this.armWatchdog(e.task.id);
-      else if (e.type === "task-end") this.disarmWatchdog(e.task.id);
+      else if (e.type === "task-end" || (e.type === "task-update" && e.task.background)) this.disarmWatchdog(e.task.id);
     });
     // Whole-tree spend survives resume: recompute from the stored usage of every
     // assistant entry across all branches (D-33), then grow it per new turn.
@@ -1686,10 +1704,26 @@ export class Session {
   }
 
   /** Global stop (D-34). "hard" is the big red button: abort the in-flight LLM
-   *  request, kill every background task, drop the queue and any pending work.
-   *  "soft" is loop-only: leave running commands to finish but take no further
-   *  LLM turn. If the loop is running it observes the flag and settles itself. */
-  stop(scope: "hard" | "soft"): void {
+   *  request, kill every foreground command, drop the queue and any pending
+   *  work. Background processes survive it (D-104). "soft" is loop-only: leave
+   *  running commands to finish but take no further LLM turn. If the loop is
+   *  running it observes the flag and settles itself.
+   *
+   *  `killProcesses` is "Stop and kill processes" (R1 G11, R3–R5): the hard
+   *  scope plus every background process. Each session decides by its own
+   *  status (R4): an idle one only kills its processes — no hard-stop queue
+   *  clear, which would drop parked nudges or a message held for a missing
+   *  model — always with reason "stop", so their notices are parked (R5). */
+  stop(scope: "hard" | "soft", opts: { killProcesses?: boolean } = {}): void {
+    if (opts.killProcesses) {
+      if (this.status !== "idle") this.stop("hard");
+      try {
+        this.tasks.killAll("stop");
+      } catch (err) {
+        this.reportInternal("could not kill this thread's processes", err, "error");
+      }
+      return;
+    }
     try {
       this.stopNow(scope);
     } catch (err) {
@@ -1748,7 +1782,8 @@ export class Session {
     this.queuedResume = false;
     if (scope === "hard") {
       this.abortController?.abort();
-      this.tasks?.killAll("stop");
+      // Foreground only: background processes survive Stop (D-104).
+      this.tasks?.killForeground("stop");
       // Agent messages emptied out here will never be delivered: say so on
       // disk, or a reload would hand them back as still owed (D-88).
       this.dropInbound(this.queue);
@@ -2057,22 +2092,26 @@ export class Session {
   private async watchdogCheck(taskId: string): Promise<void> {
     this.watchdogTimers.delete(taskId);
     const view = this.tasks.get(taskId);
-    if (!view || view.status !== "running") return; // ended already
-    let kill = false;
+    if (!view || view.status !== "running" || view.background) return; // ended, or not ours to watch
+    let action: WatchdogAction = "keep";
     try {
-      kill = await this.askWatchdogKill(taskId, view.command);
+      action = await this.askWatchdog(taskId, view.command);
     } catch {
-      kill = false; // on any error, keep it and re-ask later
+      action = "keep"; // on any error, keep it and re-ask later
     }
-    if (this.tasks.get(taskId)?.status !== "running") return; // ended meanwhile
-    if (kill) this.tasks.kill(taskId, "watchdog");
+    const now = this.tasks.get(taskId);
+    if (now?.status !== "running" || now.background) return; // ended (or moved) meanwhile
+    if (action === "kill") this.tasks.kill(taskId, "watchdog");
+    // D-106: the pending call returns now with the process id; the process and
+    // its files are untouched, and it is never watched again.
+    else if (action === "background") this.tasks.toBackground(taskId);
     else this.armWatchdog(taskId); // re-ask after another interval
   }
 
   /** One out-of-band model call: given the conversation so far plus the task's
-   *  elapsed time and output, decide kill/keep. Counts toward whole-tree spend
+   *  elapsed time and output, decide kill/keep/background (D-106). Counts toward whole-tree spend
    *  (D-33) but never touches the conversation tree. */
-  private async askWatchdogKill(taskId: string, command: string): Promise<boolean> {
+  private async askWatchdog(taskId: string, command: string): Promise<WatchdogAction> {
     // The config invariant: idle, this asks about the branch in view; a gone
     // config throws, which the caller treats as "keep it, ask again later".
     this.alignOutOfTurn();
@@ -2084,11 +2123,14 @@ export class Session {
     messages.push({
       role: "user",
       content:
-        `[watchdog] A background command you started has been running for ~${elapsedMin} min without exiting:\n` +
+        `[watchdog] A command you started has been running for ~${elapsedMin} min without exiting, and the ` +
+        `conversation is waiting on it:\n` +
         `  $ ${command}\n\n` +
         `Output so far:\n${tail || "(no output yet)"}\n\n` +
-        `Call decide_kill: kill=true terminates it now, kill=false lets it keep running ` +
-        `(you'll be asked again later). This exchange is not added to the conversation.`,
+        `Call decide_kill: action=kill terminates it now; action=keep keeps waiting (you'll be asked again ` +
+        `later); action=background stops waiting and returns its process id, leaving it running (a command ` +
+        `waiting for input can then be fed with write_file(process:)). This exchange is not added to the ` +
+        `conversation.`,
     });
     const req: ChatRequest = { model: this.config.model, messages, tools: [DECIDE_KILL_TOOL] };
     // Same routing as a turn (D-86): it replays the same signed history, and a
@@ -2120,12 +2162,11 @@ export class Session {
       },
     });
     const call = result.toolCalls.find((t) => t.function.name === "decide_kill");
-    if (!call) return false; // no decision → keep it running
+    if (!call) return "keep"; // no decision → keep it running
     try {
-      const args = JSON.parse(call.function.arguments || "{}") as { kill?: unknown };
-      return args.kill === true;
+      return parseWatchdogDecision(JSON.parse(call.function.arguments || "{}"));
     } catch {
-      return false;
+      return "keep";
     }
   }
 
@@ -3791,7 +3832,12 @@ export class Session {
     // a prompt even if the mode/approval gate would otherwise allow.
     const escapes = this.fenceEscapes(tool, args);
     if (decision.kind === "prompt" || escapes.length > 0) {
-      const reason = escapes.length > 0 ? "access outside the workspace" : "approval required by policy";
+      const reason =
+        escapes.length > 0
+          ? "access outside the workspace"
+          : tool.processGate === "stdin" && onProcess(tool, args)
+            ? "input to a running process — approval required by policy"
+            : "approval required by policy";
       return this.pauseForApproval(call, tool, args, reason, escapes, this.learnRequest(tool, args, escapes));
     }
 
@@ -3822,7 +3868,9 @@ export class Session {
     const request: ApprovalRequest = {
       id: newId("appr"),
       tool: tool.name,
-      kind: tool.kind,
+      // Stdin to a process is gated as running a command (D-105d), and the card
+      // says so rather than calling it a write.
+      kind: tool.processGate === "stdin" && onProcess(tool, args) ? "command" : tool.kind,
       args,
       reason,
       ...(escapes.length > 0
@@ -3887,8 +3935,8 @@ export class Session {
    *  (D-47d) — an unclassified path-looking value is fenced until answered. */
   private fenceEscapes(tool: Tool, args: Record<string, unknown>): { arg: string; escapedPath: string }[] {
     if (!this.sandbox) return [];
-    // A call on a process ignores `path` (D-104), so there is nothing to fence.
-    if (tool.processAware && args.process !== undefined) return [];
+    // A call on a process ignores `path` (D-104, G9), so there is nothing to fence.
+    if (onProcess(tool, args)) return [];
     const candidates: { arg: string; value: string }[] = tool.classifyPaths
       ? tool.classifyPaths(args).paths.map((p) => ({ arg: p.field, value: p.value }))
       : (tool.pathArgs ?? []).flatMap((argName) => {

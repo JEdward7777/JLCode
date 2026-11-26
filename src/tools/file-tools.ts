@@ -9,8 +9,8 @@ import path from "node:path";
 import { editTools, renderDiff } from "./edit-tools.js";
 import { MAX_IMAGE_BYTES, classifyFile, humanBytes, looksBinary } from "./media.js";
 import { readProcess } from "./process-read.js";
-import type { ProcessStream } from "./task-registry.js";
-import type { FilePreview, Tool, ToolContext, ToolPreview, ToolResult } from "./types.js";
+import { describeState, formatDuration, type ProcessStream, type TaskRegistry } from "./task-registry.js";
+import type { FilePreview, StdinPreview, Tool, ToolContext, ToolPreview, ToolResult } from "./types.js";
 
 const MAX_READ_CHARS = 100_000;
 const MAX_GLOB = 500;
@@ -153,6 +153,126 @@ function previewSource(abs: string): { text: string; bytes: number } | { error: 
   } catch (e) {
     return { error: (e as Error).message };
   }
+}
+
+/** How long `delete_file(process:)` waits for the killed tree to finish before
+ *  answering anyway — the group kill is SIGKILL, so this is a backstop. */
+const KILL_WAIT_MS = 5000;
+
+/** The id a process call names, or an error result. */
+function processId(args: Record<string, unknown>, tool: string): string | ToolResult {
+  const id = reqStr(args, "process");
+  if (id === undefined || id.trim() === "") return err(`${tool} 'process' must be a process id string`);
+  return id.trim();
+}
+
+/** The unknown-id error (D-104, G14): names what this conversation can reach. */
+function unknownProcess(tasks: TaskRegistry | undefined, id: string): ToolResult {
+  const all = tasks?.all() ?? [];
+  const known =
+    all.length === 0
+      ? "This conversation has no processes."
+      : `Processes in this conversation:\n${all.map((v) => `  ${v.id} · ${describeState(v)} · ${v.command.slice(0, 80)}`).join("\n")}`;
+  return err(`No process "${id}" in this conversation. ${known}`);
+}
+
+/** `write_file(process:, content, close?)` — stdin (D-104, G10). */
+async function writeStdin(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const id = processId(args, "write_file");
+  if (typeof id !== "string") return id;
+  const close = args.close === true || args.close === "true";
+  const content = args.content === undefined ? "" : reqStr(args, "content");
+  if (content === undefined) return err("write_file 'content' must be a string");
+  if (content === "" && !close) {
+    return err("write_file with 'process' needs 'content' to send, or 'close: true' to send EOF");
+  }
+  const tasks = ctx.tasks;
+  const out = tasks ? await tasks.write(id, content, close) : ({ kind: "unknown" } as const);
+  switch (out.kind) {
+    case "unknown":
+      return unknownProcess(tasks, id);
+    case "ended":
+      return err(
+        `Process ${id} has ended (${describeState(out.view)}); nothing can be written to it. ` +
+          `Its output is still readable: read_file(process: "${id}").`,
+      );
+    case "input-closed":
+      return err(
+        `Process ${id} has closed its input (it is ${describeState(out.view)}); nothing more can be written to it.`,
+      );
+    case "written": {
+      const what = out.bytes > 0 ? `wrote ${out.bytes} byte${out.bytes === 1 ? "" : "s"} to the stdin of process ${id}` : `process ${id}`;
+      const eof = out.closed ? (out.bytes > 0 ? ", then closed it (EOF)" : ": closed its stdin (EOF)") : "";
+      const queued = out.pending ? " — it hasn't read them yet; they are queued in the pipe" : "";
+      return ok(`${what}${eof}${queued}. Read what it does next: read_file(process: "${id}", offset: -20).`);
+    }
+  }
+}
+
+/** The approval card for a stdin write (D-105d): input to a command, not a file. */
+function stdinPreview(args: Record<string, unknown>, ctx: ToolContext): StdinPreview {
+  const id = reqStr(args, "process")?.trim() ?? String(args.process);
+  const content = reqStr(args, "content") ?? "";
+  const close = args.close === true || args.close === "true";
+  const { body, omitted } = capBody(content, MAX_PREVIEW_LINES);
+  const view = ctx.tasks?.get(id);
+  const ended = view && view.status !== "running";
+  return {
+    kind: "stdin",
+    process: id,
+    ...(view ? { command: view.command, state: describeState(view) } : {}),
+    body,
+    bytes: Buffer.byteLength(content),
+    ...(omitted > 0 ? { omitted } : {}),
+    close,
+    ...(!view
+      ? { error: `no process "${id}" in this conversation — this write will fail` }
+      : ended
+        ? { error: `process ${id} has ended (${describeState(view)}) — this write will fail` }
+        : {}),
+  };
+}
+
+/** `delete_file(process:)` — kill the tree and say how it ended (D-104). */
+async function killProcess(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const id = processId(args, "delete_file");
+  if (typeof id !== "string") return id;
+  const tasks = ctx.tasks;
+  const before = tasks?.get(id);
+  if (!tasks || !before) return unknownProcess(tasks, id);
+  const readable = `Its output stays readable: read_file(process: "${id}").`;
+  if (before.status === "killed" && before.endedAt === undefined) {
+    return ok(`Process ${id} is already being killed (${describeState(before)}); nothing more to do. ${readable}`);
+  }
+  if (before.status !== "running") {
+    return ok(`Process ${id} had already ended (${describeState(before)}); nothing to kill. ${readable}`);
+  }
+  tasks.kill(id, "agent");
+  const end = await tasks.whenEnded(id, KILL_WAIT_MS);
+  if (!end) {
+    return ok(`Sent process ${id} and everything it started a kill; it hasn't finished ending yet. ${readable}`);
+  }
+  const runtime = formatDuration((end.endedAt ?? Date.now()) - end.startedAt);
+  return ok(`Process ${id} ended (${describeState(end)}) after ${runtime}. ${readable}`);
+}
+
+/** `list_dir(processes: true)` (D-104, G8): background processes only. */
+function listProcesses(ctx: ToolContext): ToolResult {
+  const howTo =
+    'read: read_file(process: ID) · write stdin: write_file(process: ID, content: "…") · kill: delete_file(process: ID)';
+  const rows = ctx.tasks?.listBackground() ?? [];
+  if (rows.length === 0) {
+    return ok(`No background processes. Start one with run_command(background: true); then ${howTo}.`);
+  }
+  const now = Date.now();
+  const lines = rows.map(({ view, ended, lines: n }) => {
+    const state = ended ? `ended (${describeState(view)})` : view.status === "killed" ? "being killed" : "running";
+    const runtime = formatDuration((view.endedAt ?? now) - view.startedAt);
+    const cmd = view.command.length > 80 ? `${view.command.slice(0, 80)}…` : view.command;
+    return `${view.id} · ${cmd} · ${state} · ${runtime} · stdout ${n.stdout.toLocaleString("en-US")} lines, stderr ${n.stderr.toLocaleString("en-US")} lines`;
+  });
+  const note = rows.some((r) => r.ended) ? "\n(an ended process is listed once, then drops off; it stays readable by id)" : "";
+  return ok(`Background processes — ${howTo}\n${lines.join("\n")}${note}`);
 }
 
 /**
@@ -324,18 +444,27 @@ const writeFile: Tool = {
   kind: "write",
   mutates: true,
   pathArgs: ["path"],
+  processAware: true,
+  processGate: "stdin",
   def: {
     type: "function",
     function: {
       name: "write_file",
-      description: "Create or overwrite a text file within the workspace (atomic).",
+      description:
+        "Create or overwrite a text file within the workspace (atomic). Or set 'process' (a process id from " +
+        "run_command) instead of 'path' to write 'content' to that running process's stdin, exactly as given — " +
+        "no newline is added, so end a line with \\n; add 'close: true' to send EOF. Writing to a process is " +
+        "approved like running a command.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string" },
-          content: { type: "string", description: "Full file contents" },
+          content: { type: "string", description: "Full file contents; with 'process', the bytes to send to its stdin" },
+          process: { type: "string", description: "A running process's id: write to its stdin instead of a file" },
+          close: { type: "boolean", description: "With 'process': close its stdin (EOF) after the content" },
         },
-        required: ["path", "content"],
+        // No `required` (R2 nit): with `process` set `path` is not needed, and
+        // `close: true` may come with no content.
       },
     },
   },
@@ -347,6 +476,8 @@ const writeFile: Tool = {
    * diff against, so it shows the body itself with its size.
    */
   preview(args, ctx): ToolPreview | undefined {
+    // A stdin write ignores `path` (G9): the card shows the bytes and the process.
+    if (args.process !== undefined) return stdinPreview(args, ctx);
     const p = reqStr(args, "path");
     const content = reqStr(args, "content");
     if (p === undefined || content === undefined) return undefined;
@@ -394,6 +525,8 @@ const writeFile: Tool = {
   },
 
   async execute(args, ctx) {
+    // Every other argument is ignored when `process` is set (D-104).
+    if (args.process !== undefined) return writeStdin(args, ctx);
     const p = reqStr(args, "path");
     const content = reqStr(args, "content");
     if (p === undefined || content === undefined) return err("write_file requires string 'path' and 'content'");
@@ -416,12 +549,24 @@ const deleteFile: Tool = {
   kind: "write",
   mutates: true,
   pathArgs: ["path"],
+  processAware: true,
+  processGate: "kill",
   def: {
     type: "function",
     function: {
       name: "delete_file",
-      description: "Delete a file within the workspace.",
-      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+      description:
+        "Delete a file within the workspace. Or set 'process' (a process id from run_command) instead of 'path' " +
+        "to kill that process and everything it started — no approval needed; the reply says how it ended, and " +
+        "its output stays readable with read_file(process:).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          process: { type: "string", description: "A process id: kill it (and its children) instead of deleting a file" },
+        },
+        // No `required` (R2 nit): with `process` set `path` is not needed.
+      },
     },
   },
 
@@ -431,6 +576,7 @@ const deleteFile: Tool = {
    * its head to *recognize* it, and says outright when the delete would fail.
    */
   preview(args, ctx): ToolPreview | undefined {
+    if (args.process !== undefined) return undefined; // a kill asks nothing (G9)
     const p = reqStr(args, "path");
     if (p === undefined) return undefined;
     const r = ctx.sandbox.resolve(p);
@@ -461,8 +607,9 @@ const deleteFile: Tool = {
   },
 
   async execute(args, ctx) {
+    if (args.process !== undefined) return killProcess(args, ctx); // `path` ignored (D-104)
     const p = reqStr(args, "path");
-    if (p === undefined) return err("delete_file requires a string 'path'");
+    if (p === undefined) return err("delete_file requires a string 'path' (or 'process' to kill a process)");
     const r = ctx.sandbox.resolve(p);
     if (!r.ok) return err(r.reason);
     try {
@@ -479,15 +626,25 @@ const listDir: Tool = {
   kind: "read",
   mutates: false,
   pathArgs: ["path"],
+  processAware: "processes",
   def: {
     type: "function",
     function: {
       name: "list_dir",
-      description: "List entries of a directory within the workspace.",
-      parameters: { type: "object", properties: { path: { type: "string", description: "Default '.'" } } },
+      description:
+        "List entries of a directory within the workspace. Set 'processes: true' (no 'path' needed) to list " +
+        "your background processes instead: id, command, running or ended, runtime and lines of output.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Default '.'" },
+          processes: { type: "boolean", description: "List your background processes instead of a directory" },
+        },
+      },
     },
   },
   async execute(args, ctx) {
+    if (args.processes === true || args.processes === "true") return listProcesses(ctx);
     const p = reqStr(args, "path") ?? ".";
     const r = ctx.sandbox.resolve(p, "read");
     if (!r.ok) return err(r.reason);

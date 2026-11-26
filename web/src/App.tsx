@@ -88,6 +88,7 @@ import {
   type ApprovalRequest,
   type ToolPreviewDiff,
   type ToolPreviewFile,
+  type ToolPreviewStdin,
   type AskAnswer,
   type AskUserRequest,
   type BusFrame,
@@ -4149,6 +4150,40 @@ function FilePreview({ preview }: { preview: ToolPreviewFile }) {
   );
 }
 
+/**
+ * Input to a running process (D-104, D-105d): what `write_file(process:)` will
+ * send to its stdin. It reads as a command's input — the process, what it is
+ * running, the exact bytes — never as a file being written. Read-only; the raw
+ * JSON below stays the editable truth (D-16).
+ */
+function StdinPreview({ preview }: { preview: ToolPreviewStdin }) {
+  return (
+    <div className="diff-preview file-preview stdin">
+      <div className="diff-head">
+        <span className="file-action stdin">stdin</span>
+        <span className="stdin-target">
+          to process <code>{preview.process}</code>
+          {preview.state ? ` · ${preview.state}` : null}
+        </span>
+        <span className="file-size">{formatBytes(preview.bytes)}</span>
+      </div>
+      {preview.command ? (
+        <div className="file-note">
+          <code>$ {preview.command}</code>
+        </div>
+      ) : null}
+      {preview.error ? <div className="diff-err">{preview.error}</div> : null}
+      {preview.bytes > 0 ? <pre className="diff-body file-body">{preview.body}</pre> : null}
+      {preview.omitted ? (
+        <div className="file-note">
+          … {preview.omitted} more line{preview.omitted === 1 ? "" : "s"} not shown
+        </div>
+      ) : null}
+      {preview.close ? <div className="file-note">then close its input (EOF)</div> : null}
+    </div>
+  );
+}
+
 function ApprovalCard({
   request,
   onResolve,
@@ -4161,7 +4196,10 @@ function ApprovalCard({
     learned?: LearnAnswers;
   }) => void;
 }) {
-  const primaryKey = primaryArgKey(request.args);
+  // Stdin's content is multi-line and exact: a one-line input would eat its
+  // newlines, so it is edited in the raw JSON only, and a junk `path` or
+  // `command` (ignored by the call) must not pose as the thing being approved.
+  const primaryKey = request.preview?.kind === "stdin" ? null : primaryArgKey(request.args);
   const [edited, setEdited] = useState<Record<string, unknown>>({ ...request.args });
   const [rawText, setRawText] = useState(() => JSON.stringify(request.args, null, 2));
   const [rawOpen, setRawOpen] = useState(false);
@@ -4255,6 +4293,7 @@ function ApprovalCard({
 
       {request.preview?.kind === "diff" ? <DiffPreview preview={request.preview} /> : null}
       {request.preview?.kind === "file" ? <FilePreview preview={request.preview} /> : null}
+      {request.preview?.kind === "stdin" ? <StdinPreview preview={request.preview} /> : null}
 
       <details open={rawOpen || (!primaryKey && !request.preview)} onToggle={(e) => setRawOpen((e.target as HTMLDetailsElement).open)}>
         <summary>raw args (JSON)</summary>
