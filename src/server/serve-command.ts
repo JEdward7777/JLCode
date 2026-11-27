@@ -58,10 +58,14 @@ export async function runServe(args: string[]): Promise<number> {
 
   // Re-read on every new thread so `jlcode config set/use` takes effect live.
   // `--config <name>` pins a specific config regardless of the cwd binding.
+  // The pin is resolved to an **id** once, at start, so renaming the pinned
+  // config in the model manager (X-62) doesn't unpin the running server.
   const pinned = flagString(flags, "config");
+  const pinnedId = pinned ? findModelConfig(loadConfig(paths), pinned)?.id : undefined;
   const resolveConfig = () => {
     const cfg = loadConfig(paths);
-    return pinned ? findModelConfig(cfg, pinned) : resolveForCwd(cfg, cwd);
+    if (!pinned) return resolveForCwd(cfg, cwd);
+    return pinnedId ? cfg.modelConfigs.find((c) => c.id === pinnedId) : findModelConfig(cfg, pinned);
   };
   const makeDriver = (config: ModelConfig): LlmDriver =>
     fake
@@ -224,6 +228,15 @@ export async function runServe(args: string[]): Promise<number> {
     // Live MCP status for the browser panel (P7b) — re-read per request so
     // answers learned mid-session show up without a restart.
     mcpStatus: () => ({ servers: mcp.statuses(), problems: mcp.problems, files: mcpSettingsFiles(cwd) }),
+    // The model manager dialog (X-62): the same store the CLI edits.
+    modelManager: {
+      load: () => loadConfig(paths),
+      save: (c) => saveConfig(c, paths),
+      cwd,
+      ...(pinnedId ? { pinnedId } : {}),
+      catalog,
+      offline: fake,
+    },
     // Persist a live mode/approval switch as the config's new default (Joshua's
     // call: the header controls both re-gate now and stick for next launch).
     persistDefaults: (configName, patch) => {

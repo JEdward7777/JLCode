@@ -24,6 +24,18 @@ testable at the free tiers ([`TESTING.md`](TESTING.md) Tiers 0–1).
 > front end) does belong in the README. Keep the two from drifting; that is what stale-status rot
 > looks like.
 
+> **Resume block — 2026-11-26 (X-62 ✅ — model manager dialog).** **Next free ids: D-111, X-63, H-33.**
+>
+> Joshua asked for a browser dialog to manage model configs: clone (copying the key), replace or enter
+> a key, delete old ones, every setting editable with an explanation, advanced folded, kept current as
+> settings grow. Settled over five questions (D-110). **Built:** `src/config/fields.ts` (one field
+> registry, compile-time coverage guard), `src/config/manage.ts` (pure ops), `src/server/config-routes.ts`
+> (`/model-config-fields`, `/model-configs` CRUD, `/default`, `/model-catalog`), catalog names,
+> `web/src/ModelManager.tsx` + `model-manager.ts`, the gear in the picker. Keys never reach the browser.
+> Peeked (VISUAL-LOG "X-62"). Free tiers green: **1500**. Not run through the ratchet (Joshua didn't ask).
+>
+> **Next:** the post-v1 backlog.
+
 > **Resume block — 2026-11-26 (Phase 10 ✅ complete — X-36 background processes; P10a, P10b, P10c pushed).**
 >
 > **Next free ids: D-110, X-62, H-33.** Joshua designed X-36 over nine questions (D-104) and asked for it

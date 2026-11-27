@@ -121,7 +121,10 @@ export interface CommandSettings {
   agentConcurrency?: number;
 }
 
-/** A named model configuration a user works under (e.g. "Client A — Opus"). */
+/** A named model configuration a user works under (e.g. "Client A — Opus").
+ *
+ *  **Adding a field?** Also add it to `src/config/fields.ts` (the browser's model
+ *  manager renders its form from that list, X-62) — the build fails until you do. */
 export interface ModelConfig {
   id: string;
   name: string;

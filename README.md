@@ -303,6 +303,31 @@ whatever the folder's binding later says. The transcript marks the point:
 *switched to Sol (openai/gpt-5.6-sol)*. If a thread's config is later deleted,
 the composer locks and the picker opens in place, so you can choose another.
 
+### Managing model configs in the browser
+
+Open the model chip in a thread's header and click **⚙ Manage models…** (the
+same gear sits on the "pick a model" card of a thread whose config was deleted).
+The dialog lists every config grouped by key — only each key's last four
+characters ever reach the browser — and marks this folder's default.
+- **New config** starts on `config add`'s defaults; **Clone** copies another
+  config's settings *and its key* (the key is copied on the server, by reference).
+- **The key**, on any config: keep it, use the key from another config, or enter
+  a new one. A new key can also replace the old one on every other config that
+  shared it (rotating a client's key in one go).
+- **Every setting** is editable, each with an **(i)** explaining it; the advanced
+  ones (prompt, sampling, routing and pricing, compaction, commands and agents)
+  sit under **Advanced settings**. Blank means "the default", which the field
+  names. The model field searches OpenRouter's catalog (context, price, images),
+  or takes any slug you type.
+- **Make folder default** is `jlcode config use` for the folder the server runs in.
+- **Delete** asks first. A thread switched to the deleted config stops at its next
+  message with the "pick a model" card (a turn already running finishes). Deleting
+  this folder's default asks which config takes over; the last config, and one a
+  server was started on with `--config`, can't be deleted.
+
+It edits the same `config.json` the CLI does, so either works and an open thread
+picks up an edit the way it picks up a `jlcode config set`.
+
 ### Pinning a model to one endpoint
 
 OpenRouter can serve one model from several endpoints (a model card might offer

@@ -2877,3 +2877,362 @@ pre.arg-val {
   color: var(--muted);
   margin-bottom: 2px;
 }
+
+/* ---- The model manager (X-62, D-110) ---- */
+.mp-manage {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.mm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.mm-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(980px, 96vw);
+  height: min(760px, 92vh);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.mm-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.mm-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.mm-folder {
+  flex: 1;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mm-close {
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 8px;
+}
+.mm-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  min-height: 0;
+}
+.mm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.mm-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mm-group-head {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 0 2px;
+}
+.mm-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mm-row:hover {
+  border-color: var(--accent);
+}
+.mm-row.on {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.mm-row-new {
+  cursor: default;
+  border-style: dashed;
+}
+.mm-tags {
+  display: flex;
+  gap: 6px;
+}
+.mm-new {
+  margin-top: auto;
+  padding: 6px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.mm-new:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.mm-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 14px 0;
+  overflow: hidden;
+}
+.mm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.mm-actions h3 {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mm-actions button,
+.mm-footer button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.danger-text {
+  color: var(--danger);
+}
+.mm-form {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px 14px;
+}
+.mm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mm-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 550;
+}
+.mm-req {
+  color: var(--danger);
+}
+/* Drawn, not a glyph: "ⓘ" is missing from some fonts and renders as a box. */
+.mm-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: italic 600 11px/1 Georgia, serif;
+  cursor: pointer;
+}
+.mm-info:hover,
+.mm-info.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.mm-help {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.mm-field input[type="text"],
+.mm-field input[type="password"],
+.mm-key input[type="password"],
+.mm-field select,
+.mm-field textarea {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.mm-field textarea {
+  resize: vertical;
+}
+.mm-field .mono,
+.mm-model .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.mm-field.bad input,
+.mm-field.bad select,
+.mm-field.bad textarea {
+  border-color: var(--danger);
+}
+.mm-field-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+.mm-muted {
+  color: var(--muted);
+}
+.mm-model {
+  position: relative;
+}
+.mm-facts {
+  font-size: 11.5px;
+  margin-top: 3px;
+}
+.mm-catalog {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.mm-cat-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  gap: 1px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mm-cat-row:hover,
+.mm-cat-row.on {
+  border-color: var(--accent);
+}
+.mm-key {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mm-key legend {
+  padding: 0 4px;
+  font-weight: 550;
+}
+.mm-radio,
+.mm-check,
+.mm-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mm-radio select,
+.mm-inline select {
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.mm-newkey {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 22px;
+}
+.mm-multi {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.mm-advanced summary {
+  cursor: pointer;
+  font-weight: 550;
+  padding: 4px 0;
+}
+.mm-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+.mm-section h4 {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mm-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.mm-spacer {
+  flex: 1;
+}
+.mm-save {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #0b0d12;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mm-save:disabled {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 400;
+  cursor: default;
+}

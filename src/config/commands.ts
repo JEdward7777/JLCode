@@ -127,6 +127,8 @@ function samplingFromFlags(flags: Record<string, string | boolean>): Partial<Sam
   return out;
 }
 
+/* A new `config set` flag usually means a new config field: list it in
+ * `src/config/fields.ts` too, so the browser's model manager can edit it (X-62). */
 function patchFromFlags(flags: Record<string, string | boolean>): ModelConfigPatch {
   const patch: ModelConfigPatch = {};
   const name = flagString(flags, "name");

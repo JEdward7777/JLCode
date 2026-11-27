@@ -135,6 +135,13 @@ Configuration UX:
 - **Filter-search** the config list by typing (KiloCode-style): type `Opus` to narrow,
   then confirm the right client.
 - **Clone** an existing configuration when creating a new one.
+- **Model manager dialog (X-62, D-110).** The browser's model picker has a gear that opens a
+  dialog to create, clone, edit and delete configs and set the folder default. Every field is
+  editable (core fields up front, the rest under "Advanced"), each with an explanation; the
+  form is rendered from `src/config/fields.ts`, which must list every `ModelConfig` field (the
+  build and a test enforce it). Keys never reach the browser: a config's key is kept, copied
+  from another config by id, or entered new (optionally rotated onto every config that shared
+  the old one).
 - Configurations live in the **OS-level config store** (§7), locatable from any launch
   directory; they are **never** written into the project folder.
 

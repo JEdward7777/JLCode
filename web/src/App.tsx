@@ -9,6 +9,7 @@ import { createSpeaker, newAutoReadMemory, plainText, stepAutoRead } from "./tts
 import { pathToLeaf, childrenOf, leafOf } from "./tree";
 import { needsViewResync } from "./session-state";
 import { fitModelLabel } from "./model-label";
+import { ModelManager } from "./ModelManager";
 import {
   agentCard,
   agentStatus,
@@ -2451,6 +2452,9 @@ function SwitchMark({ entry }: { entry: EntryView }) {
  */
 function ModelChip({ slice, onState }: { slice: SessionSlice; onState: (state: SessionState) => void }) {
   const [open, setOpen] = useState(false);
+  /** The model manager (X-62), opened from the picker's gear. Held here, not in
+   *  the popover, so closing the popover doesn't close the dialog. */
+  const [managing, setManaging] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const missing = slice.modelMissing;
   const model = missing ? missing.snapshot.model : slice.model;
@@ -2510,6 +2514,19 @@ function ModelChip({ slice, onState }: { slice: SessionSlice; onState: (state: S
           pendingConfigId={pending?.configId ?? null}
           onState={onState}
           onDone={() => setOpen(false)}
+          onManage={() => {
+            setOpen(false);
+            setManaging(true);
+          }}
+        />
+      )}
+      {managing && (
+        <ModelManager
+          onClose={() => setManaging(false)}
+          // A config this thread runs on may have been edited or deleted:
+          // re-read its state, so a deletion shows the pick-a-model card now
+          // rather than at the next send.
+          onChanged={() => void apiSessionState(slice.id).then(onState).catch(() => {})}
         />
       )}
     </div>
@@ -2532,6 +2549,7 @@ function ModelPicker({
   inline = false,
   onState,
   onDone,
+  onManage,
 }: {
   sessionId: string;
   /** The slice's in-view config id — only a cue to refetch and drop a
@@ -2541,8 +2559,12 @@ function ModelPicker({
   inline?: boolean;
   onState: (state: SessionState) => void;
   onDone?: () => void;
+  /** Open the model manager (X-62). Absent → the picker opens it itself (the
+   *  deleted-config card, which stays mounted). */
+  onManage?: () => void;
 }) {
   const [groups, setGroups] = useState<ConfigGroup[] | null>(null);
+  const [managing, setManaging] = useState(false);
   /** The config the branch in view will run next, as `/configs` answered —
    *  the one source of truth for the "current" row and `planPick`. The slice
    *  cannot know it: an unswitched thread holds its config until the next turn
@@ -2695,6 +2717,22 @@ function ModelPicker({
       ))}
       {error && <div className="mp-error">{error}</div>}
       {notice && <div className="mp-notice" role="status">{notice}</div>}
+      <button
+        className="mp-manage ghost"
+        onClick={() => (onManage ? onManage() : setManaging(true))}
+        title="add, clone, edit or delete model configs, and set this folder's default"
+      >
+        ⚙ Manage models…
+      </button>
+      {managing && (
+        <ModelManager
+          onClose={() => setManaging(false)}
+          onChanged={() => {
+            setReload((n) => n + 1);
+            void apiSessionState(sessionId).then(onState).catch(() => {});
+          }}
+        />
+      )}
     </div>
   );
 }

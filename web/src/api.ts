@@ -935,3 +935,93 @@ export async function fetchJournal(conversationId: string): Promise<JournalRecor
   const data = (await res.json()) as { records?: JournalRecord[] };
   return data.records ?? [];
 }
+
+// ---- The model manager (X-62, D-110). Keys never come back from these; a key
+// goes *out* only inside a write's `key: {mode: "new", value}`.
+
+/** One editable field, as the server describes it (src/config/fields.ts). */
+export interface FieldSpec {
+  key: string;
+  label: string;
+  help: string;
+  type: "text" | "textarea" | "model" | "int" | "number" | "bool" | "tristate" | "enum" | "multi" | "json";
+  advanced: boolean;
+  section?: string;
+  options?: string[];
+  required?: boolean;
+  min?: number;
+  defaultHint?: string;
+}
+
+export type FieldValue = string | number | boolean | string[] | Record<string, unknown> | null;
+
+export interface ManagedConfig {
+  id: string;
+  values: Record<string, FieldValue>;
+  fingerprint: string;
+  keyGroup: number;
+  sharedWith: number;
+  folderDefault: boolean;
+  pinned: boolean;
+  updatedAt: string;
+}
+
+export type KeyChoice =
+  | { mode: "keep" }
+  | { mode: "copy"; fromId: string }
+  | { mode: "new"; value: string; rotate?: boolean };
+
+export interface CatalogModel {
+  id: string;
+  name?: string;
+  contextLength?: number;
+  promptPerMTok?: number;
+  completionPerMTok?: number;
+  images: "yes" | "no" | "unknown";
+}
+
+async function jsonOrThrow<T>(res: Response): Promise<T> {
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) throw new ApiError(typeof body["error"] === "string" ? body["error"] : `request failed (${res.status})`, res.status, body);
+  return body as T;
+}
+
+export async function fetchConfigFields(): Promise<FieldSpec[]> {
+  return (await jsonOrThrow<{ fields: FieldSpec[] }>(await fetch("/model-config-fields"))).fields;
+}
+
+export async function fetchManagedConfigs(): Promise<{ configs: ManagedConfig[]; workingDir: string }> {
+  return await jsonOrThrow(await fetch("/model-configs"));
+}
+
+export async function fetchModelCatalog(): Promise<{ models: CatalogModel[]; fetchedAt: string | null; error?: string }> {
+  return await jsonOrThrow(await fetch("/model-catalog"));
+}
+
+const sendJson = (method: string, body?: unknown): RequestInit => ({
+  method,
+  ...(body !== undefined ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+});
+
+/** Create a config (blank or a clone). Field problems come back as an
+ *  {@link ApiError} whose body has `fieldErrors`. */
+export async function createManagedConfig(values: Record<string, FieldValue>, key: KeyChoice): Promise<ManagedConfig> {
+  return (await jsonOrThrow<{ config: ManagedConfig }>(await fetch("/model-configs", sendJson("POST", { values, key })))).config;
+}
+
+export async function updateManagedConfig(
+  id: string,
+  values: Record<string, FieldValue>,
+  key: KeyChoice,
+): Promise<{ config: ManagedConfig; rotated: number }> {
+  return await jsonOrThrow(await fetch(`/model-configs/${encodeURIComponent(id)}`, sendJson("PUT", { values, key })));
+}
+
+export async function deleteManagedConfig(id: string, newDefaultId?: string): Promise<void> {
+  const q = newDefaultId ? `?newDefault=${encodeURIComponent(newDefaultId)}` : "";
+  await jsonOrThrow(await fetch(`/model-configs/${encodeURIComponent(id)}${q}`, sendJson("DELETE")));
+}
+
+export async function setManagedDefault(id: string): Promise<void> {
+  await jsonOrThrow(await fetch(`/model-configs/${encodeURIComponent(id)}/default`, sendJson("POST")));
+}

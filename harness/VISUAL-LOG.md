@@ -2017,3 +2017,29 @@ processes", then a `write:` into the conversation's own `processes/` directory.
 **Not exercised visually:** a sub-agent's background process enabling the parent's kill item (covered at
 Tier-0 by `treeHasProcesses`), and the timeout notice (covered at Tier-0). The two small "▯" glyphs under
 replies are headless Chrome lacking the font for the reply controls. They are not a P10c change.
+
+## X-62 — the model manager dialog · 2026-11-26 · ✅ looked good
+
+Peeked on 7801 (fake driver) with three configs on three keys and a hand-written catalog cache
+(names, windows, prices) in the peek data dir.
+
+- `x62-manager.png` — the gear opens a full dialog: configs grouped by key (`key …aaaa`), the folder
+  default tagged, the core fields, the key fieldset (keep / use the key from / enter new), "Advanced
+  settings" folded. The (i) rendered as an empty box here (headless Chrome has no glyph for "ⓘ"), so
+  it is now a CSS-drawn circle with an "i" — as seen in every later shot. Save now greys out when
+  nothing changed (it looked enabled).
+- `x62-clone.png` — Clone on "Client A — Sonnet": named "Client A — Sonnet copy", key preset to
+  "use the key from …aaaa", model shows its catalog facts; the Model (i) opened its help text.
+- `x62-catalog.png` — New config, typing "claude" in Model: the catalog list with name, context,
+  price per M and "images".
+- `x62-advanced.png` — the advanced fold: Prompt and Sampling sections, defaults named in the
+  selects and placeholders, Temperature's help open. (Placeholders then lost a redundant
+  "default:" prefix.)
+- `x62-delete.png` — Delete… on the folder default: the warning says what happens to threads and
+  asks for the new default.
+- `x62-created.png` — the clone saved: listed under `…aaaa` beside its source, "shared with 1 other
+  config", "Created …". On disk it holds Client A's key; nothing but last-fours reached the page.
+- `x62-deleted-live.png` — the thread switched to "Client B — GPT-5", then Client B deleted in the
+  dialog: on closing, the same tab shows the "model no longer exists — pick one" card with the gear.
+  (First attempt showed nothing until a reload; the dialog now refreshes the thread's state after a
+  change.)

@@ -84,6 +84,8 @@ interface CatalogFile {
    *  refetching once a day forever to re-learn that is a cost for nothing. */
   prices?: ModelPrices;
   limits?: ModelLimitsMap;
+  /** Display names (X-62) — absent in a cache written before the model manager. */
+  names?: Record<string, string>;
 }
 
 /** Where a resolved window actually came from — the honesty half of the fix. */
@@ -120,6 +122,28 @@ export function parseModels(payload: unknown): ModelWindows {
     windows[model.id] = length;
   }
   return windows;
+}
+
+/** Pull `id → name` (X-62), for the model manager's catalog search. */
+export function parseNames(payload: unknown): Record<string, string> {
+  const data = (payload as { data?: unknown })?.data;
+  if (!Array.isArray(data)) return {};
+  const names: Record<string, string> = {};
+  for (const entry of data) {
+    const model = entry as { id?: unknown; name?: unknown };
+    if (typeof model.id === "string" && typeof model.name === "string") names[model.id] = model.name;
+  }
+  return names;
+}
+
+/** One catalog row as the model manager lists it (X-62). */
+export interface CatalogModel {
+  id: string;
+  name?: string;
+  contextLength?: number;
+  promptPerMTok?: number;
+  completionPerMTok?: number;
+  images: ImageSupport;
 }
 
 /** Pull `id → architecture.input_modalities` out of a `GET /models` payload.
@@ -273,6 +297,7 @@ export class ModelCatalog {
   private modalities: ModelModalities = {};
   private prices: ModelPrices = {};
   private limits: ModelLimitsMap = {};
+  private names: Record<string, string> = {};
   private fetchedAt = 0;
   private readonly file: string;
   private readonly doFetch: typeof fetch;
@@ -301,6 +326,7 @@ export class ModelCatalog {
         this.modalities = cached.modalities ?? {};
         this.prices = cached.prices ?? {};
         this.limits = cached.limits ?? {};
+        this.names = cached.names ?? {};
         this.fetchedAt = Date.parse(cached.fetchedAt) || 0;
       }
     } catch {
@@ -315,6 +341,7 @@ export class ModelCatalog {
       modalities: this.modalities,
       prices: this.prices,
       limits: this.limits,
+      names: this.names,
     };
     try {
       mkdirSync(path.dirname(this.file), { recursive: true });
@@ -367,6 +394,7 @@ export class ModelCatalog {
       // model's price beats inheriting the old one's.
       this.prices = parsePrices(payload);
       this.limits = parseLimits(payload);
+      this.names = parseNames(payload);
       this.fetchedAt = this.now();
       this.writeCache();
       return { refreshed: true };
@@ -384,6 +412,28 @@ export class ModelCatalog {
    *  "offline" case the command accepts a literal slug in. */
   modelIds(): string[] {
     return Object.keys(this.windows);
+  }
+
+  /** Every model with what the model manager shows of it (X-62), by id. */
+  listModels(): CatalogModel[] {
+    return Object.keys(this.windows)
+      .sort()
+      .map((id) => {
+        const price = this.prices[id];
+        return {
+          id,
+          ...(this.names[id] !== undefined ? { name: this.names[id] } : {}),
+          contextLength: this.windows[id],
+          ...(price?.promptPerMTok !== undefined ? { promptPerMTok: price.promptPerMTok } : {}),
+          ...(price?.completionPerMTok !== undefined ? { completionPerMTok: price.completionPerMTok } : {}),
+          images: imageSupport(this.modalities, id),
+        };
+      });
+  }
+
+  /** When the catalog was last fetched (0 = never). */
+  get lastFetched(): number {
+    return this.fetchedAt;
   }
 
   /** This model's per-Mtok prices, when the catalog said (X-40). Same

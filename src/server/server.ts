@@ -30,6 +30,7 @@ import { AgentCoordinator } from "../session/agents.js";
 import type { Session } from "../session/session.js";
 import type { AuthGuard } from "./auth.js";
 import type { Logger } from "../logger.js";
+import { registerModelManager, type ModelManagerDeps } from "./config-routes.js";
 
 export interface ServerDeps {
   /** Re-read the selected config on demand, so CLI edits are picked up live. */
@@ -74,6 +75,9 @@ export interface ServerDeps {
   /** Optional: live MCP server status for `GET /mcp` (P7b). Read-only — the
    *  settings files stay the source of truth, edited by hand or by `jlcode mcp`. */
   mcpStatus?: () => { servers: McpServerStatus[]; problems: string[]; files: { global: string; workspace: string } };
+  /** Optional: the model manager's store access (X-62). Omitted → no
+   *  `/model-config*` routes (the dialog's gear is hidden). */
+  modelManager?: ModelManagerDeps;
 }
 
 const STATIC_TYPES: Record<string, string> = {
@@ -592,6 +596,10 @@ export function createServer(deps: ServerDeps): { app: Hono; manager: SessionMan
   // D-87). **Fingerprints, names and models only — never key bytes**: the full
   // key stays on this side, and grouping is done here on it so the browser has
   // no reason to want it. `?session=` marks (and leads with) that thread's group.
+  // The model manager (X-62, D-110): create/clone/edit/delete configs and set
+  // this folder's default. Its routes never send key bytes either.
+  if (deps.modelManager) registerModelManager(app, deps.modelManager);
+
   app.get("/configs", (c) => {
     if (!deps.listConfigs) return c.json({ error: "config listing not supported" }, 404);
     const sessionId = c.req.query("session");
